@@ -1294,8 +1294,8 @@ function renderPatternPanel(pattern) {
       <button id="panelScaleDown">Küçült</button>
       <button id="panelScaleUp">Büyüt</button>
       <button id="panelRotatePattern">90° Döndür</button>
-      <button id="panelMirrorPatternX">Dikey eksene aynala</button>
-      <button id="panelMirrorPatternY">Yatay eksene aynala</button>
+      <button id="panelMirrorPatternX">Kopyayı dikey aynala</button>
+      <button id="panelMirrorPatternY">Kopyayı yatay aynala</button>
       ${
         pattern.kind === "vector"
           ? `<button id="panelRevectorize">Yeniden İşle</button><button id="panelSmoothVector">Yumuşat</button><button id="panelSaveVectorSvg">SVG Kaydet</button><button id="panelRestoreVectorPaths">Konturları Geri Al</button>`
@@ -1680,6 +1680,24 @@ function cloneVectorPaths(paths) {
   }));
 }
 
+function clonePatternForMirror(pattern) {
+  const id = uid("pat");
+  const copy = {
+    ...pattern,
+    id,
+    name: `${pattern.name || "Desen"} kopya`,
+    vectorPaths: cloneVectorPaths(pattern.vectorPaths || []),
+    originalVectorPaths: cloneVectorPaths(pattern.originalVectorPaths || []),
+    debugPreviews: (pattern.debugPreviews || []).map((preview) => ({ ...preview })),
+    vectorSettings: pattern.vectorSettings ? { ...pattern.vectorSettings } : pattern.vectorSettings,
+    vectorStats: pattern.vectorStats ? { ...pattern.vectorStats } : pattern.vectorStats,
+    cleanStats: pattern.cleanStats ? { ...pattern.cleanStats } : pattern.cleanStats,
+  };
+  const image = state.images.get(pattern.id);
+  if (image) state.images.set(id, image);
+  return copy;
+}
+
 function polygonArea(points) {
   if (!points || points.length < 3) return 0;
   let area = 0;
@@ -1863,22 +1881,25 @@ function mirrorSelectedPattern(axis) {
     setStatus("Aynalama icin deseni once bir DXF parcasina baglayin.");
     return;
   }
+  const copy = clonePatternForMirror(pattern);
   const center = placementCenter(placement);
-  const patternCenterX = pattern.x + pattern.width / 2;
-  const patternCenterY = pattern.y + pattern.height / 2;
+  const patternCenterX = copy.x + copy.width / 2;
+  const patternCenterY = copy.y + copy.height / 2;
   if (axis === "x") {
     const mirroredCenterX = center.x * 2 - patternCenterX;
-    pattern.x = mirroredCenterX - pattern.width / 2;
-    pattern.mirrorX = !pattern.mirrorX;
-    pattern.rotation = (360 - (Number(pattern.rotation) || 0)) % 360;
-    setStatus("Desen parcanin dikey merkez eksenine gore aynalandi.");
+    copy.x = mirroredCenterX - copy.width / 2;
+    copy.mirrorX = !copy.mirrorX;
+    copy.rotation = (360 - (Number(copy.rotation) || 0)) % 360;
+    setStatus("Desenin kopyasi parcanin dikey merkez eksenine gore aynalandi.");
   } else {
     const mirroredCenterY = center.y * 2 - patternCenterY;
-    pattern.y = mirroredCenterY - pattern.height / 2;
-    pattern.mirrorY = !pattern.mirrorY;
-    pattern.rotation = (360 - (Number(pattern.rotation) || 0)) % 360;
-    setStatus("Desen parcanin yatay merkez eksenine gore aynalandi.");
+    copy.y = mirroredCenterY - copy.height / 2;
+    copy.mirrorY = !copy.mirrorY;
+    copy.rotation = (360 - (Number(copy.rotation) || 0)) % 360;
+    setStatus("Desenin kopyasi parcanin yatay merkez eksenine gore aynalandi.");
   }
+  state.patterns.push(copy);
+  select("pattern", copy.id);
   draw();
   updateSelectionPanel();
 }
