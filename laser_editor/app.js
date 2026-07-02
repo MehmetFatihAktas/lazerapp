@@ -1061,7 +1061,7 @@ function renderPatternPanel(pattern) {
       <button id="panelRotatePattern">90° Döndür</button>
       ${
         pattern.kind === "vector"
-          ? `<button id="panelRevectorize">Yeniden İşle</button><button id="panelSaveVectorSvg">SVG Kaydet</button><button id="panelRestoreVectorPaths">Konturları Geri Al</button>`
+          ? `<button id="panelRevectorize">Yeniden İşle</button><button id="panelSmoothVector">Yumuşat</button><button id="panelSaveVectorSvg">SVG Kaydet</button><button id="panelRestoreVectorPaths">Konturları Geri Al</button>`
           : ""
       }
       <button id="panelDeletePattern" class="danger">Sil</button>
@@ -1141,9 +1141,14 @@ function bindPatternPanel(pattern) {
   document.getElementById("panelScaleUp").addEventListener("click", () => resizeSelected(1.02));
   document.getElementById("panelRotatePattern").addEventListener("click", () => rotateSelected(90));
   document.getElementById("panelRevectorize")?.addEventListener("click", revectorizeSelected);
+  document.getElementById("panelSmoothVector")?.addEventListener("click", () => smoothSelectedVector(pattern));
   document.getElementById("panelSaveVectorSvg")?.addEventListener("click", saveSelectedVectorSvg);
   document.getElementById("panelRestoreVectorPaths")?.addEventListener("click", () => {
-    for (const vectorPath of pattern.vectorPaths || []) vectorPath.removed = false;
+    if (pattern.originalVectorPaths?.length) {
+      pattern.vectorPaths = cloneVectorPaths(pattern.originalVectorPaths);
+    } else {
+      for (const vectorPath of pattern.vectorPaths || []) vectorPath.removed = false;
+    }
     draw();
     updateSelectionPanel();
   });
@@ -1313,7 +1318,8 @@ async function vectorizePhoto(options = {}) {
         sourceHeight: vector.sourceHeight || replacePattern.sourceHeight,
         originalWidth: vector.originalWidth,
         originalHeight: vector.originalHeight,
-        vectorPaths: (vector.vectorPaths || []).map((item) => ({ ...item, points: (item.points || []).map((point) => [...point]) })),
+        vectorPaths: cloneVectorPaths(vector.vectorPaths || []),
+        originalVectorPaths: cloneVectorPaths(vector.vectorPaths || []),
         vectorSettings: vector.settings || getVectorSettings(),
         vectorStats: vector.stats || null,
         debugPreviews: vector.debugPreviews || [],
@@ -1403,6 +1409,7 @@ function createVectorPatternForPlacement(id, vector, placement) {
     },
     placement
   );
+  const vectorPaths = cloneVectorPaths(vector.vectorPaths || []);
   return {
     ...pattern,
     kind: "vector",
@@ -1411,11 +1418,20 @@ function createVectorPatternForPlacement(id, vector, placement) {
     sourceHeight: vector.sourceHeight || vector.preview?.height || 100,
     originalWidth: vector.originalWidth || vector.preview?.width || vector.sourceWidth || 100,
     originalHeight: vector.originalHeight || vector.preview?.height || vector.sourceHeight || 100,
-    vectorPaths: (vector.vectorPaths || []).map((item) => ({ ...item, points: (item.points || []).map((point) => [...point]) })),
+    vectorPaths,
+    originalVectorPaths: cloneVectorPaths(vectorPaths),
     vectorSettings: vector.settings || getVectorSettings(),
     vectorStats: vector.stats || null,
     debugPreviews: vector.debugPreviews || [],
   };
+}
+
+function cloneVectorPaths(paths) {
+  return (paths || []).map((item) => ({
+    ...item,
+    points: (item.points || []).map((point) => [Number(point[0]), Number(point[1])]),
+    warnings: item.warnings ? [...item.warnings] : item.warnings,
+  }));
 }
 
 function polygonArea(points) {
@@ -1427,6 +1443,92 @@ function polygonArea(points) {
     area += current[0] * next[1] - next[0] * current[1];
   }
   return Math.abs(area / 2);
+}
+
+function pointDistance(a, b) {
+  return Math.hypot(Number(b[0]) - Number(a[0]), Number(b[1]) - Number(a[1]));
+}
+
+function polylineLength(points, closed = false) {
+  if (!points || points.length < 2) return 0;
+  let total = 0;
+  for (let index = 1; index < points.length; index += 1) total += pointDistance(points[index - 1], points[index]);
+  if (closed) total += pointDistance(points[points.length - 1], points[0]);
+  return total;
+}
+
+function turnAngle(prev, point, next) {
+  const ax = Number(point[0]) - Number(prev[0]);
+  const ay = Number(point[1]) - Number(prev[1]);
+  const bx = Number(next[0]) - Number(point[0]);
+  const by = Number(next[1]) - Number(point[1]);
+  const al = Math.hypot(ax, ay);
+  const bl = Math.hypot(bx, by);
+  if (al < 1e-6 || bl < 1e-6) return 0;
+  const dot = Math.max(-1, Math.min(1, (ax * bx + ay * by) / (al * bl)));
+  return (Math.acos(dot) * 180) / Math.PI;
+}
+
+function dedupeVectorPoints(points, closed, minDistance = 0.08) {
+  const output = [];
+  for (const point of points || []) {
+    const next = [Number(point[0]), Number(point[1])];
+    if (!output.length || pointDistance(output[output.length - 1], next) >= minDistance) output.push(next);
+  }
+  if (closed && output.length > 2 && pointDistance(output[0], output[output.length - 1]) < minDistance) output.pop();
+  return output;
+}
+
+function smoothVectorPoints(points, closed = true, passes = 2) {
+  let current = dedupeVectorPoints(points, closed, 0.04);
+  if (current.length < (closed ? 5 : 4)) return current;
+  for (let pass = 0; pass < Math.max(1, passes); pass += 1) {
+    const output = [];
+    for (let index = 0; index < current.length; index += 1) {
+      const point = current[index];
+      if (!closed && (index === 0 || index === current.length - 1)) {
+        output.push(point);
+        continue;
+      }
+      const prev = current[(index - 1 + current.length) % current.length];
+      const next = current[(index + 1) % current.length];
+      const angle = turnAngle(prev, point, next);
+      if (angle >= 58) {
+        output.push(point);
+        continue;
+      }
+      output.push([
+        point[0] * 0.58 + (prev[0] + next[0]) * 0.21,
+        point[1] * 0.58 + (prev[1] + next[1]) * 0.21,
+      ]);
+    }
+    current = dedupeVectorPoints(output, closed, 0.08);
+  }
+  return current;
+}
+
+function refreshVectorPathMetrics(vectorPath) {
+  const points = vectorPath.points || [];
+  vectorPath.area = vectorPath.closed ? polygonArea(points) : 0;
+  vectorPath.length = polylineLength(points, Boolean(vectorPath.closed));
+}
+
+function smoothSelectedVector(pattern) {
+  if (!pattern || pattern.kind !== "vector") return;
+  if (!pattern.originalVectorPaths?.length) pattern.originalVectorPaths = cloneVectorPaths(pattern.vectorPaths || []);
+  let changed = 0;
+  for (const vectorPath of pattern.vectorPaths || []) {
+    if (vectorPath.removed || !vectorPath.points || vectorPath.points.length < 4) continue;
+    const before = vectorPath.points.length;
+    const smoothed = smoothVectorPoints(vectorPath.points, Boolean(vectorPath.closed), 2);
+    if (smoothed.length < 3) continue;
+    vectorPath.points = smoothed;
+    refreshVectorPathMetrics(vectorPath);
+    if (smoothed.length !== before || polylineLength(smoothed, Boolean(vectorPath.closed)) > 0) changed += 1;
+  }
+  draw();
+  updateSelectionPanel();
+  setStatus(changed ? `${changed} kontur yumuşatıldı. Geri almak için Konturları Geri Al.` : "Yumuşatılacak uygun kontur bulunamadı.");
 }
 
 function rotateLocalPoint(x, y, angle) {
