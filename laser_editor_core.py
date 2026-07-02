@@ -157,7 +157,11 @@ def point_in_polygon(point: Point, polygon: list[Point]) -> bool:
         x1, y1 = previous
         x2, y2 = current
         if (y1 > y) != (y2 > y):
-            x_intersect = x1 + (y - y1) * (x2 - x1) / max(1e-12, y2 - y1)
+            dy = y2 - y1
+            if abs(dy) <= 1e-12:
+                previous = current
+                continue
+            x_intersect = x1 + (y - y1) * (x2 - x1) / dy
             if x < x_intersect:
                 inside = not inside
         previous = current

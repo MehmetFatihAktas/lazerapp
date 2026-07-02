@@ -529,6 +529,13 @@ def test_clip_segment_respects_part_margin():
     assert_true(abs(start[1] - 5) < 1e-6 and abs(end[1] - 5) < 1e-6, "clipping should keep segment y")
 
 
+def test_clip_region_handles_reversed_slanted_polygons():
+    region = core.ClipRegion([[(0, 10), (10, 5), (0, 0)]], margin=0)
+
+    assert_true(not core.clip_region_contains((-1, 5), region), "outside point must stay outside reversed slanted polygon")
+    assert_true(core.clip_region_contains((1, 5), region), "inside point must stay inside reversed slanted polygon")
+
+
 def test_vector_gcode_is_clipped_to_part_margin():
     item = {
         "path": "vector",
@@ -635,6 +642,7 @@ def main():
         test_potrace_vector_engrave_defaults_to_contours,
         test_potrace_vector_cut_uses_contours_not_fill_scanlines,
         test_clip_segment_respects_part_margin,
+        test_clip_region_handles_reversed_slanted_polygons,
         test_vector_gcode_is_clipped_to_part_margin,
         test_svg_gcode_is_clipped_to_part_margin,
         test_pattern_point_supports_mirroring,
