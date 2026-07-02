@@ -794,7 +794,32 @@ function drawPlacements() {
       ctx.setLineDash([]);
       ctx.stroke();
     }
+    drawPlacementCenterGuides(placement, size);
   }
+}
+
+function drawPlacementCenterGuides(placement, size) {
+  const center = placementCenter(placement);
+  const verticalStart = worldToScreen({ x: center.x, y: placement.y });
+  const verticalEnd = worldToScreen({ x: center.x, y: placement.y + size.height });
+  const horizontalStart = worldToScreen({ x: placement.x, y: center.y });
+  const horizontalEnd = worldToScreen({ x: placement.x + size.width, y: center.y });
+  ctx.save();
+  ctx.strokeStyle = selectedIs("placement", placement.id) ? "rgba(255,255,255,0.7)" : "rgba(96,165,250,0.55)";
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.moveTo(verticalStart.x, verticalStart.y);
+  ctx.lineTo(verticalEnd.x, verticalEnd.y);
+  ctx.moveTo(horizontalStart.x, horizontalStart.y);
+  ctx.lineTo(horizontalEnd.x, horizontalEnd.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(191, 219, 254, 0.78)";
+  ctx.font = "11px Segoe UI";
+  ctx.fillText("X", horizontalEnd.x - 12, horizontalEnd.y - 5);
+  ctx.fillText("Y", verticalEnd.x + 5, verticalEnd.y + 14);
+  ctx.restore();
 }
 
 function drawPatterns() {
@@ -931,28 +956,6 @@ function drawVectorPattern(pattern) {
       ctx.setLineDash([]);
       ctx.stroke();
     }
-
-    const center = placementCenter(placement);
-    const verticalStart = worldToScreen({ x: center.x, y: placement.y });
-    const verticalEnd = worldToScreen({ x: center.x, y: placement.y + size.height });
-    const horizontalStart = worldToScreen({ x: placement.x, y: center.y });
-    const horizontalEnd = worldToScreen({ x: placement.x + size.width, y: center.y });
-    ctx.save();
-    ctx.strokeStyle = selectedIs("placement", placement.id) ? "rgba(255,255,255,0.7)" : "rgba(96,165,250,0.55)";
-    ctx.lineWidth = 1.2;
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(verticalStart.x, verticalStart.y);
-    ctx.lineTo(verticalEnd.x, verticalEnd.y);
-    ctx.moveTo(horizontalStart.x, horizontalStart.y);
-    ctx.lineTo(horizontalEnd.x, horizontalEnd.y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(191, 219, 254, 0.78)";
-    ctx.font = "11px Segoe UI";
-    ctx.fillText("X", horizontalEnd.x - 12, horizontalEnd.y - 5);
-    ctx.fillText("Y", verticalEnd.x + 5, verticalEnd.y + 14);
-    ctx.restore();
   }
 }
 
