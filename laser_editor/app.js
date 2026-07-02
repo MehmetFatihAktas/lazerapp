@@ -138,7 +138,9 @@ function uid(prefix) {
 }
 
 function mm(id, fallback = 0) {
-  const value = Number(refs[id].value);
+  const raw = refs[id]?.value;
+  if (raw === "" || raw === undefined || raw === null) return fallback;
+  const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
 }
 
@@ -786,33 +788,43 @@ function crisp(value) {
 
 function drawGrid() {
   const b = bed();
+  ctx.fillStyle = "#101820";
+  ctx.fillRect(0, 0, state.view.width, state.view.height);
+
   const bottomLeft = worldToScreen({ x: 0, y: 0 });
   const topLeft = worldToScreen({ x: 0, y: b.height });
   const bottomRight = worldToScreen({ x: b.width, y: 0 });
-  ctx.fillStyle = "#101820";
-  ctx.fillRect(topLeft.x, topLeft.y, b.width * state.view.scale, b.height * state.view.scale);
 
   const minorStep = niceGridStep(22 / Math.max(0.001, state.view.scale));
   const majorStep = minorStep * 5;
+  const minWorld = screenToWorld({ x: 0, y: state.view.height });
+  const maxWorld = screenToWorld({ x: state.view.width, y: 0 });
+  const startX = Math.floor(minWorld.x / minorStep) * minorStep;
+  const endX = Math.ceil(maxWorld.x / minorStep) * minorStep;
+  const startY = Math.floor(minWorld.y / minorStep) * minorStep;
+  const endY = Math.ceil(maxWorld.y / minorStep) * minorStep;
+
   ctx.lineWidth = 1;
-  for (let x = 0; x <= b.width + 0.001; x += minorStep) {
+  for (let x = startX; x <= endX + 0.001; x += minorStep) {
     const sx = crisp(worldToScreen({ x, y: 0 }).x);
     const isMajor = Math.abs(x / majorStep - Math.round(x / majorStep)) < 0.001;
-    ctx.strokeStyle = isMajor ? "rgba(105, 126, 150, 0.58)" : "rgba(75, 93, 112, 0.38)";
+    ctx.strokeStyle = isMajor ? "rgba(112, 136, 162, 0.7)" : "rgba(82, 102, 124, 0.5)";
     ctx.beginPath();
-    ctx.moveTo(sx, topLeft.y);
-    ctx.lineTo(sx, bottomLeft.y);
+    ctx.moveTo(sx, 0);
+    ctx.lineTo(sx, state.view.height);
     ctx.stroke();
   }
-  for (let y = 0; y <= b.height + 0.001; y += minorStep) {
+  for (let y = startY; y <= endY + 0.001; y += minorStep) {
     const sy = crisp(worldToScreen({ x: 0, y }).y);
     const isMajor = Math.abs(y / majorStep - Math.round(y / majorStep)) < 0.001;
-    ctx.strokeStyle = isMajor ? "rgba(105, 126, 150, 0.58)" : "rgba(75, 93, 112, 0.38)";
+    ctx.strokeStyle = isMajor ? "rgba(112, 136, 162, 0.7)" : "rgba(82, 102, 124, 0.5)";
     ctx.beginPath();
-    ctx.moveTo(topLeft.x, sy);
-    ctx.lineTo(bottomRight.x, sy);
+    ctx.moveTo(0, sy);
+    ctx.lineTo(state.view.width, sy);
     ctx.stroke();
   }
+  ctx.fillStyle = "rgba(16, 24, 32, 0.45)";
+  ctx.fillRect(topLeft.x, topLeft.y, b.width * state.view.scale, b.height * state.view.scale);
   ctx.strokeStyle = "#6f8194";
   ctx.lineWidth = 1.5;
   ctx.strokeRect(topLeft.x, topLeft.y, b.width * state.view.scale, b.height * state.view.scale);
@@ -1893,7 +1905,8 @@ function optimizedAutoLayout() {
   }
   const result = packLayoutItems(buildReusableLayoutItems());
   applyPackedLayout(result.packed, true);
-  alignJobToBed(false);
+  draw();
+  updateSelectionPanel();
   const total = result.packed.length;
   const fitted = total - result.overflowCount;
   if (result.overflowCount) setStatus(`${fitted}/${total} parca tablaya sigdi; ${result.overflowCount} parca disarida.`);
@@ -2992,6 +3005,14 @@ function onKeyUp(event) {
 
 let layoutSettingsTimer = null;
 
+function scheduleTablePreviewUpdate() {
+  saveUiSettings();
+  window.clearTimeout(layoutSettingsTimer);
+  layoutSettingsTimer = window.setTimeout(() => {
+    draw();
+  }, 120);
+}
+
 function layoutSettingsReady() {
   const width = Number(refs.bedW?.value);
   const height = Number(refs.bedH?.value);
@@ -3066,7 +3087,8 @@ function bindControls() {
 
   ["bedW", "bedH", "quantity", "gap", "margin"].forEach((id) => {
     const input = refs[id];
-    if (input) input.addEventListener("input", scheduleLayoutPreviewUpdate);
+    if (!input) return;
+    input.addEventListener("input", id === "bedW" || id === "bedH" ? scheduleTablePreviewUpdate : scheduleLayoutPreviewUpdate);
   });
   refs.allowRotate?.addEventListener("change", scheduleLayoutPreviewUpdate);
   refs.bedAlignMode?.addEventListener("change", applyAlignmentPreviewUpdate);
