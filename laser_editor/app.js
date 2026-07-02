@@ -1880,9 +1880,17 @@ function fitSelectedPattern() {
 }
 
 function frameRepeatCount(sideLength, moduleWidth) {
-  if (sideLength <= 0) return 0;
-  const rawCount = Math.max(1, Math.round(sideLength / Math.max(0.5, moduleWidth)));
+  if (sideLength <= 0 || moduleWidth <= 0 || sideLength < moduleWidth) return 0;
+  const rawCount = Math.max(1, Math.floor(sideLength / Math.max(0.5, moduleWidth)));
   return Math.min(80, rawCount);
+}
+
+function frameRepeatOffsets(sideLength, moduleWidth) {
+  const count = frameRepeatCount(sideLength, moduleWidth);
+  if (!count) return [];
+  const usedLength = count * moduleWidth;
+  const startOffset = (sideLength - usedLength) / 2 + moduleWidth / 2;
+  return Array.from({ length: count }, (_value, index) => startOffset + index * moduleWidth);
 }
 
 function createFrameFromSelectedPattern() {
@@ -1896,38 +1904,38 @@ function createFrameFromSelectedPattern() {
   const size = placementSize(placement);
   const moduleWidth = Math.max(0.5, Number(pattern.width) || 1);
   const moduleHeight = Math.max(0.5, Number(pattern.height) || 1);
-  const desiredInset = Math.max(0, Number(pattern.clipMargin) || 0) + moduleHeight / 2;
-  const maxInset = Math.max(0, Math.min(size.width, size.height) / 2 - 0.05);
-  const inset = Math.min(desiredInset, maxInset);
-  const minX = placement.x + inset;
-  const maxX = placement.x + size.width - inset;
-  const minY = placement.y + inset;
-  const maxY = placement.y + size.height - inset;
+  const edgeMargin = Math.max(0, Number(pattern.clipMargin) || 0);
+  const centerInset = edgeMargin + moduleHeight / 2;
+  const horizontalLength = size.width - edgeMargin * 2;
+  const verticalLength = size.height - edgeMargin * 2;
+  const bottomY = placement.y + centerInset;
+  const topY = placement.y + size.height - centerInset;
+  const leftX = placement.x + centerInset;
+  const rightX = placement.x + size.width - centerInset;
   const baseRotation = Number(pattern.rotation) || 0;
   const sides = [
-    { name: "alt", length: maxX - minX, start: { x: minX, y: minY }, dir: { x: 1, y: 0 }, rotation: 0 },
-    { name: "sag", length: maxY - minY, start: { x: maxX, y: minY }, dir: { x: 0, y: 1 }, rotation: 90 },
-    { name: "ust", length: maxX - minX, start: { x: maxX, y: maxY }, dir: { x: -1, y: 0 }, rotation: 180 },
-    { name: "sol", length: maxY - minY, start: { x: minX, y: maxY }, dir: { x: 0, y: -1 }, rotation: 270 },
+    { name: "alt", length: horizontalLength, start: { x: placement.x + edgeMargin, y: bottomY }, dir: { x: 1, y: 0 }, rotation: 0 },
+    { name: "sag", length: verticalLength, start: { x: rightX, y: placement.y + edgeMargin }, dir: { x: 0, y: 1 }, rotation: 90 },
+    { name: "ust", length: horizontalLength, start: { x: placement.x + size.width - edgeMargin, y: topY }, dir: { x: -1, y: 0 }, rotation: 180 },
+    { name: "sol", length: verticalLength, start: { x: leftX, y: placement.y + size.height - edgeMargin }, dir: { x: 0, y: -1 }, rotation: 270 },
   ];
   const copies = [];
   let capped = false;
   for (const side of sides) {
-    const count = frameRepeatCount(side.length, moduleWidth);
-    if (!count) continue;
-    if (Math.round(side.length / Math.max(0.5, moduleWidth)) > count) capped = true;
-    const step = side.length / count;
-    for (let index = 0; index < count; index += 1) {
+    const offsets = frameRepeatOffsets(side.length, moduleWidth);
+    if (!offsets.length) continue;
+    if (Math.floor(side.length / Math.max(0.5, moduleWidth)) > offsets.length) capped = true;
+    for (const [index, offset] of offsets.entries()) {
       const center = {
-        x: side.start.x + side.dir.x * step * (index + 0.5),
-        y: side.start.y + side.dir.y * step * (index + 0.5),
+        x: side.start.x + side.dir.x * offset,
+        y: side.start.y + side.dir.y * offset,
       };
       const copy = clonePatternCopy(pattern, `cerceve ${side.name} ${index + 1}`);
       copy.parentId = placement.id;
       copy.frameSourceId = pattern.id;
       copy.frameSide = side.name;
       copy.frameIndex = index;
-      copy.width = step;
+      copy.width = moduleWidth;
       copy.height = moduleHeight;
       copy.x = center.x - copy.width / 2;
       copy.y = center.y - copy.height / 2;
