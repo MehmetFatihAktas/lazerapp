@@ -1504,6 +1504,8 @@ function bindPatternPanel(pattern) {
 }
 
 function autoLayout() {
+  optimizedAutoLayout();
+  return;
   const b = bed();
   const quantity = Math.max(1, Math.round(mm("quantity", 1)));
   const gap = Math.max(0, mm("gap", 3));
@@ -1601,6 +1603,7 @@ function findOpenSlot(width, height, occupied, b, margin, gap) {
 }
 
 function appendPartsToLayout(parts) {
+  return optimizedAppendPartsToLayout(parts);
   const b = bed();
   const quantity = Math.max(1, Math.round(mm("quantity", 1)));
   const gap = Math.max(0, mm("gap", 3));
@@ -1647,6 +1650,245 @@ function appendPartsToLayout(parts) {
   return created;
 }
 
+function packRectWidth(rect) {
+  return Math.max(0, rect.maxX - rect.minX);
+}
+
+function packRectHeight(rect) {
+  return Math.max(0, rect.maxY - rect.minY);
+}
+
+function packRectArea(rect) {
+  return packRectWidth(rect) * packRectHeight(rect);
+}
+
+function packRectContains(outer, inner) {
+  return (
+    outer.minX <= inner.minX + 0.001 &&
+    outer.minY <= inner.minY + 0.001 &&
+    outer.maxX >= inner.maxX - 0.001 &&
+    outer.maxY >= inner.maxY - 0.001
+  );
+}
+
+function packingUsableRect(b, margin) {
+  const rect = { minX: margin, minY: margin, maxX: b.width - margin, maxY: b.height - margin };
+  return packRectWidth(rect) > 0.001 && packRectHeight(rect) > 0.001 ? rect : null;
+}
+
+function packingExpandedRect(rect, amount) {
+  return {
+    minX: rect.minX - amount,
+    minY: rect.minY - amount,
+    maxX: rect.maxX + amount,
+    maxY: rect.maxY + amount,
+  };
+}
+
+function prunePackingFreeRects(rects) {
+  const filtered = rects.filter((rect) => packRectWidth(rect) > 0.001 && packRectHeight(rect) > 0.001);
+  const result = [];
+  for (let index = 0; index < filtered.length; index += 1) {
+    let contained = false;
+    for (let other = 0; other < filtered.length; other += 1) {
+      if (index !== other && packRectContains(filtered[other], filtered[index])) {
+        contained = true;
+        break;
+      }
+    }
+    if (!contained) result.push(filtered[index]);
+  }
+  return result;
+}
+
+function splitPackingFreeRects(freeRects, usedRect) {
+  const next = [];
+  for (const free of freeRects) {
+    if (!rectOverlaps(free, usedRect, 0)) {
+      next.push(free);
+      continue;
+    }
+    if (usedRect.minX > free.minX + 0.001) next.push({ minX: free.minX, minY: free.minY, maxX: usedRect.minX, maxY: free.maxY });
+    if (usedRect.maxX < free.maxX - 0.001) next.push({ minX: usedRect.maxX, minY: free.minY, maxX: free.maxX, maxY: free.maxY });
+    if (usedRect.minY > free.minY + 0.001) next.push({ minX: free.minX, minY: free.minY, maxX: free.maxX, maxY: usedRect.minY });
+    if (usedRect.maxY < free.maxY - 0.001) next.push({ minX: free.minX, minY: usedRect.maxY, maxX: free.maxX, maxY: free.maxY });
+  }
+  return prunePackingFreeRects(next);
+}
+
+function packingItemOptions(item, allowRotate) {
+  const part = item.part;
+  const options = [{ rotation: 0, width: part.width, height: part.height }];
+  if (allowRotate && Math.abs(part.width - part.height) > 0.001) options.push({ rotation: 90, width: part.height, height: part.width });
+  return options;
+}
+
+function comparePackingScore(a, b) {
+  for (let index = 0; index < a.length; index += 1) {
+    if (Math.abs(a[index] - b[index]) > 0.001) return a[index] - b[index];
+  }
+  return 0;
+}
+
+function bestPackingPosition(item, freeRects, allowRotate) {
+  let best = null;
+  for (const option of packingItemOptions(item, allowRotate)) {
+    for (const free of freeRects) {
+      if (option.width > packRectWidth(free) + 0.001 || option.height > packRectHeight(free) + 0.001) continue;
+      const rect = { minX: free.minX, minY: free.minY, maxX: free.minX + option.width, maxY: free.minY + option.height };
+      const waste = packRectArea(free) - option.width * option.height;
+      const shortSide = Math.min(packRectWidth(free) - option.width, packRectHeight(free) - option.height);
+      const longSide = Math.max(packRectWidth(free) - option.width, packRectHeight(free) - option.height);
+      const score = [waste, shortSide, longSide, rect.minY, rect.minX];
+      if (!best || comparePackingScore(score, best.score) < 0) best = { ...option, rect, score };
+    }
+  }
+  return best;
+}
+
+function sortedPackingItems(items) {
+  return [...items].sort((a, bItem) => {
+    const aArea = a.part.width * a.part.height;
+    const bArea = bItem.part.width * bItem.part.height;
+    if (Math.abs(bArea - aArea) > 0.001) return bArea - aArea;
+    return Math.max(bItem.part.width, bItem.part.height) - Math.max(a.part.width, a.part.height);
+  });
+}
+
+function placePackingOverflowItems(items, startY, b, margin, gap, allowRotate) {
+  const packed = [];
+  let x = margin;
+  let y = startY;
+  let rowHeight = 0;
+  const maxX = Math.max(margin + 1, b.width - margin);
+  for (const item of items) {
+    const option = packingItemOptions(item, allowRotate).sort((a, bOption) => {
+      const aFits = a.width <= maxX - margin + 0.001 ? 0 : 1;
+      const bFits = bOption.width <= maxX - margin + 0.001 ? 0 : 1;
+      if (aFits !== bFits) return aFits - bFits;
+      return a.width - bOption.width;
+    })[0];
+    if (x > margin + 0.001 && x + option.width > maxX + 0.001) {
+      x = margin;
+      y += rowHeight + gap;
+      rowHeight = 0;
+    }
+    const rect = { minX: x, minY: y, maxX: x + option.width, maxY: y + option.height };
+    packed.push({ item, x, y, rotation: option.rotation, rect, overflow: true });
+    x += option.width + gap;
+    rowHeight = Math.max(rowHeight, option.height);
+  }
+  return packed;
+}
+
+function packLayoutItems(items, occupiedRects = []) {
+  const b = bed();
+  const margin = Math.max(0, mm("margin", 1));
+  const gap = Math.max(0, mm("gap", 3));
+  const allowRotate = refs.allowRotate.checked;
+  let freeRects = [];
+  const usable = packingUsableRect(b, margin);
+  if (usable) freeRects = [usable];
+  for (const rect of occupiedRects) {
+    freeRects = splitPackingFreeRects(freeRects, packingExpandedRect(rect, gap));
+  }
+  const packed = [];
+  const overflowItems = [];
+  for (const item of sortedPackingItems(items)) {
+    const best = bestPackingPosition(item, freeRects, allowRotate);
+    if (!best) {
+      overflowItems.push(item);
+      continue;
+    }
+    packed.push({ item, x: best.rect.minX, y: best.rect.minY, rotation: best.rotation, rect: best.rect, overflow: false });
+    freeRects = splitPackingFreeRects(freeRects, packingExpandedRect(best.rect, gap));
+  }
+  const startY = Math.max(b.height + gap, margin, ...occupiedRects.map((rect) => rect.maxY + gap), ...packed.map((item) => item.rect.maxY + gap));
+  const overflow = placePackingOverflowItems(overflowItems, startY, b, margin, gap, allowRotate);
+  return { packed: [...packed, ...overflow], overflowCount: overflow.length };
+}
+
+function buildReusableLayoutItems() {
+  const quantity = Math.max(1, Math.round(mm("quantity", 1)));
+  const queues = new Map();
+  for (const placement of state.placements) {
+    if (!queues.has(placement.partId)) queues.set(placement.partId, []);
+    queues.get(placement.partId).push(placement);
+  }
+  const items = [];
+  for (let set = 0; set < quantity; set += 1) {
+    for (const part of state.parts) {
+      const placement = queues.get(part.id)?.shift() || null;
+      items.push({ part, placement });
+    }
+  }
+  return items;
+}
+
+function buildNewPartItems(parts) {
+  const quantity = Math.max(1, Math.round(mm("quantity", 1)));
+  const items = [];
+  for (let set = 0; set < quantity; set += 1) {
+    for (const part of parts) items.push({ part });
+  }
+  return items;
+}
+
+function applyPackedLayout(packed, reusable = false) {
+  const reusedIds = new Set(packed.map((item) => item.item.placement?.id).filter(Boolean));
+  if (reusable) {
+    const removedIds = new Set(state.placements.filter((placement) => !reusedIds.has(placement.id)).map((placement) => placement.id));
+    for (const pattern of state.patterns.filter((item) => removedIds.has(item.parentId))) state.images.delete(pattern.id);
+    state.patterns = state.patterns.filter((pattern) => !removedIds.has(pattern.parentId));
+  }
+  const placements = [];
+  for (const packedItem of packed) {
+    const existing = packedItem.item.placement;
+    const placement = {
+      ...(existing || { id: uid("pl"), partId: packedItem.item.part.id }),
+      x: packedItem.x,
+      y: packedItem.y,
+      rotation: packedItem.rotation,
+    };
+    if (existing) {
+      const dx = placement.x - existing.x;
+      const dy = placement.y - existing.y;
+      for (const pattern of state.patterns.filter((item) => item.parentId === existing.id)) {
+        pattern.x += dx;
+        pattern.y += dy;
+      }
+    }
+    placements.push(placement);
+  }
+  if (reusable) state.placements = placements;
+  else state.placements.push(...placements);
+  return placements;
+}
+
+function optimizedAutoLayout() {
+  if (!state.parts.length) {
+    state.placements = [];
+    select(null, null);
+    setStatus("Yerlestirilecek DXF yok.");
+    return;
+  }
+  const result = packLayoutItems(buildReusableLayoutItems());
+  applyPackedLayout(result.packed, true);
+  alignJobToBed(false);
+  const total = result.packed.length;
+  const fitted = total - result.overflowCount;
+  if (result.overflowCount) setStatus(`${fitted}/${total} parca tablaya sigdi; ${result.overflowCount} parca disarida.`);
+  else setStatus(`Yerlestirim hazir: ${total} parca verimli dizildi.`);
+  select(null, null);
+}
+
+function optimizedAppendPartsToLayout(parts) {
+  const result = packLayoutItems(buildNewPartItems(parts), state.placements.map(placementBounds));
+  const placements = applyPackedLayout(result.packed, false);
+  placements.overflowCount = result.overflowCount;
+  return placements;
+}
+
 async function addDxfs() {
   try {
     setStatus("DXF seçiliyor...");
@@ -1666,10 +1908,11 @@ async function addDxfs() {
       const created = appendPartsToLayout(data.parts);
       const b = bed();
       const margin = Math.max(0, mm("margin", 1));
-      const outside = created.some((placement) => !rectFitsBed(placementBounds(placement), b, margin));
+      const outside = created.overflowCount > 0 || created.some((placement) => !rectFitsBed(placementBounds(placement), b, margin));
       if (created[0]) select("placement", created[0].id);
       else draw();
-      setStatus(outside ? `${data.parts.length} DXF eklendi, bazilari tabla disina tasiyor.` : `${data.parts.length} DXF eklendi.`);
+      const fitted = created.length - (created.overflowCount || 0);
+      setStatus(outside ? `${fitted}/${created.length} yeni parca tablaya sigdi.` : `${created.length} yeni parca eklendi.`);
     } else {
       autoLayout();
       setStatus(`${data.parts.length} DXF eklendi.`);
@@ -2730,13 +2973,38 @@ function onKeyUp(event) {
 
 let layoutSettingsTimer = null;
 
+function layoutSettingsReady() {
+  const width = Number(refs.bedW?.value);
+  const height = Number(refs.bedH?.value);
+  const quantity = Number(refs.quantity?.value);
+  const gap = Number(refs.gap?.value);
+  const margin = Number(refs.margin?.value);
+  return (
+    Number.isFinite(width) &&
+    Number.isFinite(height) &&
+    Number.isFinite(quantity) &&
+    Number.isFinite(gap) &&
+    Number.isFinite(margin) &&
+    width > 0 &&
+    height > 0 &&
+    quantity >= 1 &&
+    gap >= 0 &&
+    margin >= 0
+  );
+}
+
 function scheduleLayoutPreviewUpdate() {
   saveUiSettings();
   window.clearTimeout(layoutSettingsTimer);
   layoutSettingsTimer = window.setTimeout(() => {
+    if (!layoutSettingsReady()) {
+      draw();
+      setStatus("Tabla olculeri ve adet pozitif olmali.");
+      return;
+    }
     if (state.parts.length) autoLayout();
     else draw();
-  }, 120);
+  }, 250);
 }
 
 function applyAlignmentPreviewUpdate() {
