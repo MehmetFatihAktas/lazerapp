@@ -2519,6 +2519,23 @@ function onKeyUp(event) {
   }
 }
 
+let layoutSettingsTimer = null;
+
+function scheduleLayoutPreviewUpdate() {
+  saveUiSettings();
+  window.clearTimeout(layoutSettingsTimer);
+  layoutSettingsTimer = window.setTimeout(() => {
+    if (state.parts.length) autoLayout();
+    else draw();
+  }, 120);
+}
+
+function applyAlignmentPreviewUpdate() {
+  saveUiSettings();
+  if (jobBounds()) alignJobToBed(false);
+  else draw();
+}
+
 function bindControls() {
   document.getElementById("addDxfBtn").addEventListener("click", addDxfs);
   document.getElementById("addImageBtn").addEventListener("click", addImage);
@@ -2551,24 +2568,20 @@ function bindControls() {
     });
   });
 
-  [
-    "bedW",
-    "bedH",
-    "quantity",
-    "gap",
-    "margin",
-    "bedAlignMode",
-    "allowRotate",
-    "innerFirst",
-    "returnOrigin",
-    "outputPath",
-  ].forEach((id) => {
+  ["bedW", "bedH", "quantity", "gap", "margin"].forEach((id) => {
     const input = refs[id];
-    if (input)
-      input.addEventListener("input", () => {
-        draw();
-        saveUiSettings();
-      });
+    if (input) input.addEventListener("input", scheduleLayoutPreviewUpdate);
+  });
+  refs.allowRotate?.addEventListener("change", scheduleLayoutPreviewUpdate);
+  refs.bedAlignMode?.addEventListener("change", applyAlignmentPreviewUpdate);
+
+  ["innerFirst", "returnOrigin", "outputPath"].forEach((id) => {
+    const input = refs[id];
+    if (!input) return;
+    input.addEventListener("input", () => {
+      draw();
+      saveUiSettings();
+    });
   });
 
   persistedInputIds.forEach((id) => {
