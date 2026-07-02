@@ -63,6 +63,8 @@ class RasterPattern:
     feed: float
     line_step: float
     threshold: int
+    mirror_x: bool = False
+    mirror_y: bool = False
 
 
 @dataclass
@@ -2588,6 +2590,10 @@ def write_vector_svg(output_path: Path,
 def pattern_point(pattern: RasterPattern, local_x: float, local_y: float) -> Point:
     center_x = pattern.x + pattern.width / 2
     center_y = pattern.y + pattern.height / 2
+    if pattern.mirror_x:
+        local_x = pattern.width - local_x
+    if pattern.mirror_y:
+        local_y = pattern.height - local_y
     dx = local_x - pattern.width / 2
     dy = local_y - pattern.height / 2
     angle = math.radians(pattern.rotation)
@@ -2905,6 +2911,8 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
         feed=_float(item.get("feed"), 1800.0),
         line_step=_float(item.get("lineStep"), 0.35),
         threshold=_int(item.get("threshold"), 140),
+        mirror_x=bool(item.get("mirrorX")),
+        mirror_y=bool(item.get("mirrorY")),
     )
     converter.validate_power(pattern.power)
     source_width = _float(item.get("sourceWidth"), pattern.width)
@@ -3048,6 +3056,8 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             feed=_float(item.get("feed"), default_pattern_feed),
             line_step=_float(item.get("lineStep"), 0.35),
             threshold=_int(item.get("threshold"), 140),
+            mirror_x=bool(item.get("mirrorX")),
+            mirror_y=bool(item.get("mirrorY")),
         )
         parent_id = str(item.get("parentId") or "")
         clip_polygons = clip_polygons_by_placement.get(parent_id) or all_clip_polygons

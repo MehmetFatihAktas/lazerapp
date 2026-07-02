@@ -333,6 +333,8 @@ function pathArea(path) {
 function patternPoint(pattern, localX, localY) {
   const cx = pattern.x + pattern.width / 2;
   const cy = pattern.y + pattern.height / 2;
+  if (pattern.mirrorX) localX = pattern.width - localX;
+  if (pattern.mirrorY) localY = pattern.height - localY;
   const dx = localX - pattern.width / 2;
   const dy = localY - pattern.height / 2;
   const angle = (pattern.rotation * Math.PI) / 180;
@@ -348,6 +350,16 @@ function patternCorners(pattern) {
     patternPoint(pattern, pattern.width, pattern.height),
     patternPoint(pattern, 0, pattern.height),
   ];
+}
+
+function placementCenter(placement) {
+  const size = placementSize(placement);
+  return {
+    x: placement.x + size.width / 2,
+    y: placement.y + size.height / 2,
+    width: size.width,
+    height: size.height,
+  };
 }
 
 function emptyBounds() {
@@ -603,6 +615,7 @@ function drawPatternBitmap(pattern, alpha) {
   ctx.save();
   ctx.translate(center.x, center.y);
   ctx.rotate((-pattern.rotation * Math.PI) / 180);
+  ctx.scale(pattern.mirrorX ? -1 : 1, pattern.mirrorY ? -1 : 1);
   ctx.globalAlpha = alpha;
   if (image && image.complete) {
     ctx.drawImage(image, -width / 2, -height / 2, width, height);
@@ -918,6 +931,28 @@ function drawVectorPattern(pattern) {
       ctx.setLineDash([]);
       ctx.stroke();
     }
+
+    const center = placementCenter(placement);
+    const verticalStart = worldToScreen({ x: center.x, y: placement.y });
+    const verticalEnd = worldToScreen({ x: center.x, y: placement.y + size.height });
+    const horizontalStart = worldToScreen({ x: placement.x, y: center.y });
+    const horizontalEnd = worldToScreen({ x: placement.x + size.width, y: center.y });
+    ctx.save();
+    ctx.strokeStyle = selectedIs("placement", placement.id) ? "rgba(255,255,255,0.7)" : "rgba(96,165,250,0.55)";
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(verticalStart.x, verticalStart.y);
+    ctx.lineTo(verticalEnd.x, verticalEnd.y);
+    ctx.moveTo(horizontalStart.x, horizontalStart.y);
+    ctx.lineTo(horizontalEnd.x, horizontalEnd.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(191, 219, 254, 0.78)";
+    ctx.font = "11px Segoe UI";
+    ctx.fillText("X", horizontalEnd.x - 12, horizontalEnd.y - 5);
+    ctx.fillText("Y", verticalEnd.x + 5, verticalEnd.y + 14);
+    ctx.restore();
   }
 }
 
@@ -1256,6 +1291,8 @@ function renderPatternPanel(pattern) {
       <button id="panelScaleDown">Küçült</button>
       <button id="panelScaleUp">Büyüt</button>
       <button id="panelRotatePattern">90° Döndür</button>
+      <button id="panelMirrorPatternX">Dikey eksene aynala</button>
+      <button id="panelMirrorPatternY">Yatay eksene aynala</button>
       ${
         pattern.kind === "vector"
           ? `<button id="panelRevectorize">Yeniden İşle</button><button id="panelSmoothVector">Yumuşat</button><button id="panelSaveVectorSvg">SVG Kaydet</button><button id="panelRestoreVectorPaths">Konturları Geri Al</button>`
@@ -1338,6 +1375,8 @@ function bindPatternPanel(pattern) {
   document.getElementById("panelScaleDown").addEventListener("click", () => resizeSelected(0.98));
   document.getElementById("panelScaleUp").addEventListener("click", () => resizeSelected(1.02));
   document.getElementById("panelRotatePattern").addEventListener("click", () => rotateSelected(90));
+  document.getElementById("panelMirrorPatternX").addEventListener("click", () => mirrorSelectedPattern("x"));
+  document.getElementById("panelMirrorPatternY").addEventListener("click", () => mirrorSelectedPattern("y"));
   document.getElementById("panelRevectorize")?.addEventListener("click", revectorizeSelected);
   document.getElementById("panelSmoothVector")?.addEventListener("click", () => smoothSelectedVector(pattern));
   document.getElementById("panelSaveVectorSvg")?.addEventListener("click", saveSelectedVectorSvg);
@@ -1505,6 +1544,8 @@ async function vectorizePhoto(options = {}) {
         lineStep: replacePattern.lineStep,
         threshold: replacePattern.threshold,
         clipMargin: replacePattern.clipMargin,
+        mirrorX: Boolean(replacePattern.mirrorX),
+        mirrorY: Boolean(replacePattern.mirrorY),
         vectorEngraveMode: replacePattern.vectorEngraveMode,
         vectorPreset: replacePattern.vectorPreset,
       };
@@ -1592,6 +1633,8 @@ function createPatternForPlacement(id, imageData, placement) {
     lineStep: Math.max(0.05, mm("lineStep", 0.35)),
     threshold: clamp(Math.round(mm("threshold", 140)), 0, 255),
     clipMargin: 0,
+    mirrorX: false,
+    mirrorY: false,
     vectorEngraveMode: "contour",
   };
 }
@@ -1807,6 +1850,34 @@ function fitSelectedPattern() {
   pattern.height = height;
   pattern.parentId = placement.id;
   centerSelectedPattern();
+}
+
+function mirrorSelectedPattern(axis) {
+  const pattern = selectedPattern();
+  if (!pattern) return;
+  const placement = placementById(pattern.parentId);
+  if (!placement) {
+    setStatus("Aynalama icin deseni once bir DXF parcasina baglayin.");
+    return;
+  }
+  const center = placementCenter(placement);
+  const patternCenterX = pattern.x + pattern.width / 2;
+  const patternCenterY = pattern.y + pattern.height / 2;
+  if (axis === "x") {
+    const mirroredCenterX = center.x * 2 - patternCenterX;
+    pattern.x = mirroredCenterX - pattern.width / 2;
+    pattern.mirrorX = !pattern.mirrorX;
+    pattern.rotation = (360 - (Number(pattern.rotation) || 0)) % 360;
+    setStatus("Desen parcanin dikey merkez eksenine gore aynalandi.");
+  } else {
+    const mirroredCenterY = center.y * 2 - patternCenterY;
+    pattern.y = mirroredCenterY - pattern.height / 2;
+    pattern.mirrorY = !pattern.mirrorY;
+    pattern.rotation = (360 - (Number(pattern.rotation) || 0)) % 360;
+    setStatus("Desen parcanin yatay merkez eksenine gore aynalandi.");
+  }
+  draw();
+  updateSelectionPanel();
 }
 
 function selectedPattern() {

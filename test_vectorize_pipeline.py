@@ -587,6 +587,29 @@ def test_svg_gcode_is_clipped_to_part_margin():
     assert_true(all(1.7 <= x <= 18.3 for x, _y in points), f"svg gcode x points should stay inside margin: {points}")
 
 
+def test_pattern_point_supports_mirroring():
+    base = {
+        "path": Path("dummy.png"),
+        "x": 0,
+        "y": 0,
+        "width": 10,
+        "height": 5,
+        "rotation": 0,
+        "power": 100,
+        "feed": 1000,
+        "line_step": 1,
+        "threshold": 128,
+    }
+
+    normal = core.RasterPattern(**base)
+    mirror_x = core.RasterPattern(**base, mirror_x=True)
+    mirror_y = core.RasterPattern(**base, mirror_y=True)
+
+    assert_true(core.pattern_point(normal, 0, 0) == (0, 0), "normal local origin should map to lower-left")
+    assert_true(core.pattern_point(mirror_x, 0, 0) == (10, 0), "mirror_x should flip local x across pattern center")
+    assert_true(core.pattern_point(mirror_y, 0, 0) == (0, 5), "mirror_y should flip local y across pattern center")
+
+
 def main():
     tests = [
         test_filter_keeps_auto_removed_paths,
@@ -614,6 +637,7 @@ def main():
         test_clip_segment_respects_part_margin,
         test_vector_gcode_is_clipped_to_part_margin,
         test_svg_gcode_is_clipped_to_part_margin,
+        test_pattern_point_supports_mirroring,
     ]
     for test in tests:
         test()
