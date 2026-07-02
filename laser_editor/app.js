@@ -595,6 +595,24 @@ function drawWithPatternClip(pattern, drawContent) {
   return region;
 }
 
+function drawPatternBitmap(pattern, alpha) {
+  const image = state.images.get(pattern.id);
+  const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
+  const width = pattern.width * state.view.scale;
+  const height = pattern.height * state.view.scale;
+  ctx.save();
+  ctx.translate(center.x, center.y);
+  ctx.rotate((-pattern.rotation * Math.PI) / 180);
+  ctx.globalAlpha = alpha;
+  if (image && image.complete) {
+    ctx.drawImage(image, -width / 2, -height / 2, width, height);
+  } else {
+    ctx.fillStyle = "rgba(143, 75, 214, 0.18)";
+    ctx.fillRect(-width / 2, -height / 2, width, height);
+  }
+  ctx.restore();
+}
+
 function worldToScreen(point) {
   const { scale, offsetX, offsetY } = state.view;
   const b = bed();
@@ -771,22 +789,11 @@ function drawPatterns() {
     if (pattern.kind === "vector") {
       drawVectorPattern(pattern);
     } else {
+      if (patternClipRegion(pattern)) {
+        drawPatternBitmap(pattern, pattern.kind === "svg" ? 0.16 : 0.12);
+      }
       drawWithPatternClip(pattern, () => {
-        const image = state.images.get(pattern.id);
-        const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
-        const width = pattern.width * state.view.scale;
-        const height = pattern.height * state.view.scale;
-        ctx.save();
-        ctx.translate(center.x, center.y);
-        ctx.rotate((-pattern.rotation * Math.PI) / 180);
-        ctx.globalAlpha = pattern.kind === "svg" ? 1 : 0.7;
-        if (image && image.complete) {
-          ctx.drawImage(image, -width / 2, -height / 2, width, height);
-        } else {
-          ctx.fillStyle = "rgba(143, 75, 214, 0.18)";
-          ctx.fillRect(-width / 2, -height / 2, width, height);
-        }
-        ctx.restore();
+        drawPatternBitmap(pattern, pattern.kind === "svg" ? 1 : 0.7);
       });
     }
 
@@ -809,50 +816,84 @@ function drawPatterns() {
   }
 }
 
+function drawVectorFillShape(pattern, alpha = 1) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  if (vectorPatternFillInvert(pattern)) {
+    const corners = patternCorners(pattern).map(worldToScreen);
+    corners.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.closePath();
+  }
+  for (const vectorPath of pattern.vectorPaths || []) {
+    if (vectorPath.removed || !vectorPath.closed) continue;
+    const points = vectorWorldPath(pattern, vectorPath).map(worldToScreen);
+    if (points.length < 3) continue;
+    points.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.closePath();
+  }
+  ctx.fillStyle = patternOperation(pattern) === "cut" ? "rgba(245, 158, 11, 0.38)" : "rgba(226, 232, 240, 0.76)";
+  ctx.fill("evenodd");
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function strokeWorldPolyline(points, strokeStyle, lineWidth, alpha = 1) {
+  if (points.length < 2) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  points.map(worldToScreen).forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  ctx.setLineDash([]);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawVectorGhostStrokes(pattern, filledPreview) {
+  for (const vectorPath of pattern.vectorPaths || []) {
+    if (vectorPath.removed) continue;
+    const selectedPath =
+      state.selected?.type === "vectorPath" &&
+      state.selected.id === pattern.id &&
+      state.selected.pathId === vectorPath.id;
+    if (filledPreview && vectorPath.closed && !selectedPath) continue;
+    const worldPoints = vectorWorldPath(pattern, vectorPath);
+    if (vectorPath.closed && worldPoints.length > 1) worldPoints.push(worldPoints[0]);
+    const strokeStyle = selectedPath ? "#ffffff" : patternOperation(pattern) === "cut" ? "#f59e0b" : "#22c55e";
+    strokeWorldPolyline(worldPoints, strokeStyle, selectedPath ? 1.6 : 1.0, selectedPath ? 0.24 : 0.16);
+  }
+}
+
 function drawVectorPattern(pattern) {
   const clipRegion = patternClipRegion(pattern);
   const filledPreview = vectorPatternFilledPreview(pattern);
   const preview = state.images.get(pattern.id);
   if (preview && preview.complete) {
+    if (clipRegion) drawPatternBitmap(pattern, filledPreview ? 0.012 : 0.06);
     drawWithPatternClip(pattern, () => {
-      const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
-      const width = pattern.width * state.view.scale;
-      const height = pattern.height * state.view.scale;
-      ctx.save();
-      ctx.translate(center.x, center.y);
-      ctx.rotate((-pattern.rotation * Math.PI) / 180);
-      ctx.globalAlpha = filledPreview ? 0.04 : 0.18;
-      ctx.drawImage(preview, -width / 2, -height / 2, width, height);
-      ctx.restore();
+      drawPatternBitmap(pattern, filledPreview ? 0.04 : 0.18);
     });
   }
 
   if (filledPreview) {
+    if (clipRegion) drawVectorFillShape(pattern, 0.16);
     drawWithPatternClip(pattern, () => {
-      ctx.beginPath();
-      if (vectorPatternFillInvert(pattern)) {
-        const corners = patternCorners(pattern).map(worldToScreen);
-        corners.forEach((point, index) => {
-          if (index === 0) ctx.moveTo(point.x, point.y);
-          else ctx.lineTo(point.x, point.y);
-        });
-        ctx.closePath();
-      }
-      for (const vectorPath of pattern.vectorPaths || []) {
-        if (vectorPath.removed || !vectorPath.closed) continue;
-        const points = vectorWorldPath(pattern, vectorPath).map(worldToScreen);
-        if (points.length < 3) continue;
-        points.forEach((point, index) => {
-          if (index === 0) ctx.moveTo(point.x, point.y);
-          else ctx.lineTo(point.x, point.y);
-        });
-        ctx.closePath();
-      }
-      ctx.fillStyle = patternOperation(pattern) === "cut" ? "rgba(245, 158, 11, 0.38)" : "rgba(226, 232, 240, 0.76)";
-      ctx.fill("evenodd");
-      ctx.setLineDash([]);
+      drawVectorFillShape(pattern, 1);
     });
   }
+
+  if (clipRegion) drawVectorGhostStrokes(pattern, filledPreview);
 
   for (const vectorPath of pattern.vectorPaths || []) {
     if (vectorPath.removed) continue;
