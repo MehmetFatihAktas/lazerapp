@@ -1604,6 +1604,30 @@ function rectFitsBed(rect, b, margin) {
   );
 }
 
+function partFitsBed(part, b, margin, allowRotate = refs.allowRotate.checked) {
+  const usableWidth = Math.max(0, b.width - margin * 2);
+  const usableHeight = Math.max(0, b.height - margin * 2);
+  return (
+    (part.width <= usableWidth + 0.001 && part.height <= usableHeight + 0.001) ||
+    (allowRotate && part.height <= usableWidth + 0.001 && part.width <= usableHeight + 0.001)
+  );
+}
+
+function tableSizeWarning() {
+  if (!state.parts.length) return "";
+  const b = bed();
+  const margin = Math.max(0, mm("margin", 1));
+  const allowRotate = refs.allowRotate.checked;
+  const oversized = state.parts.filter((part) => !partFitsBed(part, b, margin, allowRotate));
+  if (!oversized.length) return "";
+  const tenTimesBed = { width: b.width * 10, height: b.height * 10 };
+  const likelyCmInput = oversized.every((part) => partFitsBed(part, tenTimesBed, margin * 10, allowRotate));
+  if (likelyCmInput) {
+    return "Tabla olcusu mm girilir: 40 cm icin 400 yaz. Parcalar fiziksel olcekte kucultulmez.";
+  }
+  return "Bazi parcalar bu tabla olcusune fiziksel olarak sigmiyor; olcuyu buyut veya parcayi kucultmeden kesilemez.";
+}
+
 function rectOverlaps(a, b, gap) {
   return !(
     a.maxX <= b.minX - gap + 0.001 ||
@@ -1909,7 +1933,9 @@ function optimizedAutoLayout() {
   updateSelectionPanel();
   const total = result.packed.length;
   const fitted = total - result.overflowCount;
-  if (result.overflowCount) setStatus(`${fitted}/${total} parca tablaya sigdi; ${result.overflowCount} parca disarida.`);
+  const warning = tableSizeWarning();
+  if (warning) setStatus(warning);
+  else if (result.overflowCount) setStatus(`${fitted}/${total} parca tablaya sigdi; ${result.overflowCount} parca disarida.`);
   else setStatus(`Yerlestirim hazir: ${total} parca verimli dizildi.`);
   select(null, null);
 }
@@ -1944,7 +1970,8 @@ async function addDxfs() {
       if (created[0]) select("placement", created[0].id);
       else draw();
       const fitted = created.length - (created.overflowCount || 0);
-      setStatus(outside ? `${fitted}/${created.length} yeni parca tablaya sigdi.` : `${created.length} yeni parca eklendi.`);
+      const warning = tableSizeWarning();
+      setStatus(warning || (outside ? `${fitted}/${created.length} yeni parca tablaya sigdi.` : `${created.length} yeni parca eklendi.`));
     } else {
       autoLayout();
       setStatus(`${data.parts.length} DXF eklendi.`);
@@ -3009,8 +3036,14 @@ function scheduleTablePreviewUpdate() {
   saveUiSettings();
   window.clearTimeout(layoutSettingsTimer);
   layoutSettingsTimer = window.setTimeout(() => {
-    draw();
-  }, 120);
+    if (!layoutSettingsReady()) {
+      draw();
+      setStatus("Tabla olculeri ve adet pozitif olmali.");
+      return;
+    }
+    if (state.parts.length) autoLayout();
+    else draw();
+  }, 350);
 }
 
 function layoutSettingsReady() {
