@@ -310,6 +310,39 @@ function placementSize(placement) {
   return { width: part.width, height: part.height };
 }
 
+function placementBounds(placement) {
+  const size = placementSize(placement);
+  return {
+    minX: placement.x,
+    minY: placement.y,
+    maxX: placement.x + size.width,
+    maxY: placement.y + size.height,
+    width: size.width,
+    height: size.height,
+  };
+}
+
+function clonePlain(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function clonePartPayload(part) {
+  return clonePlain(part);
+}
+
+function pruneUnusedParts() {
+  const usedPartIds = new Set(state.placements.map((placement) => placement.partId));
+  state.parts = state.parts.filter((part) => usedPartIds.has(part.id));
+}
+
+function deletePlacementById(id) {
+  const childPatterns = state.patterns.filter((item) => item.parentId === id);
+  for (const pattern of childPatterns) state.images.delete(pattern.id);
+  state.placements = state.placements.filter((item) => item.id !== id);
+  state.patterns = state.patterns.filter((item) => item.parentId !== id);
+  pruneUnusedParts();
+}
+
 function transformPartPoint(point, placement) {
   const part = partById(placement.partId);
   if (!part) return { x: placement.x, y: placement.y };
@@ -1240,8 +1273,7 @@ function bindPlacementPanel(placement) {
     rotateSelected(90);
   });
   document.getElementById("panelDeletePlacement").addEventListener("click", () => {
-    state.placements = state.placements.filter((item) => item.id !== placement.id);
-    state.patterns = state.patterns.filter((item) => item.parentId !== placement.id);
+    deletePlacementById(placement.id);
     select(null, null);
   });
 }
@@ -1530,6 +1562,91 @@ function autoLayout() {
   select(null, null);
 }
 
+function rectFitsBed(rect, b, margin) {
+  return (
+    rect.minX >= margin - 0.001 &&
+    rect.minY >= margin - 0.001 &&
+    rect.maxX <= b.width - margin + 0.001 &&
+    rect.maxY <= b.height - margin + 0.001
+  );
+}
+
+function rectOverlaps(a, b, gap) {
+  return !(
+    a.maxX <= b.minX - gap + 0.001 ||
+    a.minX >= b.maxX + gap - 0.001 ||
+    a.maxY <= b.minY - gap + 0.001 ||
+    a.minY >= b.maxY + gap - 0.001
+  );
+}
+
+function findOpenSlot(width, height, occupied, b, margin, gap) {
+  const xCandidates = new Set([margin]);
+  const yCandidates = new Set([margin]);
+  for (const rect of occupied) {
+    xCandidates.add(rect.maxX + gap);
+    yCandidates.add(rect.maxY + gap);
+  }
+  const xs = [...xCandidates].sort((a, bValue) => a - bValue);
+  const ys = [...yCandidates].sort((a, bValue) => a - bValue);
+  for (const y of ys) {
+    for (const x of xs) {
+      const rect = { minX: x, minY: y, maxX: x + width, maxY: y + height };
+      if (!rectFitsBed(rect, b, margin)) continue;
+      if (occupied.every((item) => !rectOverlaps(rect, item, gap))) return { x, y };
+    }
+  }
+  const fallbackY = occupied.length ? Math.max(...occupied.map((rect) => rect.maxY)) + gap : margin;
+  return { x: margin, y: fallbackY };
+}
+
+function appendPartsToLayout(parts) {
+  const b = bed();
+  const quantity = Math.max(1, Math.round(mm("quantity", 1)));
+  const gap = Math.max(0, mm("gap", 3));
+  const margin = Math.max(0, mm("margin", 1));
+  const allowRotate = refs.allowRotate.checked;
+  const occupied = state.placements.map(placementBounds);
+  const created = [];
+  const items = [];
+  for (let set = 0; set < quantity; set += 1) {
+    for (const part of parts) items.push(part);
+  }
+  items.sort((a, bPart) => bPart.width * bPart.height - a.width * a.height);
+
+  for (const part of items) {
+    const options = [{ rotation: 0, width: part.width, height: part.height }];
+    if (allowRotate && Math.abs(part.width - part.height) > 0.001) {
+      options.push({ rotation: 90, width: part.height, height: part.width });
+    }
+    let chosen = null;
+    for (const option of options) {
+      const slot = findOpenSlot(option.width, option.height, occupied, b, margin, gap);
+      const rect = { minX: slot.x, minY: slot.y, maxX: slot.x + option.width, maxY: slot.y + option.height };
+      const outside = !rectFitsBed(rect, b, margin);
+      if (
+        !chosen ||
+        (chosen.outside && !outside) ||
+        (chosen.outside === outside && (rect.minY < chosen.rect.minY || (rect.minY === chosen.rect.minY && rect.minX < chosen.rect.minX)))
+      ) {
+        chosen = { ...option, slot, rect, outside };
+      }
+      if (!outside) break;
+    }
+    const placement = {
+      id: uid("pl"),
+      partId: part.id,
+      x: chosen.slot.x,
+      y: chosen.slot.y,
+      rotation: chosen.rotation,
+    };
+    state.placements.push(placement);
+    occupied.push(chosen.rect);
+    created.push(placement);
+  }
+  return created;
+}
+
 async function addDxfs() {
   try {
     setStatus("DXF seçiliyor...");
@@ -1542,9 +1659,21 @@ async function addDxfs() {
       setStatus("DXF seçilmedi.");
       return;
     }
+    const hadPlacements = state.placements.length > 0;
+    pruneUnusedParts();
     state.parts.push(...data.parts);
-    autoLayout();
-    setStatus(`${data.parts.length} DXF eklendi.`);
+    if (hadPlacements) {
+      const created = appendPartsToLayout(data.parts);
+      const b = bed();
+      const margin = Math.max(0, mm("margin", 1));
+      const outside = created.some((placement) => !rectFitsBed(placementBounds(placement), b, margin));
+      if (created[0]) select("placement", created[0].id);
+      else draw();
+      setStatus(outside ? `${data.parts.length} DXF eklendi, bazilari tabla disina tasiyor.` : `${data.parts.length} DXF eklendi.`);
+    } else {
+      autoLayout();
+      setStatus(`${data.parts.length} DXF eklendi.`);
+    }
   } catch (error) {
     setStatus(error.message);
   }
@@ -1787,6 +1916,7 @@ function copySelectedPatterns() {
     return;
   }
   state.clipboard = patterns.map((pattern) => ({
+    type: "pattern",
     pattern: clonePatternPayload(pattern),
     image: state.images.get(pattern.id) || null,
   }));
@@ -1794,14 +1924,47 @@ function copySelectedPatterns() {
   setStatus(`${patterns.length} desen kopyalandi.`);
 }
 
+function copySelectedPlacement() {
+  const placement = state.selected?.type === "placement" ? placementById(state.selected.id) : null;
+  const part = placement ? partById(placement.partId) : null;
+  if (!placement || !part) {
+    setStatus("Kopyalanacak DXF parcasi yok.");
+    return false;
+  }
+  const childPatterns = state.patterns.filter((pattern) => pattern.parentId === placement.id);
+  state.clipboard = [
+    {
+      type: "placement",
+      placement: { ...placement },
+      part: clonePartPayload(part),
+      patterns: childPatterns.map((pattern) => ({
+        pattern: clonePatternPayload(pattern),
+        image: state.images.get(pattern.id) || null,
+      })),
+    },
+  ];
+  state.clipboardPasteCount = 0;
+  setStatus("1 DXF parcasi kopyalandi.");
+  return true;
+}
+
+function copySelection() {
+  if (state.selected?.type === "placement") {
+    copySelectedPlacement();
+    return;
+  }
+  copySelectedPatterns();
+}
+
 function pastePatternsFromClipboard() {
-  if (!state.clipboard.length) {
+  const items = state.clipboard.filter((item) => item.type === "pattern" || item.pattern);
+  if (!items.length) {
     setStatus("Panoda desen yok.");
     return;
   }
   state.clipboardPasteCount += 1;
   const offset = state.clipboardPasteCount * 5;
-  const copies = state.clipboard.map((item) => {
+  const copies = items.map((item) => {
     const copy = clonePatternCopy(item.pattern, "kopya", item.image);
     copy.x += offset;
     copy.y += offset;
@@ -1810,6 +1973,53 @@ function pastePatternsFromClipboard() {
   state.patterns.push(...copies);
   selectPatternItems(copies.map((copy) => copy.id), copies[0]?.id);
   setStatus(`${copies.length} desen yapistirildi.`);
+}
+
+function pastePlacementsFromClipboard() {
+  const items = state.clipboard.filter((item) => item.type === "placement");
+  if (!items.length) {
+    setStatus("Panoda DXF parcasi yok.");
+    return;
+  }
+  state.clipboardPasteCount += 1;
+  const offset = state.clipboardPasteCount * 5;
+  const created = [];
+  for (const item of items) {
+    if (!partById(item.placement.partId)) {
+      state.parts.push(clonePartPayload(item.part));
+    }
+    const placement = {
+      ...item.placement,
+      id: uid("pl"),
+      x: item.placement.x + offset,
+      y: item.placement.y + offset,
+    };
+    state.placements.push(placement);
+    created.push(placement);
+    const patternCopies = (item.patterns || []).map((payload) => {
+      const copy = clonePatternCopy(payload.pattern, "kopya", payload.image);
+      copy.parentId = placement.id;
+      copy.x += offset;
+      copy.y += offset;
+      return copy;
+    });
+    state.patterns.push(...patternCopies);
+  }
+  if (created[0]) select("placement", created[0].id);
+  else draw();
+  setStatus(`${created.length} DXF parcasi yapistirildi.`);
+}
+
+function pasteClipboard() {
+  if (!state.clipboard.length) {
+    setStatus("Pano bos.");
+    return;
+  }
+  if (state.clipboard.some((item) => item.type === "placement")) {
+    pastePlacementsFromClipboard();
+    return;
+  }
+  pastePatternsFromClipboard();
 }
 
 function selectAllPatterns() {
@@ -2189,8 +2399,7 @@ function deleteSelected() {
     }
   } else if (state.selected.type === "placement") {
     const id = state.selected.id;
-    state.placements = state.placements.filter((item) => item.id !== id);
-    state.patterns = state.patterns.filter((item) => item.parentId !== id);
+    deletePlacementById(id);
   }
   select(null, null);
 }
@@ -2476,12 +2685,12 @@ function onKeyDown(event) {
   if (isTypingTarget(event.target)) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key === "c") {
-    copySelectedPatterns();
+    copySelection();
     event.preventDefault();
     return;
   }
   if ((event.ctrlKey || event.metaKey) && key === "v") {
-    pastePatternsFromClipboard();
+    pasteClipboard();
     event.preventDefault();
     return;
   }
