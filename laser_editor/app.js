@@ -771,6 +771,19 @@ function zoomView(factor, screenPoint = null) {
   draw();
 }
 
+function niceGridStep(targetMm) {
+  const base = Math.pow(10, Math.floor(Math.log10(Math.max(1, targetMm))));
+  for (const multiplier of [1, 2, 5, 10]) {
+    const step = base * multiplier;
+    if (step >= targetMm) return step;
+  }
+  return base * 10;
+}
+
+function crisp(value) {
+  return Math.round(value) + 0.5;
+}
+
 function drawGrid() {
   const b = bed();
   const bottomLeft = worldToScreen({ x: 0, y: 0 });
@@ -778,25 +791,31 @@ function drawGrid() {
   const bottomRight = worldToScreen({ x: b.width, y: 0 });
   ctx.fillStyle = "#101820";
   ctx.fillRect(topLeft.x, topLeft.y, b.width * state.view.scale, b.height * state.view.scale);
-  ctx.strokeStyle = "#536273";
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(topLeft.x, topLeft.y, b.width * state.view.scale, b.height * state.view.scale);
-  ctx.strokeStyle = "#243240";
+
+  const minorStep = niceGridStep(22 / Math.max(0.001, state.view.scale));
+  const majorStep = minorStep * 5;
   ctx.lineWidth = 1;
-  for (let x = 0; x <= b.width; x += 50) {
-    const sx = worldToScreen({ x, y: 0 }).x;
+  for (let x = 0; x <= b.width + 0.001; x += minorStep) {
+    const sx = crisp(worldToScreen({ x, y: 0 }).x);
+    const isMajor = Math.abs(x / majorStep - Math.round(x / majorStep)) < 0.001;
+    ctx.strokeStyle = isMajor ? "rgba(105, 126, 150, 0.58)" : "rgba(75, 93, 112, 0.38)";
     ctx.beginPath();
     ctx.moveTo(sx, topLeft.y);
     ctx.lineTo(sx, bottomLeft.y);
     ctx.stroke();
   }
-  for (let y = 0; y <= b.height; y += 50) {
-    const sy = worldToScreen({ x: 0, y }).y;
+  for (let y = 0; y <= b.height + 0.001; y += minorStep) {
+    const sy = crisp(worldToScreen({ x: 0, y }).y);
+    const isMajor = Math.abs(y / majorStep - Math.round(y / majorStep)) < 0.001;
+    ctx.strokeStyle = isMajor ? "rgba(105, 126, 150, 0.58)" : "rgba(75, 93, 112, 0.38)";
     ctx.beginPath();
     ctx.moveTo(topLeft.x, sy);
     ctx.lineTo(bottomRight.x, sy);
     ctx.stroke();
   }
+  ctx.strokeStyle = "#6f8194";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(topLeft.x, topLeft.y, b.width * state.view.scale, b.height * state.view.scale);
   ctx.fillStyle = "#d7dee8";
   ctx.font = "12px Segoe UI";
   ctx.fillText("0,0", topLeft.x + 8, bottomLeft.y - 8);
