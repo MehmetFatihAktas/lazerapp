@@ -1293,6 +1293,7 @@ function renderPatternPanel(pattern) {
       <button id="panelFitPattern">Sığdır</button>
       <button id="panelScaleDown">Küçült</button>
       <button id="panelScaleUp">Büyüt</button>
+      <button id="panelFramePattern">Kenar çerçeve kapla</button>
       <button id="panelRotatePattern">90° Döndür</button>
       <button id="panelMirrorPatternX">Kopyayı dikey aynala</button>
       <button id="panelMirrorPatternY">Kopyayı yatay aynala</button>
@@ -1377,6 +1378,7 @@ function bindPatternPanel(pattern) {
   document.getElementById("panelFitPattern").addEventListener("click", () => fitSelectedPattern());
   document.getElementById("panelScaleDown").addEventListener("click", () => resizeSelected(0.98));
   document.getElementById("panelScaleUp").addEventListener("click", () => resizeSelected(1.02));
+  document.getElementById("panelFramePattern").addEventListener("click", createFrameFromSelectedPattern);
   document.getElementById("panelRotatePattern").addEventListener("click", () => rotateSelected(90));
   document.getElementById("panelMirrorPatternX").addEventListener("click", () => mirrorSelectedPattern("x"));
   document.getElementById("panelMirrorPatternY").addEventListener("click", () => mirrorSelectedPattern("y"));
@@ -1680,12 +1682,12 @@ function cloneVectorPaths(paths) {
   }));
 }
 
-function clonePatternForMirror(pattern) {
+function clonePatternCopy(pattern, suffix = "kopya") {
   const id = uid("pat");
   const copy = {
     ...pattern,
     id,
-    name: `${pattern.name || "Desen"} kopya`,
+    name: `${pattern.name || "Desen"} ${suffix}`,
     vectorPaths: cloneVectorPaths(pattern.vectorPaths || []),
     originalVectorPaths: cloneVectorPaths(pattern.originalVectorPaths || []),
     debugPreviews: (pattern.debugPreviews || []).map((preview) => ({ ...preview })),
@@ -1696,6 +1698,10 @@ function clonePatternForMirror(pattern) {
   const image = state.images.get(pattern.id);
   if (image) state.images.set(id, image);
   return copy;
+}
+
+function clonePatternForMirror(pattern) {
+  return clonePatternCopy(pattern, "kopya");
 }
 
 function polygonArea(points) {
@@ -1871,6 +1877,73 @@ function fitSelectedPattern() {
   pattern.height = height;
   pattern.parentId = placement.id;
   centerSelectedPattern();
+}
+
+function frameRepeatCount(sideLength, moduleWidth) {
+  if (sideLength <= 0) return 0;
+  const rawCount = Math.max(1, Math.round(sideLength / Math.max(0.5, moduleWidth)));
+  return Math.min(80, rawCount);
+}
+
+function createFrameFromSelectedPattern() {
+  const pattern = selectedPattern();
+  if (!pattern) return;
+  const placement = placementById(pattern.parentId);
+  if (!placement) {
+    setStatus("Cerceve icin deseni once bir DXF parcasina baglayin.");
+    return;
+  }
+  const size = placementSize(placement);
+  const moduleWidth = Math.max(0.5, Number(pattern.width) || 1);
+  const moduleHeight = Math.max(0.5, Number(pattern.height) || 1);
+  const desiredInset = Math.max(0, Number(pattern.clipMargin) || 0) + moduleHeight / 2;
+  const maxInset = Math.max(0, Math.min(size.width, size.height) / 2 - 0.05);
+  const inset = Math.min(desiredInset, maxInset);
+  const minX = placement.x + inset;
+  const maxX = placement.x + size.width - inset;
+  const minY = placement.y + inset;
+  const maxY = placement.y + size.height - inset;
+  const baseRotation = Number(pattern.rotation) || 0;
+  const sides = [
+    { name: "alt", length: maxX - minX, start: { x: minX, y: minY }, dir: { x: 1, y: 0 }, rotation: 0 },
+    { name: "sag", length: maxY - minY, start: { x: maxX, y: minY }, dir: { x: 0, y: 1 }, rotation: 90 },
+    { name: "ust", length: maxX - minX, start: { x: maxX, y: maxY }, dir: { x: -1, y: 0 }, rotation: 180 },
+    { name: "sol", length: maxY - minY, start: { x: minX, y: maxY }, dir: { x: 0, y: -1 }, rotation: 270 },
+  ];
+  const copies = [];
+  let capped = false;
+  for (const side of sides) {
+    const count = frameRepeatCount(side.length, moduleWidth);
+    if (!count) continue;
+    if (Math.round(side.length / Math.max(0.5, moduleWidth)) > count) capped = true;
+    const step = side.length / count;
+    for (let index = 0; index < count; index += 1) {
+      const center = {
+        x: side.start.x + side.dir.x * step * (index + 0.5),
+        y: side.start.y + side.dir.y * step * (index + 0.5),
+      };
+      const copy = clonePatternCopy(pattern, `cerceve ${side.name} ${index + 1}`);
+      copy.parentId = placement.id;
+      copy.frameSourceId = pattern.id;
+      copy.frameSide = side.name;
+      copy.frameIndex = index;
+      copy.width = step;
+      copy.height = moduleHeight;
+      copy.x = center.x - copy.width / 2;
+      copy.y = center.y - copy.height / 2;
+      copy.rotation = (baseRotation + side.rotation + 360) % 360;
+      copies.push(copy);
+    }
+  }
+  if (!copies.length) {
+    setStatus("Cerceve icin yeterli kenar alani yok.");
+    return;
+  }
+  state.patterns.push(...copies);
+  select("pattern", pattern.id);
+  draw();
+  updateSelectionPanel();
+  setStatus(`${copies.length} motifle kenar cercevesi olusturuldu.${capped ? " Cok kucuk motiflerde tekrar sayisi sinirlandi." : ""}`);
 }
 
 function mirrorSelectedPattern(axis) {
