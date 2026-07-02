@@ -446,6 +446,155 @@ function distanceToPolyline(point, points, closed = false) {
   return best;
 }
 
+function closedPolygonsForPlacement(placement) {
+  const part = partById(placement?.partId);
+  if (!part) return [];
+  return (part.paths || [])
+    .filter((path) => path && path.length >= 3 && Math.abs(pathArea(path)) >= 0.5)
+    .map((path) => {
+      const polygon = path.map((point) => transformPartPoint(point, placement));
+      if (polygon.length > 3 && Math.hypot(polygon[0].x - polygon[polygon.length - 1].x, polygon[0].y - polygon[polygon.length - 1].y) <= 0.05) {
+        polygon.pop();
+      }
+      return polygon;
+    })
+    .filter((polygon) => polygon.length >= 3);
+}
+
+function patternClipRegion(pattern) {
+  const placements = pattern.parentId
+    ? [placementById(pattern.parentId)].filter(Boolean)
+    : state.placements;
+  const polygons = placements.flatMap(closedPolygonsForPlacement);
+  if (!polygons.length) return null;
+  return { polygons, margin: Math.max(0, Number(pattern.clipMargin) || 0) };
+}
+
+function pointToPolygonsDistance(point, polygons) {
+  let best = Infinity;
+  for (const polygon of polygons || []) {
+    for (let index = 0; index < polygon.length; index += 1) {
+      best = Math.min(best, distanceToSegment(point, polygon[index], polygon[(index + 1) % polygon.length]));
+    }
+  }
+  return best;
+}
+
+function clipRegionContains(point, region) {
+  if (!region?.polygons?.length) return true;
+  let inside = false;
+  for (const polygon of region.polygons) {
+    if (pointInPolygon(point, polygon)) inside = !inside;
+  }
+  if (!inside) return false;
+  return region.margin <= 0 || pointToPolygonsDistance(point, region.polygons) >= region.margin;
+}
+
+function clipSegmentToRegion(start, end, region, step = 0.25) {
+  if (!region?.polygons?.length) return [[start, end]];
+  const length = Math.hypot(end.x - start.x, end.y - start.y);
+  if (length <= 1e-9) return [];
+  const divisions = Math.max(1, Math.ceil(length / Math.max(0.05, step)));
+  const result = [];
+  let currentStart = null;
+  let currentEnd = null;
+  for (let index = 0; index < divisions; index += 1) {
+    const t0 = index / divisions;
+    const t1 = (index + 1) / divisions;
+    const p0 = { x: start.x + (end.x - start.x) * t0, y: start.y + (end.y - start.y) * t0 };
+    const p1 = { x: start.x + (end.x - start.x) * t1, y: start.y + (end.y - start.y) * t1 };
+    const midpoint = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+    if (clipRegionContains(midpoint, region)) {
+      if (!currentStart) currentStart = p0;
+      currentEnd = p1;
+    } else if (currentStart && currentEnd) {
+      if (Math.hypot(currentEnd.x - currentStart.x, currentEnd.y - currentStart.y) >= 0.03) result.push([currentStart, currentEnd]);
+      currentStart = null;
+      currentEnd = null;
+    }
+  }
+  if (currentStart && currentEnd && Math.hypot(currentEnd.x - currentStart.x, currentEnd.y - currentStart.y) >= 0.03) {
+    result.push([currentStart, currentEnd]);
+  }
+  return result;
+}
+
+function clipPolylineToRegion(points, region, step = 0.25) {
+  if (!region?.polygons?.length) return points.length >= 2 ? [points] : [];
+  const clipped = [];
+  let current = [];
+  for (let index = 1; index < points.length; index += 1) {
+    for (const [start, end] of clipSegmentToRegion(points[index - 1], points[index], region, step)) {
+      if (current.length && Math.hypot(current[current.length - 1].x - start.x, current[current.length - 1].y - start.y) <= Math.max(0.05, step * 1.25)) {
+        current.push(end);
+      } else {
+        if (current.length >= 2) clipped.push(current);
+        current = [start, end];
+      }
+    }
+  }
+  if (current.length >= 2) clipped.push(current);
+  return clipped;
+}
+
+function drawCanvasClipPath(region) {
+  ctx.beginPath();
+  for (const polygon of region?.polygons || []) {
+    polygon.forEach((world, index) => {
+      const screen = worldToScreen(world);
+      if (index === 0) ctx.moveTo(screen.x, screen.y);
+      else ctx.lineTo(screen.x, screen.y);
+    });
+    ctx.closePath();
+  }
+}
+
+function applyCanvasClipRegion(region) {
+  if (!region?.polygons?.length) return false;
+  drawCanvasClipPath(region);
+  try {
+    ctx.clip("evenodd");
+  } catch (_error) {
+    ctx.clip();
+  }
+  return true;
+}
+
+function eraseClipMarginBand(region) {
+  if (!region?.polygons?.length || region.margin <= 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.strokeStyle = "#000";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(1, region.margin * 2 * state.view.scale);
+  for (const polygon of region.polygons) {
+    ctx.beginPath();
+    polygon.forEach((world, index) => {
+      const screen = worldToScreen(world);
+      if (index === 0) ctx.moveTo(screen.x, screen.y);
+      else ctx.lineTo(screen.x, screen.y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawWithPatternClip(pattern, drawContent) {
+  const region = patternClipRegion(pattern);
+  if (!region) {
+    drawContent();
+    return null;
+  }
+  ctx.save();
+  applyCanvasClipRegion(region);
+  drawContent();
+  eraseClipMarginBand(region);
+  ctx.restore();
+  return region;
+}
+
 function worldToScreen(point) {
   const { scale, offsetX, offsetY } = state.view;
   const b = bed();
@@ -622,21 +771,23 @@ function drawPatterns() {
     if (pattern.kind === "vector") {
       drawVectorPattern(pattern);
     } else {
-      const image = state.images.get(pattern.id);
-      const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
-      const width = pattern.width * state.view.scale;
-      const height = pattern.height * state.view.scale;
-      ctx.save();
-      ctx.translate(center.x, center.y);
-      ctx.rotate((-pattern.rotation * Math.PI) / 180);
-      ctx.globalAlpha = pattern.kind === "svg" ? 1 : 0.7;
-      if (image && image.complete) {
-        ctx.drawImage(image, -width / 2, -height / 2, width, height);
-      } else {
-        ctx.fillStyle = "rgba(143, 75, 214, 0.18)";
-        ctx.fillRect(-width / 2, -height / 2, width, height);
-      }
-      ctx.restore();
+      drawWithPatternClip(pattern, () => {
+        const image = state.images.get(pattern.id);
+        const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
+        const width = pattern.width * state.view.scale;
+        const height = pattern.height * state.view.scale;
+        ctx.save();
+        ctx.translate(center.x, center.y);
+        ctx.rotate((-pattern.rotation * Math.PI) / 180);
+        ctx.globalAlpha = pattern.kind === "svg" ? 1 : 0.7;
+        if (image && image.complete) {
+          ctx.drawImage(image, -width / 2, -height / 2, width, height);
+        } else {
+          ctx.fillStyle = "rgba(143, 75, 214, 0.18)";
+          ctx.fillRect(-width / 2, -height / 2, width, height);
+        }
+        ctx.restore();
+      });
     }
 
     if (pattern.kind !== "vector" && pattern.kind !== "svg") {
@@ -655,71 +806,84 @@ function drawPatterns() {
       ctx.setLineDash([]);
     }
 
-    if (selectedIs("pattern", pattern.id)) {
-      drawPatternHandles(pattern);
-    }
   }
 }
 
 function drawVectorPattern(pattern) {
+  const clipRegion = patternClipRegion(pattern);
   const filledPreview = vectorPatternFilledPreview(pattern);
   const preview = state.images.get(pattern.id);
   if (preview && preview.complete) {
-    const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
-    const width = pattern.width * state.view.scale;
-    const height = pattern.height * state.view.scale;
-    ctx.save();
-    ctx.translate(center.x, center.y);
-    ctx.rotate((-pattern.rotation * Math.PI) / 180);
-    ctx.globalAlpha = filledPreview ? 0.04 : 0.18;
-    ctx.drawImage(preview, -width / 2, -height / 2, width, height);
-    ctx.restore();
+    drawWithPatternClip(pattern, () => {
+      const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
+      const width = pattern.width * state.view.scale;
+      const height = pattern.height * state.view.scale;
+      ctx.save();
+      ctx.translate(center.x, center.y);
+      ctx.rotate((-pattern.rotation * Math.PI) / 180);
+      ctx.globalAlpha = filledPreview ? 0.04 : 0.18;
+      ctx.drawImage(preview, -width / 2, -height / 2, width, height);
+      ctx.restore();
+    });
   }
 
   if (filledPreview) {
-    ctx.beginPath();
-    if (vectorPatternFillInvert(pattern)) {
-      const corners = patternCorners(pattern).map(worldToScreen);
-      corners.forEach((point, index) => {
-        if (index === 0) ctx.moveTo(point.x, point.y);
-        else ctx.lineTo(point.x, point.y);
-      });
-      ctx.closePath();
-    }
-    for (const vectorPath of pattern.vectorPaths || []) {
-      if (vectorPath.removed || !vectorPath.closed) continue;
-      const points = vectorWorldPath(pattern, vectorPath).map(worldToScreen);
-      if (points.length < 3) continue;
-      points.forEach((point, index) => {
-        if (index === 0) ctx.moveTo(point.x, point.y);
-        else ctx.lineTo(point.x, point.y);
-      });
-      ctx.closePath();
-    }
-    ctx.fillStyle = patternOperation(pattern) === "cut" ? "rgba(245, 158, 11, 0.38)" : "rgba(226, 232, 240, 0.76)";
-    ctx.fill("evenodd");
-    ctx.setLineDash([]);
+    drawWithPatternClip(pattern, () => {
+      ctx.beginPath();
+      if (vectorPatternFillInvert(pattern)) {
+        const corners = patternCorners(pattern).map(worldToScreen);
+        corners.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.closePath();
+      }
+      for (const vectorPath of pattern.vectorPaths || []) {
+        if (vectorPath.removed || !vectorPath.closed) continue;
+        const points = vectorWorldPath(pattern, vectorPath).map(worldToScreen);
+        if (points.length < 3) continue;
+        points.forEach((point, index) => {
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        });
+        ctx.closePath();
+      }
+      ctx.fillStyle = patternOperation(pattern) === "cut" ? "rgba(245, 158, 11, 0.38)" : "rgba(226, 232, 240, 0.76)";
+      ctx.fill("evenodd");
+      ctx.setLineDash([]);
+    });
   }
 
   for (const vectorPath of pattern.vectorPaths || []) {
     if (vectorPath.removed) continue;
-    const points = vectorWorldPath(pattern, vectorPath).map(worldToScreen);
-    if (points.length < 2) continue;
-    ctx.beginPath();
-    points.forEach((point, index) => {
-      if (index === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
-    });
-    if (vectorPath.closed) ctx.closePath();
+    const worldPoints = vectorWorldPath(pattern, vectorPath);
+    if (vectorPath.closed && worldPoints.length > 1) worldPoints.push(worldPoints[0]);
+    const clippedPaths = clipPolylineToRegion(worldPoints, clipRegion);
     const selectedPath =
       state.selected?.type === "vectorPath" &&
       state.selected.id === pattern.id &&
       state.selected.pathId === vectorPath.id;
     if (filledPreview && vectorPath.closed && !selectedPath) continue;
-    ctx.strokeStyle = selectedPath ? "#ffffff" : patternOperation(pattern) === "cut" ? "#f59e0b" : "#22c55e";
-    ctx.lineWidth = selectedPath ? 2.6 : 1.4;
-    ctx.setLineDash([]);
-    ctx.stroke();
+    for (const clipped of clippedPaths) {
+      const points = clipped.map(worldToScreen);
+      if (points.length < 2) continue;
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        if (index === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
+      ctx.strokeStyle = selectedPath ? "#ffffff" : patternOperation(pattern) === "cut" ? "#f59e0b" : "#22c55e";
+      ctx.lineWidth = selectedPath ? 2.6 : 1.4;
+      ctx.setLineDash([]);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawSelectedPatternHandles() {
+  if (state.selected?.type === "pattern") {
+    const pattern = selectedPattern();
+    if (pattern) drawPatternHandles(pattern);
   }
 }
 
@@ -768,8 +932,9 @@ function draw() {
   computeView();
   ctx.clearRect(0, 0, state.view.width, state.view.height);
   drawGrid();
-  drawPlacements();
   drawPatterns();
+  drawPlacements();
+  drawSelectedPatternHandles();
   updatePartsList();
   updateSummary();
 }
