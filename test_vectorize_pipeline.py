@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -507,6 +508,85 @@ def test_potrace_vector_cut_uses_contours_not_fill_scanlines():
     assert_true(sum(1 for line in lines if line.startswith("S900")) == 1, "cut contour should power once per path, not every hatch row")
 
 
+def gcode_xy_points(lines):
+    points = []
+    for line in lines:
+        match = re.search(r"\b[GX][0-9]+\s+X(-?\d+(?:\.\d+)?)\s+Y(-?\d+(?:\.\d+)?)", line)
+        if match:
+            points.append((float(match.group(1)), float(match.group(2))))
+    return points
+
+
+def test_clip_segment_respects_part_margin():
+    region = core.ClipRegion([[(0, 0), (10, 0), (10, 10), (0, 10)]], margin=2)
+
+    clipped = core.clip_segment_to_region((-5, 5), (15, 5), region, step=0.25)
+
+    assert_true(len(clipped) == 1, "crossing line should become one clipped segment")
+    start, end = clipped[0]
+    assert_true(1.75 <= start[0] <= 2.25, f"clipped start should respect left margin, got {start}")
+    assert_true(7.75 <= end[0] <= 8.25, f"clipped end should respect right margin, got {end}")
+    assert_true(abs(start[1] - 5) < 1e-6 and abs(end[1] - 5) < 1e-6, "clipping should keep segment y")
+
+
+def test_vector_gcode_is_clipped_to_part_margin():
+    item = {
+        "path": "vector",
+        "name": "oversized-vector",
+        "x": 0,
+        "y": 0,
+        "width": 20,
+        "height": 10,
+        "rotation": 0,
+        "power": 250,
+        "feed": 1000,
+        "lineStep": 1,
+        "sourceWidth": 20,
+        "sourceHeight": 10,
+        "vectorPaths": [
+            {"points": [[-5, 5], [25, 5]], "closed": False, "removed": False},
+        ],
+    }
+    region = core.ClipRegion([[(0, 0), (20, 0), (20, 10), (0, 10)]], margin=2)
+
+    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave", clip_region=region)
+    points = gcode_xy_points(lines)
+
+    assert_true(points, "clipped vector should still emit gcode inside the part")
+    assert_true(all(1.7 <= x <= 18.3 for x, _y in points), f"gcode x points should stay inside margin: {points}")
+    assert_true(all(2.0 <= y <= 8.0 for _x, y in points), f"gcode y points should stay inside margin: {points}")
+
+
+def test_svg_gcode_is_clipped_to_part_margin():
+    with TemporaryDirectory() as temp_dir:
+        svg_path = Path(temp_dir) / "oversized.svg"
+        svg_path.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10">'
+            '<path d="M -5 5 L 25 5" />'
+            '</svg>',
+            encoding="utf-8",
+        )
+        pattern = core.RasterPattern(
+            path=svg_path,
+            x=0,
+            y=0,
+            width=20,
+            height=10,
+            rotation=0,
+            power=250,
+            feed=1000,
+            line_step=1,
+            threshold=140,
+        )
+        region = core.ClipRegion([[(0, 0), (20, 0), (20, 10), (0, 10)]], margin=2)
+
+        lines = core.build_svg_vector_engrave_lines(pattern, travel_feed=3000, operation="engrave", clip_region=region)
+
+    points = gcode_xy_points(lines)
+    assert_true(points, "clipped SVG should still emit gcode inside the part")
+    assert_true(all(1.7 <= x <= 18.3 for x, _y in points), f"svg gcode x points should stay inside margin: {points}")
+
+
 def main():
     tests = [
         test_filter_keeps_auto_removed_paths,
@@ -531,6 +611,9 @@ def main():
         test_potrace_vector_gcode_uses_fill_scanlines,
         test_potrace_vector_engrave_defaults_to_contours,
         test_potrace_vector_cut_uses_contours_not_fill_scanlines,
+        test_clip_segment_respects_part_margin,
+        test_vector_gcode_is_clipped_to_part_margin,
+        test_svg_gcode_is_clipped_to_part_margin,
     ]
     for test in tests:
         test()

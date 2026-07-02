@@ -65,6 +65,12 @@ class RasterPattern:
     threshold: int
 
 
+@dataclass
+class ClipRegion:
+    polygons: list[list[Point]]
+    margin: float = 0.0
+
+
 def fmt(value: float) -> str:
     return converter.fmt(value)
 
@@ -137,6 +143,162 @@ def transform_point(point: Point, part_width: float, part_height: float, placeme
 
 def transform_paths(part: LoadedPart, placement: dict[str, Any]) -> list[list[Point]]:
     return [[transform_point(point, part.width, part.height, placement) for point in path] for path in part.paths]
+
+
+def point_in_polygon(point: Point, polygon: list[Point]) -> bool:
+    if len(polygon) < 3:
+        return False
+    x, y = point
+    inside = False
+    previous = polygon[-1]
+    for current in polygon:
+        x1, y1 = previous
+        x2, y2 = current
+        if (y1 > y) != (y2 > y):
+            x_intersect = x1 + (y - y1) * (x2 - x1) / max(1e-12, y2 - y1)
+            if x < x_intersect:
+                inside = not inside
+        previous = current
+    return inside
+
+
+def point_segment_distance(point: Point, start: Point, end: Point) -> float:
+    px, py = point
+    x1, y1 = start
+    x2, y2 = end
+    dx = x2 - x1
+    dy = y2 - y1
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 1e-12:
+        return math.hypot(px - x1, py - y1)
+    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / length_sq))
+    closest = (x1 + t * dx, y1 + t * dy)
+    return math.hypot(px - closest[0], py - closest[1])
+
+
+def point_to_polygons_distance(point: Point, polygons: list[list[Point]]) -> float:
+    best = float("inf")
+    for polygon in polygons:
+        if len(polygon) < 2:
+            continue
+        for index, start in enumerate(polygon):
+            end = polygon[(index + 1) % len(polygon)]
+            best = min(best, point_segment_distance(point, start, end))
+    return best
+
+
+def polygon_signed_area(points: list[Point]) -> float:
+    if len(points) < 3:
+        return 0.0
+    total = 0.0
+    for index, current in enumerate(points):
+        next_point = points[(index + 1) % len(points)]
+        total += current[0] * next_point[1] - next_point[0] * current[1]
+    return total / 2.0
+
+
+def clip_region_contains(point: Point, clip_region: ClipRegion | None) -> bool:
+    if clip_region is None or not clip_region.polygons:
+        return True
+    inside = False
+    for polygon in clip_region.polygons:
+        if point_in_polygon(point, polygon):
+            inside = not inside
+    if not inside:
+        return False
+    margin = max(0.0, float(clip_region.margin))
+    if margin <= 1e-9:
+        return True
+    return point_to_polygons_distance(point, clip_region.polygons) >= margin
+
+
+def clip_segment_to_region(start: Point,
+                           end: Point,
+                           clip_region: ClipRegion | None,
+                           step: float = 0.25) -> list[tuple[Point, Point]]:
+    if clip_region is None or not clip_region.polygons:
+        return [(start, end)]
+    length = converter.dist(start, end)
+    if length <= 1e-9:
+        return []
+    divisions = max(1, int(math.ceil(length / max(0.05, float(step)))))
+    result: list[tuple[Point, Point]] = []
+    current_start: Point | None = None
+    current_end: Point | None = None
+
+    for index in range(divisions):
+        t0 = index / divisions
+        t1 = (index + 1) / divisions
+        p0 = (start[0] + (end[0] - start[0]) * t0, start[1] + (end[1] - start[1]) * t0)
+        p1 = (start[0] + (end[0] - start[0]) * t1, start[1] + (end[1] - start[1]) * t1)
+        midpoint = ((p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0)
+        if clip_region_contains(midpoint, clip_region):
+            if current_start is None:
+                current_start = p0
+            current_end = p1
+        elif current_start is not None and current_end is not None:
+            if converter.dist(current_start, current_end) >= 0.03:
+                result.append((current_start, current_end))
+            current_start = None
+            current_end = None
+
+    if current_start is not None and current_end is not None and converter.dist(current_start, current_end) >= 0.03:
+        result.append((current_start, current_end))
+    return result
+
+
+def clip_polyline_to_region(points: list[Point],
+                            clip_region: ClipRegion | None,
+                            step: float = 0.25) -> list[list[Point]]:
+    if clip_region is None or not clip_region.polygons:
+        return [points] if len(points) >= 2 else []
+    clipped_paths: list[list[Point]] = []
+    current: list[Point] = []
+    for index in range(1, len(points)):
+        for start, end in clip_segment_to_region(points[index - 1], points[index], clip_region, step=step):
+            if current and converter.dist(current[-1], start) <= max(0.05, step * 1.25):
+                current.append(end)
+            else:
+                if len(current) >= 2:
+                    clipped_paths.append(current)
+                current = [start, end]
+    if len(current) >= 2:
+        clipped_paths.append(current)
+    return clipped_paths
+
+
+def closed_clip_polygons(paths: list[list[Point]]) -> list[list[Point]]:
+    polygons: list[list[Point]] = []
+    for path in paths:
+        if len(path) < 3:
+            continue
+        polygon = [(float(x), float(y)) for x, y in path]
+        if converter.dist(polygon[0], polygon[-1]) <= 0.05:
+            polygon = polygon[:-1]
+        if len(polygon) >= 3 and abs(polygon_signed_area(polygon)) >= 0.5:
+            polygons.append(polygon)
+    polygons.sort(key=lambda polygon: abs(polygon_signed_area(polygon)), reverse=True)
+    return polygons
+
+
+def append_powered_polyline(lines: list[str],
+                            points: list[Point],
+                            power: int,
+                            feed: float,
+                            travel_feed: float | None) -> None:
+    if len(points) < 2:
+        return
+    start = points[0]
+    if travel_feed is not None and travel_feed > 0:
+        lines.append(f"G1 X{fmt(start[0])} Y{fmt(start[1])} F{fmt(travel_feed)}")
+    else:
+        lines.append(f"G0 X{fmt(start[0])} Y{fmt(start[1])}")
+    lines.append(f"S{power}")
+    first = points[1]
+    lines.append(f"G1 X{fmt(first[0])} Y{fmt(first[1])} F{fmt(feed)}")
+    for point in points[2:]:
+        lines.append(f"G1 X{fmt(point[0])} Y{fmt(point[1])}")
+    lines.append("S0")
 
 
 def open_pattern_image(path: Path):
@@ -2434,7 +2596,9 @@ def pattern_point(pattern: RasterPattern, local_x: float, local_y: float) -> Poi
     return center_x + dx * cos_a - dy * sin_a, center_y + dx * sin_a + dy * cos_a
 
 
-def build_raster_engrave_lines(pattern: RasterPattern, travel_feed: float | None = None) -> list[str]:
+def build_raster_engrave_lines(pattern: RasterPattern,
+                               travel_feed: float | None = None,
+                               clip_region: ClipRegion | None = None) -> list[str]:
     if not pattern.path.exists():
         raise ValueError(f"Desen dosyasi bulunamadi: {pattern.path}")
     if pattern.width <= 0 or pattern.height <= 0:
@@ -2480,15 +2644,14 @@ def build_raster_engrave_lines(pattern: RasterPattern, travel_feed: float | None
 
             start_point = pattern_point(pattern, start * col_width, local_y)
             end_point = pattern_point(pattern, (end + 1) * col_width, local_y)
-            if travel_feed is not None and travel_feed > 0:
-                lines.append(
-                    f"G1 X{fmt(start_point[0])} Y{fmt(start_point[1])} F{fmt(travel_feed)}"
+            for clipped_start, clipped_end in clip_segment_to_region(start_point, end_point, clip_region):
+                append_powered_polyline(
+                    lines,
+                    [clipped_start, clipped_end],
+                    pattern.power,
+                    pattern.feed,
+                    travel_feed,
                 )
-            else:
-                lines.append(f"G0 X{fmt(start_point[0])} Y{fmt(start_point[1])}")
-            lines.append(f"S{pattern.power}")
-            lines.append(f"G1 X{fmt(end_point[0])} Y{fmt(end_point[1])} F{fmt(pattern.feed)}")
-            lines.append("S0")
 
     lines.append("(engrave image end)")
     lines.append("S0")
@@ -2636,7 +2799,8 @@ def svg_local_point(pattern: RasterPattern,
 
 def build_svg_vector_engrave_lines(pattern: RasterPattern,
                                    travel_feed: float | None = None,
-                                   operation: str = "engrave") -> list[str]:
+                                   operation: str = "engrave",
+                                   clip_region: ClipRegion | None = None) -> list[str]:
     if not pattern.path.exists():
         raise ValueError(f"SVG dosyasi bulunamadi: {pattern.path}")
     converter.validate_power(pattern.power)
@@ -2659,20 +2823,15 @@ def build_svg_vector_engrave_lines(pattern: RasterPattern,
             transformed = [svg_local_point(pattern, point, view_box) for point in polyline]
             if len(transformed) < 2:
                 continue
-            path_count += 1
-            start = transformed[0]
-            if travel_feed is not None and travel_feed > 0:
-                lines.append(f"G1 X{fmt(start[0])} Y{fmt(start[1])} F{fmt(travel_feed)}")
-            else:
-                lines.append(f"G0 X{fmt(start[0])} Y{fmt(start[1])}")
-            lines.append(f"S{pattern.power}")
-            first = transformed[1]
-            lines.append(f"G1 X{fmt(first[0])} Y{fmt(first[1])} F{fmt(pattern.feed)}")
-            for point in transformed[2:]:
-                lines.append(f"G1 X{fmt(point[0])} Y{fmt(point[1])}")
-            lines.append("S0")
+            for clipped in clip_polyline_to_region(transformed, clip_region):
+                append_powered_polyline(lines, clipped, pattern.power, pattern.feed, travel_feed)
+                path_count += 1
 
     if path_count == 0:
+        if clip_region is not None:
+            lines.append(f"({op_label} svg clipped empty)")
+            lines.append("S0")
+            return lines
         raise ValueError("SVG icinde G-code'a cevrilecek path bulunamadi.")
     lines.append(f"({op_label} svg end)")
     lines.append("S0")
@@ -2733,7 +2892,8 @@ def vector_fill_scan_segments(vector_paths: list[dict[str, Any]],
 
 def build_embedded_vector_engrave_lines(item: dict[str, Any],
                                         travel_feed: float | None = None,
-                                        operation: str = "engrave") -> list[str]:
+                                        operation: str = "engrave",
+                                        clip_region: ClipRegion | None = None) -> list[str]:
     pattern = RasterPattern(
         path=Path(item.get("path") or item.get("sourcePath") or "vector"),
         x=_float(item.get("x")),
@@ -2776,39 +2936,43 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
         if not segments:
             raise ValueError("Dolgulu vektor desen icin kazima satiri olusmadi.")
         reverse = False
+        emitted = 0
         for start_source, end_source in segments:
             start_point = [end_source[0], end_source[1]] if reverse else [start_source[0], start_source[1]]
             end_point = [start_source[0], start_source[1]] if reverse else [end_source[0], end_source[1]]
             start = embedded_vector_point(pattern, start_point, source_width, source_height)
             end = embedded_vector_point(pattern, end_point, source_width, source_height)
-            if travel_feed is not None and travel_feed > 0:
-                lines.append(f"G1 X{fmt(start[0])} Y{fmt(start[1])} F{fmt(travel_feed)}")
-            else:
-                lines.append(f"G0 X{fmt(start[0])} Y{fmt(start[1])}")
-            lines.append(f"S{pattern.power}")
-            lines.append(f"G1 X{fmt(end[0])} Y{fmt(end[1])} F{fmt(pattern.feed)}")
-            lines.append("S0")
+            for clipped_start, clipped_end in clip_segment_to_region(start, end, clip_region):
+                append_powered_polyline(
+                    lines,
+                    [clipped_start, clipped_end],
+                    pattern.power,
+                    pattern.feed,
+                    travel_feed,
+                )
+                emitted += 1
             reverse = not reverse
+        if emitted == 0 and clip_region is not None:
+            lines.append(f"({op_label} vector fill clipped empty)")
+            lines.append("S0")
+            return lines
         lines.append(f"({op_label} vector fill end)")
         lines.append("S0")
         return lines
 
+    emitted = 0
     for vector_path in active_paths:
         points = vector_path.get("points", [])
         transformed = [embedded_vector_point(pattern, point, source_width, source_height) for point in points]
         if vector_path.get("closed", True) and transformed and converter.dist(transformed[0], transformed[-1]) > 1e-6:
             transformed.append(transformed[0])
-        start = transformed[0]
-        if travel_feed is not None and travel_feed > 0:
-            lines.append(f"G1 X{fmt(start[0])} Y{fmt(start[1])} F{fmt(travel_feed)}")
-        else:
-            lines.append(f"G0 X{fmt(start[0])} Y{fmt(start[1])}")
-        lines.append(f"S{pattern.power}")
-        first = transformed[1]
-        lines.append(f"G1 X{fmt(first[0])} Y{fmt(first[1])} F{fmt(pattern.feed)}")
-        for point in transformed[2:]:
-            lines.append(f"G1 X{fmt(point[0])} Y{fmt(point[1])}")
+        for clipped in clip_polyline_to_region(transformed, clip_region):
+            append_powered_polyline(lines, clipped, pattern.power, pattern.feed, travel_feed)
+            emitted += 1
+    if emitted == 0 and clip_region is not None:
+        lines.append(f"({op_label} vector clipped empty)")
         lines.append("S0")
+        return lines
     lines.append(f"({op_label} vector end)")
     lines.append("S0")
     return lines
@@ -2847,12 +3011,18 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         )
 
     cut_paths: list[list[Point]] = []
+    clip_polygons_by_placement: dict[str, list[list[Point]]] = {}
+    all_clip_polygons: list[list[Point]] = []
     for placement in state.get("placements", []):
         part_id = str(placement["partId"])
         part = parts_by_id.get(part_id)
         if part is None:
             raise ValueError(f"Parca bulunamadi: {part_id}")
-        cut_paths.extend(transform_paths(part, placement))
+        transformed = transform_paths(part, placement)
+        cut_paths.extend(transformed)
+        placement_clip_polygons = closed_clip_polygons(transformed)
+        clip_polygons_by_placement[str(placement.get("id") or "")] = placement_clip_polygons
+        all_clip_polygons.extend(placement_clip_polygons)
 
     travel_feed = _float(settings.get("travelFeed"), 3000.0)
     feed = _float(settings.get("feed"), 500.0)
@@ -2879,13 +3049,17 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             line_step=_float(item.get("lineStep"), 0.35),
             threshold=_int(item.get("threshold"), 140),
         )
+        parent_id = str(item.get("parentId") or "")
+        clip_polygons = clip_polygons_by_placement.get(parent_id) or all_clip_polygons
+        clip_margin = max(0.0, _float(item.get("clipMargin"), 0.0))
+        clip_region = ClipRegion(clip_polygons, clip_margin) if clip_polygons else None
         if kind == "vector":
             vector_item = {**item, "power": item.get("power", default_pattern_power), "feed": item.get("feed", default_pattern_feed)}
-            pattern_lines.extend(build_embedded_vector_engrave_lines(vector_item, travel_feed, operation))
+            pattern_lines.extend(build_embedded_vector_engrave_lines(vector_item, travel_feed, operation, clip_region))
         elif kind == "svg" or pattern.path.suffix.lower() == ".svg":
-            pattern_lines.extend(build_svg_vector_engrave_lines(pattern, travel_feed, operation))
+            pattern_lines.extend(build_svg_vector_engrave_lines(pattern, travel_feed, operation, clip_region))
         else:
-            pattern_lines.extend(build_raster_engrave_lines(pattern, travel_feed))
+            pattern_lines.extend(build_raster_engrave_lines(pattern, travel_feed, clip_region))
 
     rapid_feed_value = settings.get("rapidFeed")
     rapid_feed = None if rapid_feed_value in (None, "") else _float(rapid_feed_value)

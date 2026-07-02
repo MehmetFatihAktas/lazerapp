@@ -1028,6 +1028,7 @@ function renderPatternPanel(pattern) {
       <label>Genişlik <input data-pattern="width" type="number" min="1" step="0.01" value="${pattern.width.toFixed(2)}" /></label>
       <label>Yükseklik <input data-pattern="height" type="number" min="1" step="0.01" value="${pattern.height.toFixed(2)}" /></label>
       <label>Açı <input data-pattern="rotation" type="number" step="0.1" value="${pattern.rotation.toFixed(1)}" /></label>
+      <label>Parça iç payı <input data-pattern="clipMargin" type="number" min="0" step="0.1" value="${Number(pattern.clipMargin || 0).toFixed(1)}" /></label>
       <label>${operation === "cut" ? "Kesim gücü S" : "Kazıma gücü S"} <input data-pattern="power" type="number" min="0" max="1000" step="10" value="${pattern.power}" /></label>
       <label>${operation === "cut" ? "Kesim hızı F" : "Kazıma hızı F"} <input data-pattern="feed" type="number" min="1" step="50" value="${pattern.feed}" /></label>
       ${
@@ -1105,6 +1106,7 @@ function bindPatternPanel(pattern) {
       pattern[key] = Number(input.value) || 0;
       if (key === "power") pattern[key] = clamp(Math.round(pattern[key]), 0, 1000);
       if (key === "threshold") pattern[key] = clamp(Math.round(pattern[key]), 0, 255);
+      if (key === "clipMargin") pattern[key] = Math.max(0, pattern[key]);
       draw();
     });
   });
@@ -1296,6 +1298,7 @@ async function vectorizePhoto(options = {}) {
         feed: replacePattern.feed,
         lineStep: replacePattern.lineStep,
         threshold: replacePattern.threshold,
+        clipMargin: replacePattern.clipMargin,
         vectorEngraveMode: replacePattern.vectorEngraveMode,
         vectorPreset: replacePattern.vectorPreset,
       };
@@ -1382,6 +1385,7 @@ function createPatternForPlacement(id, imageData, placement) {
     feed: Math.max(1, mm("engraveFeed", 1800)),
     lineStep: Math.max(0.05, mm("lineStep", 0.35)),
     threshold: clamp(Math.round(mm("threshold", 140)), 0, 255),
+    clipMargin: 0,
     vectorEngraveMode: "contour",
   };
 }
