@@ -58,6 +58,9 @@ const state = {
   patterns: [],
   images: new Map(),
   selected: null,
+  selectedItems: [],
+  clipboard: [],
+  clipboardPasteCount: 0,
   drag: null,
   view: { scale: 1, offsetX: 0, offsetY: 0, width: 1, height: 1, zoom: 1, panX: 0, panY: 0 },
   laserCmd: "M4",
@@ -835,23 +838,26 @@ function drawPatterns() {
       });
     }
 
-    if (pattern.kind !== "vector" && pattern.kind !== "svg") {
-      const corners = patternCorners(pattern).map(worldToScreen);
-      ctx.beginPath();
-      corners.forEach((point, index) => {
-        if (index === 0) ctx.moveTo(point.x, point.y);
-        else ctx.lineTo(point.x, point.y);
-      });
-      ctx.closePath();
-      const patternSelected = selectedIs("pattern", pattern.id);
-      ctx.strokeStyle = patternSelected ? "#ffffff" : "#c084fc";
-      ctx.lineWidth = patternSelected ? 2.4 : 1.6;
-      ctx.setLineDash([7, 4]);
-      ctx.stroke();
-      ctx.setLineDash([]);
+    if (selectedIs("pattern", pattern.id)) {
+      drawPatternSelectionOutline(pattern, state.selected?.type === "pattern" && state.selected.id === pattern.id);
     }
-
   }
+}
+
+function drawPatternSelectionOutline(pattern, active = false) {
+  const corners = patternCorners(pattern).map(worldToScreen);
+  ctx.save();
+  ctx.beginPath();
+  corners.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.closePath();
+  ctx.strokeStyle = active ? "#ffffff" : "#60a5fa";
+  ctx.lineWidth = active ? 2.4 : 1.6;
+  ctx.setLineDash([7, 4]);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawVectorFillShape(pattern, alpha = 1) {
@@ -1018,8 +1024,36 @@ function draw() {
   updateSummary();
 }
 
+function selectionKey(item) {
+  return `${item.type}:${item.id}`;
+}
+
+function uniqueSelectionItems(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items || []) {
+    if (!item || item.type !== "pattern" || !patternById(item.id)) continue;
+    const key = selectionKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ type: item.type, id: item.id });
+  }
+  return result;
+}
+
+function selectedPatternObjects() {
+  let items = uniqueSelectionItems(state.selectedItems);
+  if (!items.length && (state.selected?.type === "pattern" || state.selected?.type === "vectorPath")) {
+    items = uniqueSelectionItems([{ type: "pattern", id: state.selected.id }]);
+  }
+  return items.map((item) => patternById(item.id)).filter(Boolean);
+}
+
 function selectedIs(type, id) {
-  return state.selected && state.selected.type === type && state.selected.id === id;
+  return (
+    (state.selected && state.selected.type === type && state.selected.id === id) ||
+    state.selectedItems.some((item) => item.type === type && item.id === id)
+  );
 }
 
 function selectedVectorPath() {
@@ -1103,8 +1137,43 @@ function updateSummary(extra = "") {
 
 function select(type, id, extra = {}) {
   state.selected = type && id ? { type, id, ...extra } : null;
+  if (!state.selected) {
+    state.selectedItems = [];
+  } else if (type === "pattern") {
+    state.selectedItems = [{ type, id }];
+  } else if (type === "vectorPath") {
+    state.selectedItems = [{ type: "pattern", id }];
+  } else {
+    state.selectedItems = [];
+  }
   updateSelectionPanel();
   draw();
+}
+
+function selectPatternItems(patternIds, activeId = null) {
+  state.selectedItems = uniqueSelectionItems(patternIds.map((id) => ({ type: "pattern", id })));
+  const active = activeId && state.selectedItems.some((item) => item.id === activeId)
+    ? activeId
+    : state.selectedItems[0]?.id;
+  state.selected = active ? { type: "pattern", id: active } : null;
+  updateSelectionPanel();
+  draw();
+}
+
+function togglePatternSelection(patternId) {
+  const items = uniqueSelectionItems(state.selectedItems);
+  const index = items.findIndex((item) => item.id === patternId);
+  if (index >= 0) {
+    items.splice(index, 1);
+    if (!items.length) {
+      select(null, null);
+      return;
+    }
+    selectPatternItems(items.map((item) => item.id), items[items.length - 1]?.id);
+    return;
+  }
+  if (index < 0) items.push({ type: "pattern", id: patternId });
+  selectPatternItems(items.map((item) => item.id), patternId);
 }
 
 function updateSelectionPanel() {
@@ -1235,6 +1304,7 @@ function renderPatternPanel(pattern) {
   const activeVectorCount = pattern.kind === "vector" ? (pattern.vectorPaths || []).filter((item) => !item.removed).length : 0;
   const vectorSettings = pattern.vectorSettings || {};
   const vectorStats = pattern.vectorStats || {};
+  const multiSelectionText = state.selectedItems.length > 1 ? ` · ${state.selectedItems.length} secili` : "";
   const vectorTiming = vectorStats.timings?.total ? ` · Süre: ${Number(vectorStats.timings.total).toFixed(2)} sn` : "";
   const vectorInfo =
     pattern.kind === "vector"
@@ -1260,7 +1330,7 @@ function renderPatternPanel(pattern) {
         </div>`
       : "";
   refs.selectionPanel.innerHTML = `
-    <div class="property-title"><strong>${escapeHtml(pattern.name || "Desen")}</strong><span>${kindText} · ${operationLabel(operation)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm</span></div>
+    <div class="property-title"><strong>${escapeHtml(pattern.name || "Desen")}</strong><span>${kindText} · ${operationLabel(operation)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm${multiSelectionText}</span></div>
     ${svgInfo}
     ${vectorInfo}
     ${debugInfo}
@@ -1682,12 +1752,9 @@ function cloneVectorPaths(paths) {
   }));
 }
 
-function clonePatternCopy(pattern, suffix = "kopya") {
-  const id = uid("pat");
-  const copy = {
+function clonePatternPayload(pattern) {
+  return {
     ...pattern,
-    id,
-    name: `${pattern.name || "Desen"} ${suffix}`,
     vectorPaths: cloneVectorPaths(pattern.vectorPaths || []),
     originalVectorPaths: cloneVectorPaths(pattern.originalVectorPaths || []),
     debugPreviews: (pattern.debugPreviews || []).map((preview) => ({ ...preview })),
@@ -1695,13 +1762,63 @@ function clonePatternCopy(pattern, suffix = "kopya") {
     vectorStats: pattern.vectorStats ? { ...pattern.vectorStats } : pattern.vectorStats,
     cleanStats: pattern.cleanStats ? { ...pattern.cleanStats } : pattern.cleanStats,
   };
-  const image = state.images.get(pattern.id);
+}
+
+function clonePatternCopy(pattern, suffix = "kopya", sourceImage = null) {
+  const id = uid("pat");
+  const copy = {
+    ...clonePatternPayload(pattern),
+    id,
+    name: `${pattern.name || "Desen"} ${suffix}`,
+  };
+  const image = sourceImage || state.images.get(pattern.id);
   if (image) state.images.set(id, image);
   return copy;
 }
 
 function clonePatternForMirror(pattern) {
   return clonePatternCopy(pattern, "kopya");
+}
+
+function copySelectedPatterns() {
+  const patterns = selectedPatternObjects();
+  if (!patterns.length) {
+    setStatus("Kopyalanacak desen yok.");
+    return;
+  }
+  state.clipboard = patterns.map((pattern) => ({
+    pattern: clonePatternPayload(pattern),
+    image: state.images.get(pattern.id) || null,
+  }));
+  state.clipboardPasteCount = 0;
+  setStatus(`${patterns.length} desen kopyalandi.`);
+}
+
+function pastePatternsFromClipboard() {
+  if (!state.clipboard.length) {
+    setStatus("Panoda desen yok.");
+    return;
+  }
+  state.clipboardPasteCount += 1;
+  const offset = state.clipboardPasteCount * 5;
+  const copies = state.clipboard.map((item) => {
+    const copy = clonePatternCopy(item.pattern, "kopya", item.image);
+    copy.x += offset;
+    copy.y += offset;
+    return copy;
+  });
+  state.patterns.push(...copies);
+  selectPatternItems(copies.map((copy) => copy.id), copies[0]?.id);
+  setStatus(`${copies.length} desen yapistirildi.`);
+}
+
+function selectAllPatterns() {
+  if (!state.patterns.length) {
+    setStatus("Secilecek desen yok.");
+    return;
+  }
+  selectPatternItems(state.patterns.map((pattern) => pattern.id), state.patterns[0].id);
+  setStatus(`${state.patterns.length} desen secildi.`);
 }
 
 function polygonArea(points) {
@@ -2013,6 +2130,16 @@ function selectedObject() {
 }
 
 function moveSelected(dx, dy) {
+  const selectedPatterns = selectedPatternObjects();
+  if (selectedPatterns.length && state.selected?.type !== "placement") {
+    for (const pattern of selectedPatterns) {
+      pattern.x += dx;
+      pattern.y += dy;
+    }
+    draw();
+    updateSelectionPanel();
+    return;
+  }
   const object = selectedObject();
   if (!object) return;
   object.x += dx;
@@ -2042,6 +2169,14 @@ function resizeSelected(factor) {
 
 function deleteSelected() {
   if (!state.selected) return;
+  const selectedPatterns = selectedPatternObjects();
+  if (selectedPatterns.length > 1) {
+    const ids = new Set(selectedPatterns.map((pattern) => pattern.id));
+    state.patterns = state.patterns.filter((item) => !ids.has(item.id));
+    for (const id of ids) state.images.delete(id);
+    select(null, null);
+    return;
+  }
   if (state.selected.type === "pattern") {
     state.patterns = state.patterns.filter((item) => item.id !== state.selected.id);
     state.images.delete(state.selected.id);
@@ -2161,16 +2296,33 @@ function onPointerDown(event) {
     return;
   }
   if (hit.type === "vectorPath") {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      togglePatternSelection(hit.id);
+      return;
+    }
     select("vectorPath", hit.id, { pathId: hit.pathId });
     return;
   }
-  select(hit.type, hit.id);
+  if ((event.ctrlKey || event.metaKey || event.shiftKey) && hit.type === "pattern") {
+    togglePatternSelection(hit.id);
+    return;
+  }
+  const movingPatternGroup = hit.type === "pattern" && selectedIs("pattern", hit.id) && selectedPatternObjects().length > 1;
+  if (movingPatternGroup) {
+    state.selected = { type: "pattern", id: hit.id };
+    updateSelectionPanel();
+  } else {
+    select(hit.type, hit.id);
+  }
   const selectedObject = hit.type === "pattern" ? patternById(hit.id) : placementById(hit.id);
   state.drag = {
-    mode: hit.type === "pattern" ? "movePattern" : "movePlacement",
+    mode: movingPatternGroup ? "moveSelection" : hit.type === "pattern" ? "movePattern" : "movePlacement",
     id: hit.id,
     startWorld: world,
     startObject: { ...selectedObject },
+    startSelectedPatterns: movingPatternGroup
+      ? selectedPatternObjects().map((item) => ({ id: item.id, x: item.x, y: item.y }))
+      : [],
     startPatterns:
       hit.type === "placement"
         ? state.patterns
@@ -2201,6 +2353,14 @@ function onPointerMove(event) {
     const pattern = patternById(state.drag.id);
     pattern.x = state.drag.startObject.x + dx;
     pattern.y = state.drag.startObject.y + dy;
+  }
+  if (state.drag.mode === "moveSelection") {
+    for (const startPattern of state.drag.startSelectedPatterns || []) {
+      const pattern = patternById(startPattern.id);
+      if (!pattern) continue;
+      pattern.x = startPattern.x + dx;
+      pattern.y = startPattern.y + dy;
+    }
   }
   if (state.drag.mode === "movePlacement") {
     const placement = placementById(state.drag.id);
@@ -2314,6 +2474,22 @@ function onKeyDown(event) {
     return;
   }
   if (isTypingTarget(event.target)) return;
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && key === "c") {
+    copySelectedPatterns();
+    event.preventDefault();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && key === "v") {
+    pastePatternsFromClipboard();
+    event.preventDefault();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && key === "a") {
+    selectAllPatterns();
+    event.preventDefault();
+    return;
+  }
   if (!state.selected) return;
   const step = nudgeStep(event);
   if (event.key === "ArrowLeft") {
