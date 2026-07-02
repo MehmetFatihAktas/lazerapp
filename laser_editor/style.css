@@ -140,7 +140,7 @@ button.small {
 .workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: 330px minmax(520px, 1fr) 310px;
+  grid-template-columns: 320px minmax(560px, 1fr) 300px;
   gap: 12px;
   padding: 12px;
 }
@@ -242,6 +242,28 @@ input:focus {
   margin-top: 8px;
 }
 
+.advanced-settings {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.advanced-settings summary {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.advanced-settings .form-grid {
+  padding: 0 10px 10px;
+}
+
 .operation-card {
   display: grid;
   gap: 10px;
@@ -319,7 +341,7 @@ input:focus {
 .canvas-panel {
   min-height: 0;
   display: grid;
-  grid-template-rows: 118px 1fr;
+  grid-template-rows: 82px 1fr;
   overflow: hidden;
   border: 1px solid #1e293b;
   border-radius: 8px;

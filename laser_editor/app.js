@@ -939,9 +939,7 @@ function renderPatternPanel(pattern) {
     return;
   }
   const kindText =
-    pattern.vectorPreset === "tasbih"
-      ? "Hazır tesbih vektörü"
-      : pattern.kind === "vector"
+    pattern.kind === "vector"
         ? "Foto vektör"
         : pattern.kind === "svg"
           ? "Temiz SVG vektör"
@@ -1000,16 +998,8 @@ function renderPatternPanel(pattern) {
           <strong>Foto vektör hazır</strong>
           <span>Aktif kontur: ${activeVectorCount} / ${(pattern.vectorPaths || []).length}</span>
           <span>Kaynak: ${Number(pattern.sourceWidth || 0).toFixed(0)} x ${Number(pattern.sourceHeight || 0).toFixed(0)} px</span>
-          <span>${
-            pattern.vectorPreset === "tasbih"
-              ? "Hazır tesbih"
-              : `Mod: ${vectorSettings.mode || "outline"} · Eşik: ${vectorSettings.thresholdMode || "manual"} ${vectorSettings.usedThreshold > 0 ? `(${Number(vectorSettings.usedThreshold).toFixed(0)})` : ""}`
-          }</span>
-          ${
-            pattern.vectorPreset === "tasbih"
-              ? ""
-              : `<span>Otomatik gizlenen: ${Number(vectorStats.removedBorder || 0) + Number(vectorStats.removedShortPost || 0)} · Çerçeve: ${vectorStats.removedBorder ?? 0} · Birleşen: ${vectorStats.stitchedGap ?? 0}${vectorTiming}</span>`
-          }
+          <span>Mod: ${vectorSettings.mode || "outline"} · Eşik: ${vectorSettings.thresholdMode || "manual"} ${vectorSettings.usedThreshold > 0 ? `(${Number(vectorSettings.usedThreshold).toFixed(0)})` : ""}</span>
+          <span>Otomatik gizlenen: ${Number(vectorStats.removedBorder || 0) + Number(vectorStats.removedShortPost || 0)} · Çerçeve: ${vectorStats.removedBorder ?? 0} · Birleşen: ${vectorStats.stitchedGap ?? 0}${vectorTiming}</span>
         </div>`
       : "";
   const debugInfo =
@@ -1342,7 +1332,7 @@ async function vectorizePhoto(options = {}) {
 
 function revectorizeSelected() {
   const pattern = selectedVectorPattern();
-  if (!pattern || pattern.kind !== "vector" || pattern.vectorPreset === "tasbih") {
+  if (!pattern || pattern.kind !== "vector") {
     setStatus("Yeniden işlemek için fotoğraftan üretilmiş bir vektör seçin.");
     return;
   }
@@ -1529,116 +1519,6 @@ function smoothSelectedVector(pattern) {
   draw();
   updateSelectionPanel();
   setStatus(changed ? `${changed} kontur yumuşatıldı. Geri almak için Konturları Geri Al.` : "Yumuşatılacak uygun kontur bulunamadı.");
-}
-
-function rotateLocalPoint(x, y, angle) {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  return [x * cos - y * sin, x * sin + y * cos];
-}
-
-function ellipseVectorPoints(cx, cy, rx, ry, angle = 0, count = 44, organic = 0) {
-  const points = [];
-  for (let index = 0; index < count; index += 1) {
-    const t = (index / count) * Math.PI * 2;
-    const wobble = 1 + organic * (Math.sin(t * 3 + cx * 0.07) + Math.cos(t * 5 + cy * 0.05)) * 0.5;
-    const [x, y] = rotateLocalPoint(Math.cos(t) * rx * wobble, Math.sin(t) * ry * wobble, angle);
-    points.push([cx + x, cy + y]);
-  }
-  return points;
-}
-
-function arcVectorPoints(cx, cy, rx, ry, angle, start, end, count = 12) {
-  const points = [];
-  for (let index = 0; index <= count; index += 1) {
-    const t = start + ((end - start) * index) / count;
-    const [x, y] = rotateLocalPoint(Math.cos(t) * rx, Math.sin(t) * ry, angle);
-    points.push([cx + x, cy + y]);
-  }
-  return points;
-}
-
-function capsuleVectorPoints(cx, cy, length, width, angle, count = 18) {
-  const radius = width / 2;
-  const straight = Math.max(0.1, length / 2 - radius);
-  const points = [];
-  for (let index = 0; index <= count; index += 1) {
-    const t = -Math.PI / 2 + (Math.PI * index) / count;
-    const [x, y] = rotateLocalPoint(straight + Math.cos(t) * radius, Math.sin(t) * radius, angle);
-    points.push([cx + x, cy + y]);
-  }
-  for (let index = 0; index <= count; index += 1) {
-    const t = Math.PI / 2 + (Math.PI * index) / count;
-    const [x, y] = rotateLocalPoint(-straight + Math.cos(t) * radius, Math.sin(t) * radius, angle);
-    points.push([cx + x, cy + y]);
-  }
-  return points;
-}
-
-function vectorPath(id, points, closed = true) {
-  return {
-    id,
-    points,
-    closed,
-    removed: false,
-    area: closed ? polygonArea(points) : 0,
-  };
-}
-
-function createTasbihVectorData() {
-  const sourceWidth = 220;
-  const sourceHeight = 130;
-  const paths = [];
-  const centers = [];
-  const beadCount = 33;
-  for (let index = 0; index < beadCount; index += 1) {
-    const t = -0.35 + (index / beadCount) * Math.PI * 2;
-    const x = 110 + Math.cos(t) * 72 + Math.sin(t * 2) * 9;
-    const y = 55 + Math.sin(t) * 32 + Math.cos(t * 2) * 4;
-    const tx = -Math.sin(t) * 72 + Math.cos(t * 2) * 18;
-    const ty = Math.cos(t) * 32 - Math.sin(t * 2) * 8;
-    centers.push({ x, y, angle: Math.atan2(ty, tx), seed: index });
-  }
-
-  paths.push(vectorPath("tasbih-string", centers.map((item) => [item.x, item.y]), true));
-  for (const bead of centers) {
-    const rx = 5.4 + Math.sin(bead.seed * 1.7) * 0.35;
-    const ry = 4.25 + Math.cos(bead.seed * 1.3) * 0.25;
-    paths.push(vectorPath(`bead-${bead.seed + 1}`, ellipseVectorPoints(bead.x, bead.y, rx, ry, bead.angle, 48, 0.025), true));
-    if (bead.seed % 2 === 0) {
-      paths.push(vectorPath(`bead-shine-${bead.seed + 1}`, arcVectorPoints(bead.x, bead.y, rx * 0.45, ry * 0.28, bead.angle, -2.7, -0.55, 8), false));
-    }
-  }
-
-  const imameAngle = -0.48;
-  paths.push(vectorPath("imame", capsuleVectorPoints(132, 89, 34, 10, imameAngle, 18), true));
-  paths.push(vectorPath("imame-line", arcVectorPoints(132, 89, 11, 2.5, imameAngle, -2.6, 0.45, 12), false));
-  paths.push(vectorPath("tail-line-1", [[120, 95], [112, 104], [104, 112]], false));
-  paths.push(vectorPath("tail-line-2", [[124, 98], [118, 109], [114, 120]], false));
-  paths.push(vectorPath("tail-bead", ellipseVectorPoints(101, 114, 6, 5.2, 0.25, 46, 0.02), true));
-
-  return {
-    kind: "vector",
-    sourcePath: "tasbih-vector",
-    name: "hazir-tesbih-vector.svg",
-    sourceWidth,
-    sourceHeight,
-    vectorPaths: paths,
-    settings: { preset: "tasbih" },
-    stats: { pathsKept: paths.length, contoursFound: paths.length },
-  };
-}
-
-function addTasbihVector() {
-  const id = uid("pat");
-  const target = selectedPlacement() || state.placements[0] || null;
-  const pattern = createVectorPatternForPlacement(id, createTasbihVectorData(), target);
-  pattern.vectorPreset = "tasbih";
-  pattern.power = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
-  pattern.feed = Math.max(1, mm("engraveFeed", 1800));
-  state.patterns.push(pattern);
-  select("pattern", id);
-  setStatus("Hazır tesbih vektörü eklendi. Ölçekleyip döndürebilir, istemediğin konturları silebilirsin.");
 }
 
 function vectorPathsForCurrentSize(pattern) {
@@ -2084,12 +1964,7 @@ function bindControls() {
   document.getElementById("vectorizePhotoBtn").addEventListener("click", vectorizePhoto);
   document.getElementById("revectorizeBtn").addEventListener("click", revectorizeSelected);
   document.getElementById("vectorAutoPresetBtn")?.addEventListener("click", applyAutoVectorPreset);
-  document.getElementById("addTasbihVectorBtn").addEventListener("click", addTasbihVector);
   document.getElementById("saveVectorSvgBtn").addEventListener("click", saveSelectedVectorSvg);
-  document.getElementById("deleteVectorPathBtn").addEventListener("click", () => {
-    if (state.selected?.type === "vectorPath") deleteSelected();
-    else setStatus("Silmek için önce önizlemede bir vektör konturuna tıklayın.");
-  });
   document.getElementById("autoLayoutBtn").addEventListener("click", autoLayout);
   document.getElementById("alignJobBtn").addEventListener("click", () => alignJobToBed(true));
   document.getElementById("applyJobOffsetBtn").addEventListener("click", applyJobOffset);

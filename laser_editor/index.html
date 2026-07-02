@@ -94,7 +94,7 @@
 
           <section>
             <h2>Foto→Vektör</h2>
-            <div class="form-grid">
+            <div class="form-grid basic-vector-grid">
               <label>Mod
                 <select id="vecMode">
                   <option value="auto" selected>Otomatik</option>
@@ -111,31 +111,34 @@
                 </select>
               </label>
               <label>Eşik <input id="vecThreshold" type="number" value="140" min="0" max="255" step="1" /></label>
-              <label>Bulanık <input id="vecBlur" type="number" value="1" min="0" step="1" /></label>
               <label>Kontrast <input id="vecContrast" type="number" value="1" min="0.2" max="4" step="0.1" /></label>
-              <label>Boşluk kapat <input id="vecMorphClose" type="number" value="2" min="0" max="12" step="1" /></label>
-              <label>Kir temizle <input id="vecMorphOpen" type="number" value="0" min="0" max="12" step="1" /></label>
-              <label>Gurultu azalt <input id="vecDenoise" type="number" value="3" min="0" max="15" step="2" /></label>
-              <label>Min alan <input id="vecMinArea" type="number" value="40" min="1" step="5" /></label>
-              <label>Min çizgi <input id="vecMinLength" type="number" value="5" min="0" step="1" /></label>
-              <label>Sadeleştir <input id="vecSimplify" type="number" value="0.55" min="0.05" step="0.05" /></label>
-              <label>Yumuşat <input id="vecSmooth" type="number" value="1" min="0" max="3" step="1" /></label>
-              <label>Max parça <input id="vecMaxContours" type="number" value="1400" min="10" step="10" /></label>
-              <label>Kopukluk birleştir <input id="vecStitchGap" type="number" value="3" min="0" max="20" step="0.5" /></label>
-              <label>Max px <input id="vecMaxDimension" type="number" value="1800" min="256" max="5000" step="100" /></label>
-              <label>Adaptif blok <input id="vecAdaptiveBlock" type="number" value="35" min="3" step="2" /></label>
-              <label>Adaptif C <input id="vecAdaptiveC" type="number" value="5" step="0.5" /></label>
             </div>
             <label class="checkline"><input id="vecInvert" type="checkbox" checked /> Koyu alanları vektör yap</label>
             <label class="checkline"><input id="vecBackgroundNormalize" type="checkbox" checked /> Işık/gölge düzelt</label>
             <label class="checkline"><input id="vecRemoveBorder" type="checkbox" checked /> Fotoğraf çerçevesini otomatik temizle</label>
+            <details class="advanced-settings">
+              <summary>Gelişmiş ayarlar</summary>
+              <div class="form-grid">
+                <label>Bulanık <input id="vecBlur" type="number" value="1" min="0" step="1" /></label>
+                <label>Boşluk kapat <input id="vecMorphClose" type="number" value="2" min="0" max="12" step="1" /></label>
+                <label>Kir temizle <input id="vecMorphOpen" type="number" value="0" min="0" max="12" step="1" /></label>
+                <label>Gürültü azalt <input id="vecDenoise" type="number" value="3" min="0" max="15" step="2" /></label>
+                <label>Min alan <input id="vecMinArea" type="number" value="40" min="1" step="5" /></label>
+                <label>Min çizgi <input id="vecMinLength" type="number" value="5" min="0" step="1" /></label>
+                <label>Sadeleştir <input id="vecSimplify" type="number" value="0.55" min="0.05" step="0.05" /></label>
+                <label>Yumuşat <input id="vecSmooth" type="number" value="1" min="0" max="3" step="1" /></label>
+                <label>Max parça <input id="vecMaxContours" type="number" value="1400" min="10" step="10" /></label>
+                <label>Kopukluk birleştir <input id="vecStitchGap" type="number" value="3" min="0" max="20" step="0.5" /></label>
+                <label>Max px <input id="vecMaxDimension" type="number" value="1800" min="256" max="5000" step="100" /></label>
+                <label>Adaptif blok <input id="vecAdaptiveBlock" type="number" value="35" min="3" step="2" /></label>
+                <label>Adaptif C <input id="vecAdaptiveC" type="number" value="5" step="0.5" /></label>
+              </div>
+            </details>
             <div class="stacked-actions">
               <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>
               <button id="revectorizeBtn">Seçili Vektörü Yeniden İşle</button>
               <button id="vectorAutoPresetBtn">Otomatik ayar</button>
-              <button id="addTasbihVectorBtn">Hazır Tesbih Vektörü Ekle</button>
               <button id="saveVectorSvgBtn">Seçili Vektörü SVG Kaydet</button>
-              <button id="deleteVectorPathBtn">Seçili Konturu Sil</button>
             </div>
           </section>
         </aside>
