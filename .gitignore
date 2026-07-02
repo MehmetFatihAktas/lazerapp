@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+# Local laser output and machine/test artifacts
+*.nc
+*.gcode
+*.DXF
+*.dxf
+algolaser-settings-*.txt
+
+# Iteration/debug renders generated while tuning vectorization
+debug_*
+
+# Local notes and consultation drafts
+danisma_cevap_sablonu.md

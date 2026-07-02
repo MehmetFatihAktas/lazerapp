@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lazer İş Editörü</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="mark">L</div>
+          <div>
+            <h1>Lazer İş Editörü</h1>
+            <p id="jobStatus">Hazır</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button id="addDxfBtn" class="primary">DXF Ekle</button>
+          <button id="addImageBtn">Desen/SVG Ekle</button>
+          <button id="vectorizeBtn">Foto→Vektör</button>
+          <button id="autoLayoutBtn">Otomatik Yerleştir</button>
+          <button id="chooseOutputBtn">Çıktı Seç</button>
+          <button id="generateBtn" class="accent">G-code Oluştur</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="left-panel panel">
+          <section>
+            <div class="section-title">
+              <h2>Parçalar</h2>
+              <button id="clearPartsBtn" class="small">Temizle</button>
+            </div>
+            <div id="partsList" class="item-list"></div>
+          </section>
+
+          <section>
+            <h2>Tabla</h2>
+            <div class="form-grid">
+              <label>Genişlik <input id="bedW" type="number" value="400" min="1" step="1" /></label>
+              <label>Yükseklik <input id="bedH" type="number" value="400" min="1" step="1" /></label>
+              <label>Set adedi <input id="quantity" type="number" value="1" min="1" step="1" /></label>
+              <label>Parça arası <input id="gap" type="number" value="3" min="0" step="0.1" /></label>
+              <label>Kenar payı <input id="margin" type="number" value="1" min="0" step="0.1" /></label>
+              <label>Tabla hizası
+                <select id="bedAlignMode">
+                  <option value="bottom-left">Sol alt</option>
+                  <option value="bottom-center">Alt orta</option>
+                  <option value="center">Tam orta</option>
+                  <option value="top-left">Sol üst</option>
+                </select>
+              </label>
+            </div>
+            <label class="checkline"><input id="allowRotate" type="checkbox" checked /> 90° döndürmeye izin ver</label>
+            <div class="stacked-actions compact-actions">
+              <button id="alignJobBtn">İşi Tablaya Hizala</button>
+            </div>
+            <div class="form-grid offset-grid">
+              <label>X ofset <input id="jobOffsetX" type="number" value="0" step="0.1" /></label>
+              <label>Y ofset <input id="jobOffsetY" type="number" value="0" step="0.1" /></label>
+            </div>
+            <button id="applyJobOffsetBtn" class="wide-action">Tüm İşi Kaydır</button>
+          </section>
+
+          <section>
+            <h2>Kesim</h2>
+            <div class="form-grid">
+              <label>Hız F <input id="cutFeed" type="number" value="500" min="1" step="10" /></label>
+              <label>Güç S <input id="cutPower" type="number" value="1000" min="0" max="1000" step="10" /></label>
+              <label>Pas <input id="passes" type="number" value="1" min="1" step="1" /></label>
+              <label>Bindirme <input id="overcut" type="number" value="0.8" min="0" step="0.1" /></label>
+              <label>Boş hareket <input id="travelFeed" type="number" value="3000" min="1" step="50" /></label>
+              <label>Pierce <input id="pierceDelay" type="number" value="0" min="0" step="0.1" /></label>
+            </div>
+            <div class="segmented" id="laserCmd">
+              <button data-value="M4" class="active">M4</button>
+              <button data-value="M3">M3</button>
+            </div>
+            <label class="checkline"><input id="innerFirst" type="checkbox" checked /> İç çizgiler önce</label>
+            <label class="checkline"><input id="returnOrigin" type="checkbox" /> İş sonunda X0 Y0</label>
+          </section>
+
+          <section>
+            <h2>Kazıma Varsayılanı</h2>
+            <div class="form-grid">
+              <label>Güç S <input id="engravePower" type="number" value="250" min="0" max="1000" step="10" /></label>
+              <label>Hız F <input id="engraveFeed" type="number" value="1800" min="1" step="50" /></label>
+              <label>Çizgi <input id="lineStep" type="number" value="0.35" min="0.05" step="0.05" /></label>
+              <label>Eşik <input id="threshold" type="number" value="140" min="0" max="255" step="1" /></label>
+            </div>
+          </section>
+
+          <section>
+            <h2>Foto→Vektör</h2>
+            <div class="form-grid">
+              <label>Mod
+                <select id="vecMode">
+                  <option value="auto" selected>Otomatik</option>
+                  <option value="centerline">Merkez çizgi</option>
+                  <option value="vtracer">Profesyonel trace (VTracer)</option>
+                  <option value="outline">Dış kontur</option>
+                </select>
+              </label>
+              <label>Eşik yöntemi
+                <select id="vecThresholdMode">
+                  <option value="otsu" selected>Otomatik Otsu</option>
+                  <option value="manual">Manuel</option>
+                  <option value="adaptive">Adaptif</option>
+                </select>
+              </label>
+              <label>Eşik <input id="vecThreshold" type="number" value="140" min="0" max="255" step="1" /></label>
+              <label>Bulanık <input id="vecBlur" type="number" value="1" min="0" step="1" /></label>
+              <label>Kontrast <input id="vecContrast" type="number" value="1" min="0.2" max="4" step="0.1" /></label>
+              <label>Boşluk kapat <input id="vecMorphClose" type="number" value="2" min="0" max="12" step="1" /></label>
+              <label>Kir temizle <input id="vecMorphOpen" type="number" value="0" min="0" max="12" step="1" /></label>
+              <label>Gurultu azalt <input id="vecDenoise" type="number" value="3" min="0" max="15" step="2" /></label>
+              <label>Min alan <input id="vecMinArea" type="number" value="40" min="1" step="5" /></label>
+              <label>Min çizgi <input id="vecMinLength" type="number" value="5" min="0" step="1" /></label>
+              <label>Sadeleştir <input id="vecSimplify" type="number" value="0.55" min="0.05" step="0.05" /></label>
+              <label>Yumuşat <input id="vecSmooth" type="number" value="1" min="0" max="3" step="1" /></label>
+              <label>Max parça <input id="vecMaxContours" type="number" value="1400" min="10" step="10" /></label>
+              <label>Kopukluk birleştir <input id="vecStitchGap" type="number" value="3" min="0" max="20" step="0.5" /></label>
+              <label>Max px <input id="vecMaxDimension" type="number" value="1800" min="256" max="5000" step="100" /></label>
+              <label>Adaptif blok <input id="vecAdaptiveBlock" type="number" value="35" min="3" step="2" /></label>
+              <label>Adaptif C <input id="vecAdaptiveC" type="number" value="5" step="0.5" /></label>
+            </div>
+            <label class="checkline"><input id="vecInvert" type="checkbox" checked /> Koyu alanları vektör yap</label>
+            <label class="checkline"><input id="vecBackgroundNormalize" type="checkbox" checked /> Işık/gölge düzelt</label>
+            <label class="checkline"><input id="vecRemoveBorder" type="checkbox" checked /> Fotoğraf çerçevesini otomatik temizle</label>
+            <div class="stacked-actions">
+              <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>
+              <button id="revectorizeBtn">Seçili Vektörü Yeniden İşle</button>
+              <button id="vectorAutoPresetBtn">Otomatik ayar</button>
+              <button id="addTasbihVectorBtn">Hazır Tesbih Vektörü Ekle</button>
+              <button id="saveVectorSvgBtn">Seçili Vektörü SVG Kaydet</button>
+              <button id="deleteVectorPathBtn">Seçili Konturu Sil</button>
+            </div>
+          </section>
+        </aside>
+
+        <section class="canvas-panel">
+          <div class="canvas-toolbar">
+            <div class="tool-group">
+              <button id="selectToolBtn" class="active">Seç</button>
+              <button id="zoomInBtn">Yakınlaş</button>
+              <button id="zoomOutBtn">Uzaklaş</button>
+              <button id="fitViewBtn">Ekrana Sığdır</button>
+              <button id="centerBtn">Ortala</button>
+              <button id="fitBtn">Sığdır</button>
+              <button id="rotateLeftBtn">-15°</button>
+              <button id="rotateRightBtn">+15°</button>
+              <button id="rotate90Btn">90°</button>
+            </div>
+            <label class="precision-control">Hassas adım <input id="nudgeStep" type="number" value="0.1" min="0.01" step="0.01" /></label>
+            <div class="canvas-readout" id="canvasReadout">400 x 400 mm</div>
+          </div>
+          <canvas id="editorCanvas"></canvas>
+        </section>
+
+        <aside class="right-panel panel">
+          <section>
+            <h2>Seçili Nesne</h2>
+            <div id="selectionPanel" class="selection-empty">Seçim yok</div>
+          </section>
+
+          <section>
+            <h2>Çıktı</h2>
+            <label class="wide-label">G-code yolu <input id="outputPath" type="text" /></label>
+            <div class="summary" id="summaryBox"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
