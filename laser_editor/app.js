@@ -658,7 +658,7 @@ function materialAreaPoints() {
 }
 
 function hasMaterialArea() {
-  return materialAreaPoints().length >= 3;
+  return !state.materialArea?.drawing && materialAreaCanClose(materialAreaPoints());
 }
 
 function materialAreaPayload() {
@@ -2338,6 +2338,50 @@ function niceGridStep(targetMm) {
   return base * 10;
 }
 
+function materialAreaGridStep() {
+  return niceGridStep(22 / Math.max(0.001, state.view.scale));
+}
+
+function snapMaterialAreaPoint(world) {
+  const step = materialAreaGridStep();
+  const snapped = {
+    x: Math.round((Number(world.x) || 0) / step) * step,
+    y: Math.round((Number(world.y) || 0) / step) * step,
+  };
+  return clampPointToBed(snapped);
+}
+
+function axisConstrainedMaterialAreaPoint(world) {
+  const snapped = snapMaterialAreaPoint(world);
+  const points = materialAreaPoints();
+  const previous = points[points.length - 1];
+  if (!previous) return snapped;
+  const dx = Math.abs(snapped.x - previous.x);
+  const dy = Math.abs(snapped.y - previous.y);
+  return dx >= dy ? { x: snapped.x, y: previous.y } : { x: previous.x, y: snapped.y };
+}
+
+function materialAreaSegmentIsAxisAligned(a, b) {
+  return Math.abs(a.x - b.x) < 0.001 || Math.abs(a.y - b.y) < 0.001;
+}
+
+function materialAreaCanClose(points = materialAreaPoints()) {
+  if (points.length < 4 || worldPolygonArea(points) < 1) return false;
+  for (let index = 1; index < points.length; index += 1) {
+    if (!materialAreaSegmentIsAxisAligned(points[index - 1], points[index])) return false;
+  }
+  return materialAreaSegmentIsAxisAligned(points[points.length - 1], points[0]);
+}
+
+function materialAreaPreviewDistance() {
+  const points = materialAreaPoints();
+  const previous = points[points.length - 1];
+  const preview = state.materialArea.previewPoint;
+  if (!previous || !preview) return null;
+  const mmValue = Math.hypot(preview.x - previous.x, preview.y - previous.y);
+  return { mm: mmValue, cm: mmValue / 10 };
+}
+
 function crisp(value) {
   return Math.round(value) + 0.5;
 }
@@ -2349,7 +2393,7 @@ function drawMaterialAreaOverlay() {
   const pathPoints = [...points];
   if (state.materialArea.drawing && state.materialArea.previewPoint) pathPoints.push(state.materialArea.previewPoint);
   ctx.save();
-  if (points.length >= 3) {
+  if (materialAreaCanClose(points)) {
     ctx.beginPath();
     points.forEach((point, index) => {
       const screen = worldToScreen(point);
@@ -2376,6 +2420,42 @@ function drawMaterialAreaOverlay() {
     ctx.setLineDash(state.materialArea.drawing ? [5, 5] : []);
     ctx.stroke();
   }
+  if (state.materialArea.drawing && state.materialArea.previewPoint && points.length) {
+    const previous = points[points.length - 1];
+    const preview = state.materialArea.previewPoint;
+    const start = worldToScreen(previous);
+    const end = worldToScreen(preview);
+    const distance = materialAreaPreviewDistance();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = palette.selection;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(end.x, end.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = palette.selection;
+    ctx.fill();
+    if (distance) {
+      const label = `${distance.cm.toFixed(1)} cm / ${distance.mm.toFixed(0)} mm`;
+      const midX = (start.x + end.x) / 2;
+      const midY = (start.y + end.y) / 2;
+      ctx.font = "800 13px Segoe UI";
+      const metrics = ctx.measureText(label);
+      const boxX = midX + 10;
+      const boxY = midY - 30;
+      ctx.fillStyle = "rgba(255, 255, 255, 0.94)";
+      ctx.strokeStyle = palette.selection;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, metrics.width + 16, 25, 6);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = palette.text;
+      ctx.fillText(label, boxX + 8, boxY + 17);
+    }
+  }
   points.forEach((point, index) => {
     const screen = worldToScreen(point);
     ctx.beginPath();
@@ -2390,7 +2470,7 @@ function drawMaterialAreaOverlay() {
     const first = worldToScreen(points[0]);
     ctx.fillStyle = palette.materialArea;
     ctx.font = "700 12px Segoe UI";
-    ctx.fillText("ilk noktaya tikla veya Alani Bitir", first.x + 8, first.y - 8);
+    ctx.fillText("Grid noktasına tıkla / yatay-dikey çiz / kapatmak için ilk noktaya dön", first.x + 8, first.y - 8);
   }
   ctx.restore();
 }
@@ -4217,19 +4297,19 @@ function renderStatusBars(analysis) {
     refs.activeAreaText.textContent = `Aktif alan: ${Math.max(0, analysis.activeWidth).toFixed(0)} × ${Math.max(0, analysis.activeHeight).toFixed(0)} mm`;
   }
   if (refs.activeAreaText && hasMaterialArea()) {
-    refs.activeAreaText.textContent = `Aktif alan: serbest poligon + ${analysis.margin.toFixed(1)} mm kenar payi`;
+    refs.activeAreaText.textContent = `Aktif alan: grid cokgen + ${analysis.margin.toFixed(1)} mm kenar payi`;
   }
   if (refs.materialAreaText) {
     const points = materialAreaPoints();
     const area = worldPolygonArea(points);
-    refs.materialAreaText.textContent = hasMaterialArea()
-      ? `Kullanilabilir alan: ${points.length} nokta, yaklasik ${(area / 100).toFixed(1)} cm2. Otomatik yerlestirme bu alanin icini doldurur.`
-      : state.materialArea.drawing
-        ? "Kullanilabilir alan ciziliyor: canvas uzerinde nokta ekle, sonra Alani Bitir."
-        : "Kullanilabilir alan: dikdortgen tabla.";
+    refs.materialAreaText.textContent = state.materialArea.drawing
+      ? `Kullanilabilir alan ciziliyor: ${points.length} kose. Grid noktalari kullanilir; kenarlar yatay/dikey kilitlidir.`
+      : hasMaterialArea()
+        ? `Kullanilabilir alan: ${points.length} grid kosesi, yaklasik ${(area / 100).toFixed(1)} cm2. Otomatik yerlestirme bu alanin icini doldurur.`
+        : "Kullanilabilir alan: dikdortgen tabla. Bos alan cizimi grid noktalari ve yatay/dikey kenarlarla yapilir.";
   }
   refs.drawAreaToolBtn?.classList.toggle("active", Boolean(state.materialArea.drawing));
-  if (refs.finishAreaBtn) refs.finishAreaBtn.disabled = !state.materialArea.drawing || materialAreaPoints().length < 3;
+  if (refs.finishAreaBtn) refs.finishAreaBtn.disabled = !state.materialArea.drawing || materialAreaPoints().length < 4;
   if (refs.clearAreaBtn) refs.clearAreaBtn.disabled = !hasMaterialArea() && !state.materialArea.drawing;
   if (refs.smallBedWarning) {
     const smallBed = analysis.warnings.find((item) => item.target === "small-bed");
@@ -4331,13 +4411,17 @@ function beginMaterialAreaDrawing() {
   state.materialArea = { points: [], drawing: true, previewPoint: null };
   select(null, null);
   draw();
-  setStatus("Bos alan cizimi aktif: canvas uzerinde nokta ekle, bitirmek icin ilk noktaya tikla veya Alani Bitir.");
+  setStatus("Bos alan cizimi aktif: grid noktalarina tikla; kenarlar yatay/dikey kilitlenir, uzunluk cm/mm olarak gorunur.", "info");
 }
 
 function finishMaterialAreaDrawing() {
   const points = materialAreaPoints();
-  if (points.length < 3) {
-    setStatus("Alan icin en az 3 nokta gerekir.");
+  if (points.length < 4) {
+    setStatus("Alan icin en az 4 kose gerekir; ucgen veya acik cizgi kabul edilmez.", "warn");
+    return;
+  }
+  if (!materialAreaCanClose(points)) {
+    setStatus("Alan kapanisi yatay/dikey olmali ve gercek bir alan olusturmali.", "warn");
     return;
   }
   state.materialArea.points = points.map(clampPointToBed);
@@ -4346,12 +4430,12 @@ function finishMaterialAreaDrawing() {
   markLayoutSettingsChanged();
   saveUiSettings();
   draw();
-  setStatus("Kullanilabilir alan kaydedildi. Otomatik Yerlestir bu alanin icini dolduracak.");
+  setStatus("Kullanilabilir alan grid noktalarindan kaydedildi. Otomatik Yerlestir bu alanin icini dolduracak.", "ok");
 }
 
 function clearMaterialArea() {
   if (!hasMaterialArea() && !state.materialArea.drawing) {
-    setStatus("Temizlenecek ozel alan yok.");
+    setStatus("Temizlenecek ozel alan yok.", "warn");
     return;
   }
   pushUndo("Bos alani temizle");
@@ -4359,19 +4443,30 @@ function clearMaterialArea() {
   markLayoutSettingsChanged();
   saveUiSettings();
   draw();
-  setStatus("Kullanilabilir alan dikdortgen tabla olarak sifirlandi.");
+  setStatus("Kullanilabilir alan dikdortgen tabla olarak sifirlandi.", "ok");
 }
 
 function addMaterialAreaPoint(world) {
-  const point = clampPointToBed(world);
+  const rawPoint = snapMaterialAreaPoint(world);
+  const point = axisConstrainedMaterialAreaPoint(world);
   const points = materialAreaPoints();
   if (points.length >= 3) {
     const firstScreen = worldToScreen(points[0]);
-    const currentScreen = worldToScreen(point);
+    const currentScreen = worldToScreen(rawPoint);
     if (Math.hypot(currentScreen.x - firstScreen.x, currentScreen.y - firstScreen.y) <= 12) {
-      finishMaterialAreaDrawing();
+      if (materialAreaCanClose(points)) finishMaterialAreaDrawing();
+      else setStatus("Alani kapatmak icin en az 4 kose gerekir ve son kenar ilk noktaya yatay/dikey donmelidir.", "warn");
       return;
     }
+  }
+  const last = points[points.length - 1];
+  if (last && Math.hypot(point.x - last.x, point.y - last.y) < 0.001) {
+    setStatus("Ayni grid noktasina tekrar tiklanmadi; baska bir nokta sec.", "warn");
+    return;
+  }
+  if (last && !materialAreaSegmentIsAxisAligned(last, point)) {
+    setStatus("Bos alan kenarlari sadece yatay veya dikey olabilir.", "warn");
+    return;
   }
   points.push(point);
   state.materialArea.points = points;
@@ -5961,7 +6056,7 @@ function onPointerMove(event) {
   const world = screenToWorld(screen);
   state.cursor = world;
   if (state.materialArea.drawing) {
-    state.materialArea.previewPoint = clampPointToBed(world);
+    state.materialArea.previewPoint = axisConstrainedMaterialAreaPoint(world);
     canvas.style.cursor = "crosshair";
     draw();
     return;
