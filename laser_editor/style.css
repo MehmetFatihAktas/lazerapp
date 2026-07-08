@@ -1788,6 +1788,12 @@ details > .wide-action {
 .ribbon-body input,
 .ribbon-body select { height: 28px; }
 .ribbon-body input[type="number"] { width: 64px; }
+.ribbon-body input[type="file"] {
+  height: auto;
+  max-width: 260px;
+  padding: 4px 0;
+  font-size: 12px;
+}
 .ribbon-body .unit-input { width: auto; }
 .ribbon-body .unit-input input { width: 58px; }
 .rib-field.wide input,
@@ -1795,6 +1801,11 @@ details > .wide-action {
 .ribbon-body button { height: 30px; }
 .ribbon-body .checkline { font-size: 12px; color: var(--text); }
 .ribbon-body .hint { max-width: 220px; }
+.ribbon-body .inline-note {
+  align-self: center;
+  max-width: 420px;
+  font-size: 12px;
+}
 .ribbon-body .advanced-settings { min-width: 260px; }
 .ribbon-body .advanced-settings .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
 .ribbon-body .segmented { height: 30px; }

@@ -27,8 +27,14 @@ const refs = {
   materialAreaText: document.getElementById("materialAreaText"),
   outputPath: document.getElementById("outputPath"),
   textInput: document.getElementById("textInput"),
+  textFont: document.getElementById("textFont"),
+  textFontUpload: document.getElementById("textFontUpload"),
+  textFontHint: document.getElementById("textFontHint"),
   textHeight: document.getElementById("textHeight"),
   textTracking: document.getElementById("textTracking"),
+  textWeight: document.getElementById("textWeight"),
+  textStyle: document.getElementById("textStyle"),
+  textOperation: document.getElementById("textOperation"),
   shapeWidth: document.getElementById("shapeWidth"),
   shapeHeight: document.getElementById("shapeHeight"),
   shapeRadius: document.getElementById("shapeRadius"),
@@ -152,6 +158,7 @@ const state = {
   placements: [],
   patterns: [],
   images: new Map(),
+  customFonts: [],
   selected: null,
   selectedItems: [],
   clipboard: [],
@@ -195,6 +202,28 @@ const SETTINGS_KEY = "laser-editor-settings-v3";
 const VECTOR_SETTINGS_VERSION = 7;
 const CLIENT_SESSION_KEY = "laser-editor-client-id-v1";
 let jobAnalysisTimer = null;
+
+const TEXT_FONT_PRESETS = [
+  { id: "laser-single", label: "Laser tek çizgi", kind: "single", family: "" },
+  { id: "arial", label: "Arial", kind: "outline", family: "Arial, Helvetica, sans-serif" },
+  { id: "arial-black", label: "Arial Black", kind: "outline", family: "'Arial Black', Gadget, sans-serif" },
+  { id: "segoe-ui", label: "Segoe UI", kind: "outline", family: "'Segoe UI', Arial, sans-serif" },
+  { id: "calibri", label: "Calibri", kind: "outline", family: "Calibri, 'Segoe UI', sans-serif" },
+  { id: "tahoma", label: "Tahoma", kind: "outline", family: "Tahoma, Geneva, sans-serif" },
+  { id: "verdana", label: "Verdana", kind: "outline", family: "Verdana, Geneva, sans-serif" },
+  { id: "trebuchet", label: "Trebuchet MS", kind: "outline", family: "'Trebuchet MS', sans-serif" },
+  { id: "century-gothic", label: "Century Gothic", kind: "outline", family: "'Century Gothic', Arial, sans-serif" },
+  { id: "times", label: "Times New Roman", kind: "outline", family: "'Times New Roman', Times, serif" },
+  { id: "georgia", label: "Georgia", kind: "outline", family: "Georgia, serif" },
+  { id: "garamond", label: "Garamond", kind: "outline", family: "Garamond, Georgia, serif" },
+  { id: "cambria", label: "Cambria", kind: "outline", family: "Cambria, Georgia, serif" },
+  { id: "consolas", label: "Consolas", kind: "outline", family: "Consolas, monospace" },
+  { id: "courier", label: "Courier New", kind: "outline", family: "'Courier New', Courier, monospace" },
+  { id: "impact", label: "Impact", kind: "outline", family: "Impact, Haettenschweiler, sans-serif" },
+  { id: "comic", label: "Comic Sans MS", kind: "outline", family: "'Comic Sans MS', cursive" },
+  { id: "brush", label: "Brush Script MT", kind: "outline", family: "'Brush Script MT', cursive" },
+  { id: "lucida", label: "Lucida Handwriting", kind: "outline", family: "'Lucida Handwriting', cursive" },
+];
 
 function updateJobAnalysisNow(extra = "") {
   if (jobAnalysisTimer) {
@@ -256,6 +285,10 @@ const persistedInputIds = [
   "engraveFeed",
   "lineStep",
   "threshold",
+  "textFont",
+  "textWeight",
+  "textStyle",
+  "textOperation",
   "nudgeStep",
   "vecMode",
   "vecThresholdMode",
@@ -336,6 +369,7 @@ function createUndoSnapshot(label = "islem") {
     parts: clonePlain(state.parts),
     placements: clonePlain(state.placements),
     patterns: clonePlain(state.patterns),
+    customFonts: clonePlain(state.customFonts),
     selected: state.selected ? clonePlain(state.selected) : null,
     selectedItems: clonePlain(state.selectedItems || []),
     clipboardPasteCount: state.clipboardPasteCount,
@@ -360,6 +394,7 @@ function restoreUndoSnapshot(snapshot) {
     state.parts = clonePlain(snapshot.parts || []);
     state.placements = clonePlain(snapshot.placements || []);
     state.patterns = clonePlain(snapshot.patterns || []);
+    state.customFonts = clonePlain(snapshot.customFonts || []).map((font) => ({ ...font, installed: false }));
     state.selected = snapshot.selected ? clonePlain(snapshot.selected) : null;
     state.selectedItems = clonePlain(snapshot.selectedItems || []);
     state.clipboardPasteCount = Number(snapshot.clipboardPasteCount) || 0;
@@ -370,6 +405,7 @@ function restoreUndoSnapshot(snapshot) {
     state.currentAnalysis = null;
     applyUndoInputSnapshot(snapshot.inputs || {});
     restoreImageSources(snapshot.imageSources || {});
+    installCustomFonts().then(() => renderTextFontOptions(refs.textFont?.value)).catch(() => renderTextFontOptions(refs.textFont?.value));
     syncLaserButtons();
     saveUiSettings();
     clearMachinePreview();
@@ -446,6 +482,115 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function customFontValue(font) {
+  return `custom:${font.id}`;
+}
+
+function selectedTextFontDefinition() {
+  const value = refs.textFont?.value || "laser-single";
+  if (value.startsWith("custom:")) {
+    const id = value.slice("custom:".length);
+    const font = state.customFonts.find((item) => item.id === id);
+    if (font) return { ...font, kind: "outline", custom: true, value };
+  }
+  return TEXT_FONT_PRESETS.find((item) => item.id === value) || TEXT_FONT_PRESETS[0];
+}
+
+function renderTextFontOptions(selectedValue = "") {
+  const select = refs.textFont;
+  if (!select) return;
+  const selected = selectedValue || select.value || "laser-single";
+  select.innerHTML = "";
+  const appendGroup = (label, fonts) => {
+    if (!fonts.length) return;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    fonts.forEach((font) => {
+      const option = document.createElement("option");
+      option.value = font.custom ? customFontValue(font) : font.id;
+      option.textContent = font.name || font.label;
+      group.appendChild(option);
+    });
+    select.appendChild(group);
+  };
+  appendGroup("Lazer fontu", TEXT_FONT_PRESETS.filter((font) => font.kind === "single"));
+  appendGroup("Sistem fontları", TEXT_FONT_PRESETS.filter((font) => font.kind !== "single"));
+  appendGroup("Yüklenen fontlar", state.customFonts.map((font) => ({ ...font, custom: true })));
+  const values = Array.from(select.options).map((option) => option.value);
+  select.value = values.includes(selected) ? selected : "laser-single";
+  updateTextFontHint();
+}
+
+function updateTextFontHint() {
+  const hint = refs.textFontHint;
+  if (!hint) return;
+  const font = selectedTextFontDefinition();
+  const op = refs.textOperation?.value || "engrave_line";
+  if (font.kind === "single") {
+    hint.textContent = "Laser tek çizgi font hızlı kazıma içindir; kesim/dolgu için kontur font seç.";
+  } else if (op === "cut") {
+    hint.textContent = `"${font.name || font.label}" kontur olarak kesime çevrilecek. İnce yazılarda küçük iç adalar düşmeyebilir.`;
+  } else if (op === "engrave_fill") {
+    hint.textContent = `"${font.name || font.label}" dolu alan yakma vektörü olarak üretilecek.`;
+  } else {
+    hint.textContent = `"${font.name || font.label}" dış kontur çizgisi olarak yakılacak.`;
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")));
+    reader.addEventListener("error", () => reject(reader.error || new Error("Font okunamadi.")));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function installCustomFonts() {
+  if (!("FontFace" in window)) return;
+  for (const font of state.customFonts) {
+    if (!font?.dataUrl || font.installed) continue;
+    const face = new FontFace(font.family, `url(${font.dataUrl})`);
+    await face.load();
+    document.fonts.add(face);
+    font.installed = true;
+  }
+}
+
+async function handleTextFontUpload(event) {
+  const files = Array.from(event.target?.files || []);
+  if (!files.length) return;
+  pushUndo("Font yukle");
+  let loaded = 0;
+  let selected = "";
+  try {
+    for (const file of files) {
+      if (!/\.(ttf|otf|woff2?)$/i.test(file.name) && !String(file.type || "").startsWith("font/")) continue;
+      const dataUrl = await readFileAsDataUrl(file);
+      const id = uid("font");
+      const cleanName = file.name.replace(/\.(ttf|otf|woff2?)$/i, "");
+      const font = {
+        id,
+        name: cleanName || "Yüklenen font",
+        family: `LaserUserFont_${id.replace(/[^a-z0-9_]/gi, "_")}`,
+        dataUrl,
+        installed: false,
+      };
+      state.customFonts.push(font);
+      selected = customFontValue(font);
+      loaded += 1;
+    }
+    await installCustomFonts();
+    renderTextFontOptions(selected || refs.textFont?.value);
+    saveUiSettings();
+    setStatus(loaded ? `${loaded} font yüklendi ve metin listesine eklendi.` : "Desteklenen font dosyası bulunamadı.", loaded ? "ok" : "warn");
+  } catch (error) {
+    setStatus(error.message || "Font yüklenemedi.", "danger");
+  } finally {
+    if (event.target) event.target.value = "";
+  }
 }
 
 function setStatus(text, level = "info") {
@@ -5170,6 +5315,8 @@ function addGeneratedVector(geometry, options) {
   pattern.vectorEngraveMode = pattern.operation === "engrave_fill" ? "fill" : "contour";
   pattern.generated = true;
   pattern.generatedKind = geometry.kind;
+  pattern.textSettings = options.textSettings || geometry.textSettings || null;
+  pattern.vectorStats = geometry.vectorStats || pattern.vectorStats || null;
   state.patterns.push(pattern);
   select("pattern", id);
   updateUiFromAnalysis(computeJobAnalysis());
@@ -5200,7 +5347,164 @@ function openVectorPanel() {
   document.getElementById("vectorizePhotoBtn")?.focus();
 }
 
-function addTextPattern() {
+function textCanvasFont(fontPx, font) {
+  const style = refs.textStyle?.value || "normal";
+  const weight = refs.textWeight?.value || "400";
+  const family = font.family || "Arial, sans-serif";
+  return `${style} ${weight} ${fontPx}px ${family}`;
+}
+
+function measureTrackedText(ctx2d, text, trackingPx) {
+  let width = 0;
+  const chars = Array.from(text);
+  chars.forEach((ch, index) => {
+    width += ctx2d.measureText(ch).width;
+    if (index < chars.length - 1) width += trackingPx;
+  });
+  return width;
+}
+
+function drawTrackedText(ctx2d, text, x, y, trackingPx) {
+  let pen = x;
+  const chars = Array.from(text);
+  chars.forEach((ch, index) => {
+    ctx2d.fillText(ch, pen, y);
+    pen += ctx2d.measureText(ch).width + (index < chars.length - 1 ? trackingPx : 0);
+  });
+}
+
+function trimTextCanvas(source) {
+  const ctx2d = source.getContext("2d");
+  const data = ctx2d.getImageData(0, 0, source.width, source.height);
+  let minX = source.width;
+  let minY = source.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < source.height; y += 1) {
+    for (let x = 0; x < source.width; x += 1) {
+      const alpha = data.data[(y * source.width + x) * 4 + 3];
+      if (alpha <= 8) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  const pad = 2;
+  const width = maxX - minX + 1 + pad * 2;
+  const height = maxY - minY + 1 + pad * 2;
+  const output = document.createElement("canvas");
+  output.width = width;
+  output.height = height;
+  const out = output.getContext("2d");
+  out.fillStyle = "#fff";
+  out.fillRect(0, 0, width, height);
+  out.drawImage(source, minX, minY, maxX - minX + 1, maxY - minY + 1, pad, pad, maxX - minX + 1, maxY - minY + 1);
+  return output;
+}
+
+async function renderTextFontMask(text, font, heightMm, trackingMm) {
+  const lines = String(text).split(/\r?\n/);
+  let pxPerMm = 12;
+  let fontPx = heightMm * pxPerMm;
+  const measureCanvas = document.createElement("canvas");
+  const measure = measureCanvas.getContext("2d");
+  measure.textBaseline = "alphabetic";
+  measure.font = textCanvasFont(fontPx, font);
+  await document.fonts?.load?.(measure.font);
+  const maxLineWidthPx = Math.max(1, ...lines.map((line) => measureTrackedText(measure, line, trackingMm * pxPerMm)));
+  const widthMmEstimate = maxLineWidthPx / pxPerMm;
+  const totalHeightMmEstimate = Math.max(heightMm, lines.length * heightMm * 1.28);
+  const maxDimension = 2200;
+  if (Math.max(widthMmEstimate, totalHeightMmEstimate) * pxPerMm > maxDimension) {
+    pxPerMm = Math.max(3, maxDimension / Math.max(widthMmEstimate, totalHeightMmEstimate));
+    fontPx = heightMm * pxPerMm;
+    measure.font = textCanvasFont(fontPx, font);
+    await document.fonts?.load?.(measure.font);
+  }
+  const trackingPx = trackingMm * pxPerMm;
+  const lineHeight = fontPx * 1.28;
+  const contentWidth = Math.max(1, ...lines.map((line) => measureTrackedText(measure, line, trackingPx)));
+  const padding = Math.max(12, fontPx * 0.5);
+  const raw = document.createElement("canvas");
+  raw.width = Math.ceil(contentWidth + padding * 2);
+  raw.height = Math.ceil(lineHeight * lines.length + padding * 2);
+  const rawCtx = raw.getContext("2d");
+  rawCtx.clearRect(0, 0, raw.width, raw.height);
+  rawCtx.fillStyle = "#000";
+  rawCtx.textBaseline = "alphabetic";
+  rawCtx.font = textCanvasFont(fontPx, font);
+  lines.forEach((line, index) => {
+    drawTrackedText(rawCtx, line, padding, padding + fontPx + index * lineHeight, trackingPx);
+  });
+  const trimmed = trimTextCanvas(raw);
+  if (!trimmed) return null;
+  return {
+    dataUrl: trimmed.toDataURL("image/png"),
+    pxPerMm,
+    widthMm: trimmed.width / pxPerMm,
+    heightMm: trimmed.height / pxPerMm,
+  };
+}
+
+async function buildOutlineTextGeometry(text, options) {
+  const font = options.font;
+  const raster = await renderTextFontMask(text, font, options.height, options.tracking);
+  if (!raster) return null;
+  const data = await api("/api/vectorize-image", {
+    dataUrl: raster.dataUrl,
+    name: options.name,
+    threshold: 200,
+    thresholdMode: "manual",
+    mode: "auto",
+    blur: 0,
+    minArea: 4,
+    minLength: 1,
+    simplify: 0.35,
+    smooth: 1,
+    invert: true,
+    maxContours: 5000,
+    contrast: 1,
+    morphOpen: 0,
+    morphClose: 0,
+    adaptiveBlock: 35,
+    adaptiveC: 5,
+    maxDimension: 2200,
+    removeBorder: false,
+    stitchGap: 0,
+    backgroundNormalize: false,
+    denoise: 0,
+  });
+  const vector = data.vector;
+  if (!vector?.vectorPaths?.length) return null;
+  const operation = options.operation || "engrave_line";
+  const vectorPaths = cloneVectorPaths(vector.vectorPaths).map((path) => {
+    path.points = (path.points || []).map(([x, y]) => [x / raster.pxPerMm, y / raster.pxPerMm]);
+    path.operation = operation;
+    refreshVectorPathMetrics(path);
+    return path;
+  });
+  return {
+    vectorPaths,
+    sourceWidth: Math.max(0.5, (vector.sourceWidth || raster.widthMm * raster.pxPerMm) / raster.pxPerMm),
+    sourceHeight: Math.max(0.5, (vector.sourceHeight || raster.heightMm * raster.pxPerMm) / raster.pxPerMm),
+    kind: "text",
+    textSettings: {
+      mode: "outline",
+      font: font.name || font.label,
+      family: font.family,
+      height: options.height,
+      tracking: options.tracking,
+      weight: refs.textWeight?.value || "400",
+      style: refs.textStyle?.value || "normal",
+      operation,
+    },
+    vectorStats: vector.stats || null,
+  };
+}
+
+async function addTextPattern() {
   const geometryLib = window.LaserGeometry;
   if (!geometryLib) {
     setStatus("Geometri modülü yüklenmedi (geometry.js).");
@@ -5214,13 +5518,36 @@ function addTextPattern() {
   }
   const height = Math.max(2, Number(refs.textHeight?.value) || 20);
   const tracking = Number(refs.textTracking?.value) || 0;
-  const geometry = geometryLib.buildText(text, { height, tracking });
+  const selectedFont = selectedTextFontDefinition();
+  const requestedOperation = refs.textOperation?.value || "engrave_line";
+  let geometry;
+  let operation = requestedOperation;
+  if (selectedFont.kind === "single") {
+    operation = "engrave_line";
+    if (requestedOperation !== "engrave_line") {
+      setStatus("Tek çizgi font sadece yakma çizgi olarak üretilir; kesim veya dolgu için kontur font seç.", "warn");
+    }
+    geometry = geometryLib.buildText(text, { height, tracking });
+    if (geometry?.vectorPaths) geometry.vectorPaths.forEach((path) => { path.operation = "engrave_line"; });
+    if (geometry) geometry.textSettings = { mode: "single-line", font: selectedFont.label, height, tracking, operation };
+  } else {
+    setStatus("Font konturu vektöre çevriliyor...");
+    await installCustomFonts();
+    geometry = await buildOutlineTextGeometry(text, {
+      font: selectedFont,
+      height,
+      tracking,
+      operation,
+      name: `Metin ${selectedFont.name || selectedFont.label}`,
+    });
+  }
   if (!geometry) {
     setStatus("Bu metinden çizgi üretilemedi.");
     return;
   }
   const name = `Metin: ${text.length > 18 ? text.slice(0, 18) + "…" : text}`;
-  addGeneratedVector(geometry, { name, operation: "engrave_line" });
+  const pattern = addGeneratedVector(geometry, { name, operation, textSettings: geometry.textSettings });
+  if (pattern) setStatus(`${name} eklendi: ${selectedFont.name || selectedFont.label}.`, "ok");
 }
 
 function addShapePattern(kind) {
@@ -6219,6 +6546,7 @@ function projectPayload() {
     parts: clonePlain(state.parts),
     placements: clonePlain(state.placements),
     patterns: state.patterns.map((pattern) => clonePatternPayload(pattern)),
+    customFonts: clonePlain(state.customFonts),
     selected: state.selected ? clonePlain(state.selected) : null,
     selectedItems: clonePlain(state.selectedItems || []),
     layout: clonePlain(state.layout),
@@ -6238,6 +6566,7 @@ function restoreProject(project) {
   state.parts = clonePlain(project.parts || []);
   state.placements = clonePlain(project.placements || []);
   state.patterns = (project.patterns || []).map((pattern) => clonePatternPayload(pattern));
+  state.customFonts = clonePlain(project.customFonts || []).map((font) => ({ ...font, installed: false }));
   state.selected = project.selected ? clonePlain(project.selected) : null;
   state.selectedItems = clonePlain(project.selectedItems || []);
   state.layout = clonePlain(project.layout || state.layout);
@@ -6246,6 +6575,7 @@ function restoreProject(project) {
   applyUndoInputSnapshot(project.inputs || {});
   if (refs.outputPath) refs.outputPath.value = project.outputPath || project.inputs?.outputPath || "";
   restoreImageSources(project.imageSources || {});
+  installCustomFonts().then(() => renderTextFontOptions(project.inputs?.textFont || refs.textFont?.value)).catch(() => renderTextFontOptions(refs.textFont?.value));
   syncLaserButtons();
   clearMachinePreview();
   saveUiSettings();
@@ -6535,6 +6865,17 @@ function bindControls() {
   document.getElementById("machinePreviewBtn")?.addEventListener("click", () => loadMachinePreview(true));
   document.querySelectorAll("[data-flow-close]").forEach((el) => el.addEventListener("click", closeProduceFlow));
   document.getElementById("addTextBtn")?.addEventListener("click", addTextPattern);
+  refs.textFont?.addEventListener("change", () => {
+    updateTextFontHint();
+    saveUiSettings();
+  });
+  refs.textWeight?.addEventListener("change", updateTextFontHint);
+  refs.textStyle?.addEventListener("change", updateTextFontHint);
+  refs.textOperation?.addEventListener("change", () => {
+    updateTextFontHint();
+    saveUiSettings();
+  });
+  refs.textFontUpload?.addEventListener("change", handleTextFontUpload);
   refs.textInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); addTextPattern(); }
   });
@@ -6666,7 +7007,9 @@ function bindControls() {
   });
 }
 
+renderTextFontOptions();
 loadUiSettings();
+renderTextFontOptions(refs.textFont?.value || "laser-single");
 state.layout.appliedSettings = layoutSettingsSnapshot();
 syncLaserButtons();
 startClientLifecycleTracking();

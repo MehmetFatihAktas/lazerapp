@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import json
+import base64
 import mimetypes
 import socket
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -30,6 +32,31 @@ CLIENTS: dict[str, float] = {}
 CLIENT_EVER_CONNECTED = False
 NO_CLIENTS_SINCE: float | None = None
 DIALOG_LOCK = threading.Lock()
+
+
+def image_data_url_to_temp_file(data_url: str) -> Path:
+    text = str(data_url or "")
+    if not text.startswith("data:image/") or ";base64," not in text:
+        raise ValueError("Gecersiz gorsel verisi.")
+    header, encoded = text.split(",", 1)
+    mime = header[5:].split(";", 1)[0].lower()
+    suffix = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/webp": ".webp",
+    }.get(mime)
+    if not suffix:
+        raise ValueError("Desteklenmeyen gorsel formati.")
+    raw = base64.b64decode(encoded, validate=True)
+    if not raw or len(raw) > 24 * 1024 * 1024:
+        raise ValueError("Gorsel verisi bos veya cok buyuk.")
+    temp = tempfile.NamedTemporaryFile(prefix="laser_text_", suffix=suffix, delete=False)
+    try:
+        temp.write(raw)
+        return Path(temp.name)
+    finally:
+        temp.close()
 
 
 def record_client_ping(client_id: str) -> None:
@@ -472,38 +499,52 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
 
     def _vectorize_image(self) -> None:
         payload = self._read_json(optional=True)
-        filename = payload.get("path") or choose_raster_image_file()
-        if not filename:
-            self._json({"ok": True, "vector": None})
-            return
-        source_path = Path(filename)
-        if source_path.suffix.lower() == ".svg":
-            self._json({"ok": True, "vector": svg_as_vector_payload(source_path)})
-            return
-        vector = core.vectorize_image(
-            source_path,
-            threshold=int(float(payload.get("threshold", 140))),
-            threshold_mode=str(payload.get("thresholdMode", "manual")),
-            mode=str(payload.get("mode", "auto")),
-            blur=int(float(payload.get("blur", 3))),
-            min_area=float(payload.get("minArea", 40)),
-            min_length=float(payload.get("minLength", 8)),
-            simplify=float(payload.get("simplify", 0.8)),
-            smooth=int(float(payload.get("smooth", 1))),
-            invert=bool(payload.get("invert", True)),
-            max_contours=int(float(payload.get("maxContours", 1200))),
-            contrast=float(payload.get("contrast", 1.0)),
-            morph_open=int(float(payload.get("morphOpen", 0))),
-            morph_close=int(float(payload.get("morphClose", 0))),
-            adaptive_block=int(float(payload.get("adaptiveBlock", 35))),
-            adaptive_c=float(payload.get("adaptiveC", 5.0)),
-            max_dimension=int(float(payload.get("maxDimension", 1800))),
-            remove_border=bool(payload.get("removeBorder", True)),
-            stitch_gap=float(payload.get("stitchGap", 0.0)),
-            background_normalize=bool(payload.get("backgroundNormalize", True)),
-            denoise=int(float(payload.get("denoise", 3))),
-        )
-        self._json({"ok": True, "vector": vector})
+        temp_path = None
+        try:
+            if payload.get("dataUrl"):
+                source_path = image_data_url_to_temp_file(str(payload.get("dataUrl")))
+                temp_path = source_path
+            else:
+                filename = payload.get("path") or choose_raster_image_file()
+                if not filename:
+                    self._json({"ok": True, "vector": None})
+                    return
+                source_path = Path(filename)
+            if source_path.suffix.lower() == ".svg":
+                self._json({"ok": True, "vector": svg_as_vector_payload(source_path)})
+                return
+            vector = core.vectorize_image(
+                source_path,
+                threshold=int(float(payload.get("threshold", 140))),
+                threshold_mode=str(payload.get("thresholdMode", "manual")),
+                mode=str(payload.get("mode", "auto")),
+                blur=int(float(payload.get("blur", 3))),
+                min_area=float(payload.get("minArea", 40)),
+                min_length=float(payload.get("minLength", 8)),
+                simplify=float(payload.get("simplify", 0.8)),
+                smooth=int(float(payload.get("smooth", 1))),
+                invert=bool(payload.get("invert", True)),
+                max_contours=int(float(payload.get("maxContours", 1200))),
+                contrast=float(payload.get("contrast", 1.0)),
+                morph_open=int(float(payload.get("morphOpen", 0))),
+                morph_close=int(float(payload.get("morphClose", 0))),
+                adaptive_block=int(float(payload.get("adaptiveBlock", 35))),
+                adaptive_c=float(payload.get("adaptiveC", 5.0)),
+                max_dimension=int(float(payload.get("maxDimension", 1800))),
+                remove_border=bool(payload.get("removeBorder", True)),
+                stitch_gap=float(payload.get("stitchGap", 0.0)),
+                background_normalize=bool(payload.get("backgroundNormalize", True)),
+                denoise=int(float(payload.get("denoise", 3))),
+            )
+            if payload.get("name"):
+                vector["name"] = str(payload.get("name"))
+            self._json({"ok": True, "vector": vector})
+        finally:
+            if temp_path:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _save_vector_svg(self) -> None:
         payload = self._read_json()

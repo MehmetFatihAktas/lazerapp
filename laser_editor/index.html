@@ -64,9 +64,17 @@
           <div class="ribbon-group">
             <div class="rib-row">
               <label class="rib-field wide">Metin<input id="textInput" type="text" placeholder="TESBİH" /></label>
+              <label class="rib-field wide">Font<select id="textFont"></select></label>
               <label class="rib-field">Yük.<span class="unit-input"><input id="textHeight" type="number" value="20" min="2" step="1" /><b>mm</b></span></label>
               <label class="rib-field">Aralık<span class="unit-input"><input id="textTracking" type="number" value="0" min="-2" step="0.2" /><b>mm</b></span></label>
+              <label class="rib-field">Ağırlık<select id="textWeight"><option value="400">Normal</option><option value="600">Kalın</option><option value="700">Bold</option><option value="900">Siyah</option></select></label>
+              <label class="rib-field">Stil<select id="textStyle"><option value="normal">Düz</option><option value="italic">İtalik</option></select></label>
+              <label class="rib-field">Çıktı<select id="textOperation"><option value="engrave_line">Yakma çizgi</option><option value="engrave_fill">Yakma alan</option><option value="cut">Kesim kontur</option></select></label>
               <button id="addTextBtn" class="primary">Metni Ekle</button>
+            </div>
+            <div class="rib-row">
+              <label class="rib-field wide">Font yükle<input id="textFontUpload" type="file" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2" multiple /></label>
+              <div id="textFontHint" class="inline-note">Tek çizgi font hızlı kazıma içindir; diğer fontlar kontur vektörüne çevrilir.</div>
             </div>
             <span class="ribbon-group-title">Metin (kazıma)</span>
           </div>
