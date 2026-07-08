@@ -173,7 +173,6 @@ def choose_raster_image_file() -> str:
             title="Vektörleştirilecek fotoğraf seç",
             initialdir=str(DEFAULT_DIR if DEFAULT_DIR.exists() else Path.home()),
             filetypes=[
-                ("SVG", "*.svg *.SVG"),
                 ("Fotoğraf", "*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff *.gif *.PNG *.JPG *.JPEG *.BMP *.WEBP *.TIF *.TIFF *.GIF"),
                 ("All files", "*.*"),
             ],
