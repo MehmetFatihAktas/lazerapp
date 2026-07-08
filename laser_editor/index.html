@@ -4,118 +4,239 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/style.css?v=20260707-ribbon" />
   </head>
   <body>
-    <div class="app-shell">
-      <header class="topbar">
+    <div class="app-shell ribbon-shell">
+      <!-- ===================== BASLIK CUBUGU ===================== -->
+      <header class="titlebar">
         <div class="brand">
           <div class="mark">L</div>
-          <div>
+          <div class="brand-text">
             <h1>Lazer İş Editörü</h1>
-            <p id="jobStatus">Hazır</p>
+            <p id="jobStatus" class="job-status info">Hazır</p>
           </div>
         </div>
-        <div class="top-actions">
-          <button id="addDxfBtn" class="primary">DXF Ekle</button>
-          <button id="addImageBtn">Desen/SVG Ekle</button>
-          <button id="vectorizeBtn">Foto→Vektör</button>
-          <button id="autoLayoutBtn">Otomatik Yerleştir</button>
-          <button id="chooseOutputBtn">Çıktı Seç</button>
+        <div class="title-status" aria-label="Üretim durumu">
+          <span id="unitChip" class="status-chip locked">mm</span>
+          <span id="bedChip" class="status-chip">Tabla: 400 × 400 mm</span>
+          <span id="layoutChip" class="status-chip">Yerleşim yok</span>
+          <span id="warningChip" class="status-chip">Uyarı: 0</span>
+        </div>
+        <div class="title-actions">
+          <button id="openProjectBtn">İşi Aç</button>
+          <button id="saveProjectBtn">İşi Kaydet</button>
+          <button id="machineNavBtn">Makine</button>
           <button id="generateBtn" class="accent">G-code Oluştur</button>
         </div>
       </header>
 
-      <main class="workspace">
-        <aside class="left-panel panel">
-          <section>
-            <div class="section-title">
-              <h2>Parçalar</h2>
-              <button id="clearPartsBtn" class="small">Temizle</button>
-            </div>
-            <div id="partsList" class="item-list"></div>
-          </section>
+      <!-- ===================== SERIT (RIBBON) ===================== -->
+      <nav class="ribbon-tabs" role="tablist">
+        <button class="ribbon-tab active" data-tab="ekle" role="tab">Ekle</button>
+        <button class="ribbon-tab" data-tab="metin" role="tab">Metin &amp; Şekil</button>
+        <button class="ribbon-tab" data-tab="tabla" role="tab">Tabla &amp; Yerleşim</button>
+        <button class="ribbon-tab" data-tab="kesim" role="tab">Kesim &amp; Kazıma</button>
+        <button class="ribbon-tab" data-tab="vektor" role="tab">Vektör</button>
+        <button class="ribbon-tab" data-tab="cikti" role="tab">Çıktı</button>
+      </nav>
 
-          <section>
-            <h2>Tabla</h2>
-            <div class="form-grid">
-              <label>Genişlik (mm) <input id="bedW" type="number" value="400" min="1" step="1" /></label>
-              <label>Yükseklik (mm) <input id="bedH" type="number" value="400" min="1" step="1" /></label>
-              <label>Set adedi <input id="quantity" type="number" value="1" min="1" step="1" /></label>
-              <label>Parça arası <input id="gap" type="number" value="3" min="0" step="0.1" /></label>
-              <label>Kenar payı <input id="margin" type="number" value="1" min="0" step="0.1" /></label>
-              <label>Tabla hizası
-                <select id="bedAlignMode">
-                  <option value="bottom-left">Sol alt</option>
-                  <option value="bottom-center">Alt orta</option>
-                  <option value="center">Tam orta</option>
-                  <option value="top-left">Sol üst</option>
-                </select>
-              </label>
+      <div class="ribbon-body">
+        <!-- ---- EKLE ---- -->
+        <div class="ribbon-panel active" data-tab="ekle">
+          <div class="ribbon-group">
+            <div class="rib-btn-row">
+              <button id="addDxfBtn" class="primary">DXF Ekle</button>
+              <button id="addImageBtn">Desen Ekle</button>
+              <button id="vectorizeBtn">Foto→Vektör</button>
+            </div>
+            <span class="ribbon-group-title">İçe Aktar</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-btn-row"><button id="autoLayoutBtn" class="primary">Otomatik Yerleştir</button></div>
+            <span class="ribbon-group-title">Yerleştir</span>
+          </div>
+        </div>
+
+        <!-- ---- METIN & SEKIL ---- -->
+        <div class="ribbon-panel" data-tab="metin">
+          <div class="ribbon-group">
+            <div class="rib-row">
+              <label class="rib-field wide">Metin<input id="textInput" type="text" placeholder="TESBİH" /></label>
+              <label class="rib-field">Yük.<span class="unit-input"><input id="textHeight" type="number" value="20" min="2" step="1" /><b>mm</b></span></label>
+              <label class="rib-field">Aralık<span class="unit-input"><input id="textTracking" type="number" value="0" min="-2" step="0.2" /><b>mm</b></span></label>
+              <button id="addTextBtn" class="primary">Metni Ekle</button>
+            </div>
+            <span class="ribbon-group-title">Metin (kazıma)</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-row">
+              <label class="rib-field">Gen/çap<span class="unit-input"><input id="shapeWidth" type="number" value="30" min="1" step="1" /><b>mm</b></span></label>
+              <label class="rib-field">Yük.<span class="unit-input"><input id="shapeHeight" type="number" value="30" min="1" step="1" /><b>mm</b></span></label>
+              <label class="rib-field">Köşe r<span class="unit-input"><input id="shapeRadius" type="number" value="0" min="0" step="0.5" /><b>mm</b></span></label>
+              <label class="rib-field">Kenar<input id="shapeSides" type="number" value="6" min="3" max="20" step="1" /></label>
+            </div>
+            <div class="rib-btn-row">
+              <button data-add-shape="rect">Dikdörtgen</button>
+              <button data-add-shape="circle">Daire</button>
+              <button data-add-shape="polygon">Çokgen</button>
+              <button data-add-shape="test-square">Test Karesi</button>
+            </div>
+            <span class="ribbon-group-title">Şekil (kesim)</span>
+          </div>
+        </div>
+
+        <!-- ---- TABLA & YERLESIM ---- -->
+        <div class="ribbon-panel" data-tab="tabla">
+          <div class="ribbon-group">
+            <div class="rib-row">
+              <label class="rib-field">Genişlik<span class="unit-input"><input id="bedW" type="number" value="400" min="1" step="1" /><b>mm</b></span></label>
+              <label class="rib-field">Yükseklik<span class="unit-input"><input id="bedH" type="number" value="400" min="1" step="1" /><b>mm</b></span></label>
+              <label class="rib-field">Kenar payı<span class="unit-input"><input id="margin" type="number" value="1" min="0" step="0.1" /><b>mm</b></span></label>
+              <label class="rib-field">Hiza<select id="bedAlignMode">
+                <option value="bottom-left">Sol alt</option>
+                <option value="bottom-center">Alt orta</option>
+                <option value="center">Tam orta</option>
+                <option value="top-left">Sol üst</option>
+              </select></label>
+            </div>
+            <div class="rib-btn-row preset-row">
+              <button data-bed-preset="300,200">300×200</button>
+              <button data-bed-preset="400,400">400×400</button>
+              <button data-bed-preset="600,400">600×400</button>
+              <button data-bed-preset="900,600">900×600</button>
+            </div>
+            <span class="ribbon-group-title">Tabla</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-btn-row">
+              <button id="drawAreaToolBtn">Boş Alan Çiz</button>
+              <button id="finishAreaBtn">Alanı Bitir</button>
+              <button id="clearAreaBtn">Alanı Temizle</button>
+            </div>
+            <div id="smallBedWarning" class="inline-warning hidden"></div>
+            <div id="materialAreaText" class="inline-note">Kullanılabilir alan: dikdörtgen tabla.</div>
+            <div id="activeAreaText" class="inline-note">Aktif alan: 398 × 398 mm</div>
+            <span class="ribbon-group-title">Kullanılabilir Alan</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-btn-row"><button id="alignJobBtn">İşi Tablaya Hizala</button></div>
+            <div class="rib-row">
+              <label class="rib-field">X ofset<span class="unit-input"><input id="jobOffsetX" type="number" value="0" step="0.1" /><b>mm</b></span></label>
+              <label class="rib-field">Y ofset<span class="unit-input"><input id="jobOffsetY" type="number" value="0" step="0.1" /><b>mm</b></span></label>
+              <button id="applyJobOffsetBtn">Kaydır</button>
+            </div>
+            <span class="ribbon-group-title">Konum</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-row">
+              <label class="rib-field">Parça arası<span class="unit-input"><input id="gap" type="number" value="3" min="0" step="0.1" /><b>mm</b></span></label>
+              <label class="rib-field">Yeni DXF adedi<input id="quantity" type="number" value="1" min="1" step="1" /></label>
             </div>
             <label class="checkline"><input id="allowRotate" type="checkbox" checked /> 90° döndürmeye izin ver</label>
-            <div class="stacked-actions compact-actions">
-              <button id="alignJobBtn">İşi Tablaya Hizala</button>
+            <div id="layoutStatusBox" class="state-card"></div>
+            <div id="layoutBanner" class="layout-banner hidden">
+              <strong>Yerleşim ayarları değişti.</strong>
+              <span>Mevcut konumlar eski ayarlara göre hesaplandı.</span>
+              <div class="button-grid">
+                <button id="layoutRecalculateBtn" class="primary">Yeniden Hesapla</button>
+                <button id="layoutKeepBtn">Konumları Koru</button>
+                <button id="layoutParkBtn">Dıştakileri Park Et</button>
+                <button id="layoutUndoBtn">Geri Al</button>
+              </div>
             </div>
-            <div class="form-grid offset-grid">
-              <label>X ofset <input id="jobOffsetX" type="number" value="0" step="0.1" /></label>
-              <label>Y ofset <input id="jobOffsetY" type="number" value="0" step="0.1" /></label>
-            </div>
-            <button id="applyJobOffsetBtn" class="wide-action">Tüm İşi Kaydır</button>
-          </section>
+            <span class="ribbon-group-title">Yerleşim</span>
+          </div>
+        </div>
 
-          <section>
-            <h2>Kesim</h2>
-            <div class="form-grid">
-              <label>Hız F <input id="cutFeed" type="number" value="500" min="1" step="10" /></label>
-              <label>Güç S <input id="cutPower" type="number" value="1000" min="0" max="1000" step="10" /></label>
-              <label>Pas <input id="passes" type="number" value="1" min="1" step="1" /></label>
-              <label>Bindirme <input id="overcut" type="number" value="0.8" min="0" step="0.1" /></label>
-              <label>Boş hareket <input id="travelFeed" type="number" value="3000" min="1" step="50" /></label>
-              <label>Pierce <input id="pierceDelay" type="number" value="0" min="0" step="0.1" /></label>
+        <!-- ---- KESIM & KAZIMA ---- -->
+        <div class="ribbon-panel" data-tab="kesim">
+          <div class="ribbon-group">
+            <div class="rib-row">
+              <label class="rib-field wide">Profil<select id="materialProfile"></select></label>
+              <button id="applyProfileBtn" class="primary">Uygula</button>
+              <button id="saveProfileBtn">Kaydet</button>
+              <button id="deleteProfileBtn" class="danger">Sil</button>
             </div>
+            <p class="hint" id="profileHint">Profil kesim + kazıma + kerf ayarlarını tek tıkla doldurur.</p>
+            <span class="ribbon-group-title">Malzeme Profili</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-row">
+              <label class="rib-field">Hız F<span class="unit-input"><input id="cutFeed" type="number" value="500" min="1" step="10" /><b>mm/dk</b></span></label>
+              <label class="rib-field">Güç S<input id="cutPower" type="number" value="1000" min="0" max="1000" step="10" /></label>
+              <label class="rib-field">Pas<input id="passes" type="number" value="1" min="1" step="1" /></label>
+              <label class="rib-field">Bindirme<span class="unit-input"><input id="overcut" type="number" value="0.8" min="0" step="0.1" /><b>mm</b></span></label>
+              <label class="rib-field">Kerf<span class="unit-input"><input id="kerf" type="number" value="0" min="0" max="1" step="0.05" /><b>mm</b></span></label>
+              <label class="rib-field">Boş hrkt<span class="unit-input"><input id="travelFeed" type="number" value="3000" min="1" step="50" /><b>mm/dk</b></span></label>
+              <label class="rib-field">Pierce<input id="pierceDelay" type="number" value="0" min="0" step="0.1" /></label>
+            </div>
+            <div class="rib-row">
             <div class="segmented" id="laserCmd">
               <button data-value="M4" class="active">M4</button>
               <button data-value="M3">M3</button>
             </div>
+            <p class="hint laser-mode-hint" id="laserModeHint">M4 önerilir: hareket yavaşladığında güç düşer; duran kafada lazer söner.</p>
             <label class="checkline"><input id="innerFirst" type="checkbox" checked /> İç çizgiler önce</label>
-            <label class="checkline"><input id="returnOrigin" type="checkbox" /> İş sonunda X0 Y0</label>
-          </section>
-
-          <section>
-            <h2>Kazıma Varsayılanı</h2>
-            <div class="form-grid">
-              <label>Güç S <input id="engravePower" type="number" value="250" min="0" max="1000" step="10" /></label>
-              <label>Hız F <input id="engraveFeed" type="number" value="1800" min="1" step="50" /></label>
-              <label>Çizgi <input id="lineStep" type="number" value="0.35" min="0.05" step="0.05" /></label>
-              <label>Eşik <input id="threshold" type="number" value="140" min="0" max="255" step="1" /></label>
+              <label class="checkline"><input id="returnOrigin" type="checkbox" /> Sonda X0 Y0</label>
+              <label class="checkline hidden"><input id="airAssist" type="checkbox" checked disabled /> Hava</label>
+              <label class="rib-field hidden">Hava<select id="airAssistCommand" disabled><option value="M8" selected>M8</option></select></label>
             </div>
-          </section>
+            <span class="ribbon-group-title">Kesim</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-row">
+              <label class="rib-field">Güç S<input id="engravePower" type="number" value="250" min="0" max="1000" step="10" /></label>
+              <label class="rib-field">Hız F<span class="unit-input"><input id="engraveFeed" type="number" value="1800" min="1" step="50" /><b>mm/dk</b></span></label>
+              <label class="rib-field">Çizgi<span class="unit-input"><input id="lineStep" type="number" value="0.35" min="0.05" step="0.05" /><b>mm</b></span></label>
+              <label class="rib-field">Eşik<input id="threshold" type="number" value="140" min="0" max="255" step="1" /></label>
+            </div>
+            <span class="ribbon-group-title">Kazıma Varsayılanı</span>
+          </div>
+        </div>
 
-          <section>
-            <h2>Foto→Vektör</h2>
-            <div class="form-grid basic-vector-grid">
-              <label>Mod
-                <select id="vecMode">
-                  <option value="auto" selected>Otomatik</option>
-                  <option value="centerline">Merkez çizgi</option>
-                  <option value="vtracer">Profesyonel trace (VTracer)</option>
-                  <option value="outline">Dış kontur</option>
-                </select>
-              </label>
-              <label>Eşik yöntemi
-                <select id="vecThresholdMode">
-                  <option value="otsu" selected>Otomatik Otsu</option>
-                  <option value="manual">Manuel</option>
-                  <option value="adaptive">Adaptif</option>
-                </select>
-              </label>
-              <label>Eşik <input id="vecThreshold" type="number" value="140" min="0" max="255" step="1" /></label>
-              <label>Kontrast <input id="vecContrast" type="number" value="1" min="0.2" max="4" step="0.1" /></label>
+        <!-- ---- VEKTOR ---- -->
+        <div class="ribbon-panel" data-tab="vektor" id="vectorPanel">
+          <div class="ribbon-group">
+            <div class="rib-row">
+              <label class="rib-field">Mod<select id="vecMode">
+                <option value="auto" selected>Otomatik</option>
+                <option value="centerline">Merkez çizgi</option>
+                <option value="vtracer">Profesyonel (VTracer)</option>
+                <option value="outline">Dış kontur</option>
+              </select></label>
+              <label class="rib-field">Eşik yöntemi<select id="vecThresholdMode">
+                <option value="otsu" selected>Otomatik Otsu</option>
+                <option value="manual">Manuel</option>
+                <option value="adaptive">Adaptif</option>
+              </select></label>
+              <label class="rib-field">Eşik<input id="vecThreshold" type="number" value="140" min="0" max="255" step="1" /></label>
+              <label class="rib-field">Kontrast<input id="vecContrast" type="number" value="1" min="0.2" max="4" step="0.1" /></label>
             </div>
             <label class="checkline"><input id="vecInvert" type="checkbox" checked /> Koyu alanları vektör yap</label>
             <label class="checkline"><input id="vecBackgroundNormalize" type="checkbox" checked /> Işık/gölge düzelt</label>
-            <label class="checkline"><input id="vecRemoveBorder" type="checkbox" checked /> Fotoğraf çerçevesini otomatik temizle</label>
+            <label class="checkline"><input id="vecRemoveBorder" type="checkbox" checked /> Fotoğraf çerçevesini temizle</label>
+            <span class="ribbon-group-title">Vektör Ayarı</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-btn-row col">
+              <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>
+              <button id="revectorizeBtn">Seçili Vektörü Yeniden İşle</button>
+              <button id="vectorAutoPresetBtn">Otomatik ayar</button>
+              <button id="saveVectorSvgBtn">Seçili Vektörü SVG Kaydet</button>
+            </div>
+            <span class="ribbon-group-title">Eylemler</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
             <details class="advanced-settings">
               <summary>Gelişmiş ayarlar</summary>
               <div class="form-grid">
@@ -134,13 +255,52 @@
                 <label>Adaptif C <input id="vecAdaptiveC" type="number" value="5" step="0.5" /></label>
               </div>
             </details>
-            <div class="stacked-actions">
-              <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>
-              <button id="revectorizeBtn">Seçili Vektörü Yeniden İşle</button>
-              <button id="vectorAutoPresetBtn">Otomatik ayar</button>
-              <button id="saveVectorSvgBtn">Seçili Vektörü SVG Kaydet</button>
+            <span class="ribbon-group-title">Gelişmiş</span>
+          </div>
+        </div>
+
+        <!-- ---- CIKTI ---- -->
+        <div class="ribbon-panel" data-tab="cikti">
+          <div class="ribbon-group">
+            <div class="rib-btn-row">
+              <button id="preflightBtn">Ön Kontrol</button>
+              <button id="chooseOutputBtn">Çıktı Seç</button>
+              <button id="convertOutputToCutBtn">G-code Kesime Çevir</button>
             </div>
-          </section>
+            <label class="rib-field wide">G-code yolu<input id="outputPath" type="text" /></label>
+            <span class="ribbon-group-title">Çıktı</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group">
+            <div class="rib-btn-row"><button id="generateBtn2" class="accent">G-code Oluştur</button></div>
+            <span class="ribbon-group-title">Üret</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== CALISMA ALANI ===================== -->
+      <main class="workspace ribbon-workspace">
+        <aside class="left-panel panel tree-panel">
+          <details open>
+            <summary>İş Özeti</summary>
+            <div id="jobSummaryGrid" class="summary-grid"></div>
+          </details>
+          <details open>
+            <summary>Parçalar</summary>
+            <div class="section-title inline-title">
+              <span>DXF parça listesi</span>
+              <button id="clearPartsBtn" class="small">Temizle</button>
+            </div>
+            <div id="partsList" class="item-list"></div>
+          </details>
+          <details open>
+            <summary>Desenler</summary>
+            <div id="patternsList" class="item-list"></div>
+          </details>
+          <details open>
+            <summary>Uyarılar</summary>
+            <div id="warningsList" class="warning-list"></div>
+          </details>
         </aside>
 
         <section class="canvas-panel">
@@ -149,17 +309,26 @@
               <button id="selectToolBtn" class="active">Seç</button>
               <button id="zoomInBtn">Yakınlaş</button>
               <button id="zoomOutBtn">Uzaklaş</button>
-              <button id="fitViewBtn">Ekrana Sığdır</button>
+              <button id="fitViewBtn">Tabla’ya Sığdır</button>
               <button id="centerBtn">Ortala</button>
-              <button id="fitBtn">Sığdır</button>
+              <button id="fitBtn">Seçileni Sığdır</button>
               <button id="rotateLeftBtn">-15°</button>
               <button id="rotateRightBtn">+15°</button>
               <button id="rotate90Btn">90°</button>
             </div>
-            <label class="precision-control">Hassas adım <input id="nudgeStep" type="number" value="0.1" min="0.01" step="0.01" /></label>
-            <div class="canvas-readout" id="canvasReadout">400 x 400 mm</div>
+            <label class="precision-control">Hassas adım <span class="unit-input"><input id="nudgeStep" type="number" value="0.1" min="0.01" step="0.01" /><b>mm</b></span></label>
+            <div class="canvas-readout" id="canvasReadout">400 × 400 mm</div>
           </div>
           <canvas id="editorCanvas"></canvas>
+          <div class="canvas-overlay">
+            <div class="legend">
+              <span><i class="swatch cut"></i>Kesim</span>
+              <span><i class="swatch engrave"></i>Kazıma çizgi</span>
+              <span><i class="swatch fill"></i>Dolgu</span>
+              <span><i class="swatch ignore"></i>Yok say</span>
+            </div>
+            <div id="canvasSafetyReadout">Grid: 10 mm · Zoom: 100% · İmleç: -</div>
+          </div>
         </section>
 
         <aside class="right-panel panel">
@@ -167,15 +336,145 @@
             <h2>Seçili Nesne</h2>
             <div id="selectionPanel" class="selection-empty">Seçim yok</div>
           </section>
-
           <section>
-            <h2>Çıktı</h2>
-            <label class="wide-label">G-code yolu <input id="outputPath" type="text" /></label>
+            <h2>G-code Ön Kontrol</h2>
+            <div id="preflightPanel" class="preflight-panel"></div>
+          </section>
+          <section>
+            <h2>Özet</h2>
             <div class="summary" id="summaryBox"></div>
           </section>
         </aside>
       </main>
+
+      <footer id="bottomStatus" class="bottom-status">
+        DXF: 0 dosya / 0 parça | Yerleşen: 0/0 | Desen: 0 | Dışta: 0 | Uyarı: 0
+      </footer>
+
+      <!-- Makine paneli icerigi (gizli; JS Makine sekmesine tasir) -->
+      <div id="machinePanelHome" class="hidden" aria-hidden="true">
+        <div id="machinePanelContent" class="machine-panel-content">
+          <div class="form-grid">
+            <label>Port <select id="machinePort"></select></label>
+            <label>Baud <input id="machineBaud" type="number" value="115200" min="1" step="1" /></label>
+          </div>
+          <div class="button-grid">
+            <button id="refreshMachinePortsBtn">Port Tara</button>
+            <button id="autoConnectMachineBtn">Otomatik Bul</button>
+            <button id="connectMachineBtn" class="primary">Bağlan</button>
+            <button id="disconnectMachineBtn">Kopar</button>
+            <button id="machineStatusBtn">Durum</button>
+          </div>
+          <div id="machineStatusBox" class="state-card machine-status">
+            <strong>Bağlı değil</strong><span>GRBL seri bağlantısı yok.</span>
+          </div>
+          <div class="machine-preview-wrap">
+            <canvas id="machinePreviewCanvas" width="256" height="180"></canvas>
+            <div id="machinePreviewInfo" class="machine-preview-info">Önizleme yok — "Önizle" ile G-code dosyasını yükleyin.</div>
+          </div>
+          <div class="button-grid">
+            <button id="machinePreviewBtn">Önizle</button>
+            <button id="machinePreviewClearBtn">Temizle</button>
+          </div>
+          <div class="machine-override" id="machineOverrideRow">
+            <span class="ov-label">F <b id="ovFeedVal">—</b></span>
+            <button data-machine-override="feed,minus" title="Hızı %10 azalt">−</button>
+            <button data-machine-override="feed,reset" title="Hız %100">100</button>
+            <button data-machine-override="feed,plus" title="Hızı %10 artır">＋</button>
+            <span class="ov-label">S <b id="ovSpindleVal">—</b></span>
+            <button data-machine-override="spindle,minus" title="Gücü %10 azalt">−</button>
+            <button data-machine-override="spindle,reset" title="Güç %100">100</button>
+            <button data-machine-override="spindle,plus" title="Gücü %10 artır">＋</button>
+          </div>
+          <div class="button-grid">
+            <button data-machine-action="unlock">Unlock $X</button>
+            <button data-machine-action="home">Home $H</button>
+            <button data-machine-action="hold">Pause !</button>
+            <button data-machine-action="resume">Resume ~</button>
+            <button data-machine-action="reset" class="danger">Soft Reset</button>
+            <button data-machine-action="abort" class="danger">İptal</button>
+          </div>
+          <div class="form-grid offset-grid">
+            <label>Jog adımı <span class="unit-input"><input id="machineJogStep" type="number" value="1" min="0.01" step="0.1" /><b>mm</b></span></label>
+            <label>Jog hızı <span class="unit-input"><input id="machineJogFeed" type="number" value="1200" min="1" step="50" /><b>mm/dk</b></span></label>
+          </div>
+          <div class="machine-jog">
+            <span></span><button data-machine-jog="Y,1">Y+</button><span></span>
+            <button data-machine-jog="X,-1">X-</button><button data-machine-jog="Y,-1">Y-</button><button data-machine-jog="X,1">X+</button>
+          </div>
+          <div class="form-grid offset-grid">
+            <label>Çerçeve hızı <span class="unit-input"><input id="machineFrameFeed" type="number" value="3000" min="1" step="50" /><b>mm/dk</b></span></label>
+            <label>Çerçeve payı <span class="unit-input"><input id="machineFramePadding" type="number" value="0" min="0" step="0.1" /><b>mm</b></span></label>
+          </div>
+          <div class="button-grid">
+            <button id="machineFrameBtn">Çerçeve Gezdir</button>
+            <button id="setMachineOriginBtn" class="primary">X0 Y0 Burası</button>
+            <button id="clearMachineOriginBtn">Sıfırı Temizle</button>
+          </div>
+          <div class="form-grid offset-grid">
+            <label>Atım gücü S <input id="machinePulsePower" type="number" value="10" min="1" max="200" step="1" /></label>
+            <label>Atım süresi <span class="unit-input"><input id="machinePulseDuration" type="number" value="80" min="1" max="1000" step="10" /><b>ms</b></span></label>
+          </div>
+          <button id="focusPulseBtn" class="wide-action">Odak Atımı</button>
+          <button id="sendGcodeToMachineBtn" class="wide-action accent">G-code'u Makineye Gönder</button>
+          <details class="advanced-settings">
+            <summary>Tek komut</summary>
+            <div class="machine-command-row">
+              <input id="machineCommand" type="text" placeholder="$I" />
+              <button id="sendMachineCommandBtn">Gönder</button>
+            </div>
+          </details>
+          <pre id="machineLog" class="machine-log"></pre>
+        </div>
+      </div>
+
+      <!-- Uretim akisi penceresi -->
+      <section id="produceFlowModal" class="flow-modal hidden" role="dialog" aria-label="Üretim akışı">
+        <div class="flow-backdrop" data-flow-close></div>
+        <div class="flow-card">
+          <h3>Üretim Akışı</h3>
+          <div id="flowSummary" class="flow-summary"></div>
+          <div class="flow-step done">
+            <span class="flow-badge">✓</span>
+            <div><strong>G-code hazır</strong><span id="flowStepFile"></span></div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-badge">2</span>
+            <div>
+              <strong>Malzemeyi hizala</strong>
+              <span>Lazer kapalı çerçeve turu ile dosyanın tabladaki yerini kontrol et.</span>
+              <button id="flowFrameBtn" class="small">Çerçeve Gezdir</button>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-badge">3</span>
+            <div>
+              <strong>Üretimi başlat</strong>
+              <span id="flowMachineNote"></span>
+              <button id="flowSendBtn" class="primary">Makineye Gönder</button>
+            </div>
+          </div>
+          <div class="flow-actions">
+            <button id="flowCloseBtn" data-flow-close>Kapat</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Makine sekmesi (tam ekran) -->
+      <section id="machineTab" class="machine-tab hidden" aria-label="Makine sekmesi">
+        <div class="machine-tab-shell">
+          <div class="machine-tab-header">
+            <div>
+              <strong>Makine</strong>
+              <span>GRBL bağlantı, jog, çerçeve ve gönderim paneli</span>
+            </div>
+            <button id="closeMachineTabBtn">Editöre Dön</button>
+          </div>
+          <div id="machineTabBody" class="machine-tab-body"></div>
+        </div>
+      </section>
     </div>
-    <script src="/static/app.js"></script>
+    <script src="/static/geometry.js?v=20260707-ribbon"></script>
+    <script src="/static/app.js?v=20260707-ribbon"></script>
   </body>
 </html>

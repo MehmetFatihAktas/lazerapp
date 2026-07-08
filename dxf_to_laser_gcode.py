@@ -129,6 +129,15 @@ def path_with_overcut(path: list[Point], overcut: float, tolerance: float = 0.05
     return extended
 
 
+def normalize_air_assist_command(command: str | None) -> str | None:
+    command = (command or "").strip().upper()
+    if not command:
+        return None
+    if command not in {"M7", "M8"}:
+        raise DxfToGcodeError("Air assist command must be M7 or M8")
+    return command
+
+
 def read_pairs(path: Path) -> list[tuple[int, str]]:
     text = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     if len(text) % 2:
@@ -474,8 +483,10 @@ def write_gcode(output_path: Path,
                 return_to_origin: bool = False,
                 travel_feed: float | None = None,
                 passes: int = 1,
-                pre_cut_lines: list[str] | None = None) -> None:
+                pre_cut_lines: list[str] | None = None,
+                air_assist_command: str | None = None) -> None:
     power = validate_power(power)
+    air_assist_command = normalize_air_assist_command(air_assist_command)
     if passes < 1:
         raise DxfToGcodeError("Pass count must be at least 1")
     lines: list[str] = []
@@ -484,6 +495,8 @@ def write_gcode(output_path: Path,
     lines.extend(["G21", "G90", "G94", f"{laser_cmd.upper()} S0", "S0"])
     if rapid_feed is not None:
         lines.append(f"G0 F{fmt(rapid_feed)}")
+    if air_assist_command:
+        lines.append(f"{air_assist_command} (air assist on)")
     if pre_cut_lines:
         lines.extend(pre_cut_lines)
 
@@ -514,6 +527,8 @@ def write_gcode(output_path: Path,
             lines.append("S0")
 
     lines.append("M5 S0")
+    if air_assist_command:
+        lines.append("M9 (air assist off)")
     if return_to_origin:
         lines.append("G0 X0 Y0")
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

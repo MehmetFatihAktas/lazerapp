@@ -230,32 +230,284 @@ def clip_segment_to_region(start: Point,
     divisions = max(1, int(math.ceil(length / max(0.05, float(step)))))
     result: list[tuple[Point, Point]] = []
     current_start: Point | None = None
-    current_end: Point | None = None
 
-    for index in range(divisions):
-        t0 = index / divisions
-        t1 = (index + 1) / divisions
-        p0 = (start[0] + (end[0] - start[0]) * t0, start[1] + (end[1] - start[1]) * t0)
-        p1 = (start[0] + (end[0] - start[0]) * t1, start[1] + (end[1] - start[1]) * t1)
-        midpoint = ((p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0)
-        if clip_region_contains(midpoint, clip_region):
-            if current_start is None:
-                current_start = p0
-            current_end = p1
-        elif current_start is not None and current_end is not None:
-            if converter.dist(current_start, current_end) >= 0.03:
-                result.append((current_start, current_end))
+    def point_at(t: float) -> Point:
+        return (start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t)
+
+    def boundary_between(t_inside: float, t_outside: float) -> Point:
+        low = t_inside
+        high = t_outside
+        for _ in range(18):
+            mid = (low + high) / 2.0
+            if clip_region_contains(point_at(mid), clip_region):
+                low = mid
+            else:
+                high = mid
+        return point_at(low)
+
+    previous_t = 0.0
+    previous_point = point_at(previous_t)
+    previous_inside = clip_region_contains(previous_point, clip_region)
+    if previous_inside:
+        current_start = previous_point
+
+    for index in range(1, divisions + 1):
+        current_t = index / divisions
+        current_point = point_at(current_t)
+        current_inside = clip_region_contains(current_point, clip_region)
+
+        if previous_inside and current_inside:
+            pass
+        elif previous_inside and not current_inside:
+            boundary = boundary_between(previous_t, current_t)
+            if current_start is not None and converter.dist(current_start, boundary) >= 0.03:
+                result.append((current_start, boundary))
             current_start = None
-            current_end = None
+        elif not previous_inside and current_inside:
+            current_start = boundary_between(current_t, previous_t)
 
-    if current_start is not None and current_end is not None and converter.dist(current_start, current_end) >= 0.03:
-        result.append((current_start, current_end))
+        previous_t = current_t
+        previous_point = current_point
+        previous_inside = current_inside
+
+    if current_start is not None and previous_inside and converter.dist(current_start, previous_point) >= 0.03:
+        result.append((current_start, previous_point))
     return result
+
+
+def boundary_projection(point: Point, polygon: list[Point]) -> tuple[float, int, float, Point]:
+    best_distance = float("inf")
+    best_index = 0
+    best_t = 0.0
+    best_point = polygon[0]
+    for index, start in enumerate(polygon):
+        end = polygon[(index + 1) % len(polygon)]
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length_sq = dx * dx + dy * dy
+        if length_sq <= 1e-12:
+            t = 0.0
+            projected = start
+        else:
+            t = max(0.0, min(1.0, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_sq))
+            projected = (start[0] + dx * t, start[1] + dy * t)
+        distance = converter.dist(point, projected)
+        if distance < best_distance:
+            best_distance = distance
+            best_index = index
+            best_t = t
+            best_point = projected
+    return best_distance, best_index, best_t, best_point
+
+
+def polygon_boundary_route(start: Point, end: Point, polygon: list[Point], forward: bool) -> list[Point]:
+    _start_distance, start_index, _start_t, _start_projected = boundary_projection(start, polygon)
+    _end_distance, end_index, _end_t, _end_projected = boundary_projection(end, polygon)
+    if start_index == end_index:
+        return [start, end]
+    route = [start]
+    count = len(polygon)
+    index = (start_index + 1) % count if forward else start_index
+    guard = 0
+    while guard <= count:
+        vertex = polygon[index]
+        if converter.dist(route[-1], vertex) > 0.03:
+            route.append(vertex)
+        if (forward and index == end_index) or (not forward and index == (end_index + 1) % count):
+            break
+        index = (index + 1) % count if forward else (index - 1) % count
+        guard += 1
+    if converter.dist(route[-1], end) > 0.03:
+        route.append(end)
+    return route
+
+
+def _line_intersection(a1: Point, a2: Point, b1: Point, b2: Point) -> Point | None:
+    ax = a2[0] - a1[0]
+    ay = a2[1] - a1[1]
+    bx = b2[0] - b1[0]
+    by = b2[1] - b1[1]
+    denom = ax * by - ay * bx
+    if abs(denom) <= 1e-9:
+        return None
+    cx = b1[0] - a1[0]
+    cy = b1[1] - a1[1]
+    t = (cx * by - cy * bx) / denom
+    return (a1[0] + ax * t, a1[1] + ay * t)
+
+
+def inset_polygon_for_margin(polygon: list[Point], margin: float) -> list[Point]:
+    if margin <= 1e-9 or len(polygon) < 3:
+        return polygon
+    area = polygon_signed_area(polygon)
+    if abs(area) <= 1e-9:
+        return polygon
+    sign = 1.0 if area > 0 else -1.0
+    shifted_edges: list[tuple[Point, Point, Point]] = []
+    for index, start in enumerate(polygon):
+        end = polygon[(index + 1) % len(polygon)]
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            shifted_edges.append((start, end, (0.0, 0.0)))
+            continue
+        # For CCW polygons the interior is on the left side of each edge.
+        normal = (-dy / length * sign, dx / length * sign)
+        shifted_edges.append(
+            (
+                (start[0] + normal[0] * margin, start[1] + normal[1] * margin),
+                (end[0] + normal[0] * margin, end[1] + normal[1] * margin),
+                normal,
+            )
+        )
+    inset: list[Point] = []
+    count = len(shifted_edges)
+    for index in range(count):
+        prev_start, prev_end, prev_normal = shifted_edges[(index - 1) % count]
+        current_start, current_end, current_normal = shifted_edges[index]
+        point = _line_intersection(prev_start, prev_end, current_start, current_end)
+        if point is None:
+            vertex = polygon[index]
+            normal = (prev_normal[0] + current_normal[0], prev_normal[1] + current_normal[1])
+            normal_length = math.hypot(normal[0], normal[1])
+            if normal_length > 1e-9:
+                point = (vertex[0] + normal[0] / normal_length * margin, vertex[1] + normal[1] / normal_length * margin)
+            else:
+                point = current_start
+        if not inset or converter.dist(inset[-1], point) > 0.03:
+            inset.append(point)
+    if len(inset) >= 3 and abs(polygon_signed_area(inset)) >= 0.05:
+        return inset
+    return polygon
+
+
+def offset_closed_polygon(polygon: list[Point], outward: float) -> list[Point]:
+    """Kapali poligonu isaretli mesafeyle otele: outward>0 disari, <0 iceri.
+
+    inset_polygon_for_margin ile ayni kenar-kaydirma + kesisme (miter)
+    yontemi; tek fark yonun isaretli olmasi. Ofset sonucu dejenere olursa
+    (kendini yok edecek kadar kucuk) orijinal poligon dondurulur.
+    """
+    if abs(outward) <= 1e-9 or len(polygon) < 3:
+        return polygon
+    area = polygon_signed_area(polygon)
+    if abs(area) <= 1e-9:
+        return polygon
+    interior_sign = 1.0 if area > 0 else -1.0
+    move = -outward  # pozitif outward = ic normalin tersi yonde kaydir
+    shifted_edges: list[tuple[Point, Point, Point]] = []
+    for index, start in enumerate(polygon):
+        end = polygon[(index + 1) % len(polygon)]
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            shifted_edges.append((start, end, (0.0, 0.0)))
+            continue
+        normal = (-dy / length * interior_sign, dx / length * interior_sign)
+        shifted_edges.append(
+            (
+                (start[0] + normal[0] * move, start[1] + normal[1] * move),
+                (end[0] + normal[0] * move, end[1] + normal[1] * move),
+                normal,
+            )
+        )
+    result: list[Point] = []
+    count = len(shifted_edges)
+    for index in range(count):
+        prev_start, prev_end, prev_normal = shifted_edges[(index - 1) % count]
+        current_start, current_end, current_normal = shifted_edges[index]
+        point = _line_intersection(prev_start, prev_end, current_start, current_end)
+        if point is None:
+            vertex = polygon[index]
+            normal = (prev_normal[0] + current_normal[0], prev_normal[1] + current_normal[1])
+            normal_length = math.hypot(normal[0], normal[1])
+            if normal_length > 1e-9:
+                point = (vertex[0] + normal[0] / normal_length * move, vertex[1] + normal[1] / normal_length * move)
+            else:
+                point = current_start
+        if not result or converter.dist(result[-1], point) > 0.03:
+            result.append(point)
+    if len(result) >= 3 and abs(polygon_signed_area(result)) >= 0.05:
+        return result
+    return polygon
+
+
+def apply_kerf_to_paths(paths: list[list[Point]], kerf: float) -> list[list[Point]]:
+    """Kesim yollarina kerf (isin kalinligi) telafisi uygula.
+
+    Isin, yolun her iki yanindan kerf/2 malzeme yer. Parca olculerinin
+    tasarimdaki gibi cikmasi icin: DIS kontur kerf/2 DISARI, delik/yuva
+    (baska kapali yolun icinde kalan kontur) kerf/2 ICERI otelenir.
+    Boylece gecme tirnaklar buyur, yuvalar daralir -> siki gecme.
+    Ic ice derinlik pariteyle belirlenir (delik icindeki ada yine dis
+    sayilir). Acik yollar degistirilmez (telafi yonu belirsiz).
+    """
+    kerf = max(0.0, float(kerf or 0.0))
+    if kerf <= 1e-6 or not paths:
+        return paths
+    half = kerf / 2.0
+    polygons: dict[int, list[Point]] = {}
+    for index, path in enumerate(paths):
+        if len(path) >= 4 and converter.dist(path[0], path[-1]) <= 0.05:
+            polygons[index] = path[:-1]
+    result: list[list[Point]] = []
+    for index, path in enumerate(paths):
+        polygon = polygons.get(index)
+        if polygon is None:
+            result.append(path)
+            continue
+        probe = polygon[0]
+        depth = sum(
+            1
+            for other_index, other in polygons.items()
+            if other_index != index and point_in_polygon(probe, other)
+        )
+        outward = half if depth % 2 == 0 else -half
+        offset = offset_closed_polygon(polygon, outward)
+        result.append([*offset, offset[0]])
+    return result
+
+
+def polyline_length(points: list[Point]) -> float:
+    return sum(converter.dist(points[index - 1], points[index]) for index in range(1, len(points)))
+
+
+def clip_boundary_connector(start: Point, end: Point, clip_region: ClipRegion) -> list[Point]:
+    best_route: list[Point] | None = None
+    best_score = float("inf")
+    margin = max(0.0, float(clip_region.margin))
+    projection_limit = max(1.0, margin * 0.35 + 0.5)
+    for polygon in clip_region.polygons:
+        if len(polygon) < 3:
+            continue
+        route_polygon = inset_polygon_for_margin(polygon, margin)
+        start_distance = boundary_projection(start, route_polygon)[0]
+        end_distance = boundary_projection(end, route_polygon)[0]
+        if start_distance > projection_limit or end_distance > projection_limit:
+            continue
+        for forward in (True, False):
+            route = polygon_boundary_route(start, end, route_polygon, forward)
+            score = polyline_length(route) + start_distance + end_distance
+            if score < best_score:
+                best_score = score
+                best_route = route
+    return best_route or [start, end]
+
+
+def close_clipped_polyline(points: list[Point], clip_region: ClipRegion) -> list[Point]:
+    if len(points) < 2 or converter.dist(points[0], points[-1]) <= 0.03:
+        return points
+    connector = clip_boundary_connector(points[-1], points[0], clip_region)
+    return points + connector[1:]
 
 
 def clip_polyline_to_region(points: list[Point],
                             clip_region: ClipRegion | None,
-                            step: float = 0.25) -> list[list[Point]]:
+                            step: float = 0.25,
+                            close_boundary: bool = False,
+                            closed_source: bool = False) -> list[list[Point]]:
     if clip_region is None or not clip_region.polygons:
         return [points] if len(points) >= 2 else []
     clipped_paths: list[list[Point]] = []
@@ -270,6 +522,11 @@ def clip_polyline_to_region(points: list[Point],
                 current = [start, end]
     if len(current) >= 2:
         clipped_paths.append(current)
+    if closed_source and len(clipped_paths) > 1 and converter.dist(clipped_paths[-1][-1], clipped_paths[0][0]) <= max(0.05, step * 1.25):
+        first = clipped_paths.pop(0)
+        clipped_paths[-1].extend(first[1:])
+    if close_boundary:
+        clipped_paths = [close_clipped_polyline(path, clip_region) for path in clipped_paths]
     return clipped_paths
 
 
@@ -510,6 +767,32 @@ def image_payload(path: Path) -> dict[str, Any]:
     if path.suffix.lower() == ".svg":
         cleaned_path, stats = clean_svg_for_editor(path)
         view_box, width, height = svg_viewbox_and_size(cleaned_path)
+        vector_paths, vector_stats = svg_file_to_vector_paths(
+            cleaned_path,
+            min_length=1.0,
+            simplify=0.1,
+            max_contours=2000,
+            curve_steps=18,
+            skip_light_fills=True,
+            source_engine="svg",
+        )
+        if not vector_paths and int(vector_stats.get("skippedLightFill") or 0) > 0:
+            retry_paths, retry_stats = svg_file_to_vector_paths(
+                cleaned_path,
+                min_length=1.0,
+                simplify=0.1,
+                max_contours=2000,
+                curve_steps=18,
+                skip_light_fills=False,
+                source_engine="svg",
+            )
+            if retry_paths:
+                vector_paths = retry_paths
+                vector_stats = {
+                    **retry_stats,
+                    "lightFillFallback": True,
+                    "skippedLightFillFirstPass": int(vector_stats.get("skippedLightFill") or 0),
+                }
         mime = "image/svg+xml"
         data = base64.b64encode(cleaned_path.read_bytes()).decode("ascii")
         return {
@@ -522,6 +805,10 @@ def image_payload(path: Path) -> dict[str, Any]:
             "height": height,
             "viewBox": view_box,
             "cleanStats": {key: str(value) if isinstance(value, Path) else value for key, value in stats.items()},
+            "sourceWidth": width,
+            "sourceHeight": height,
+            "vectorPaths": vector_paths,
+            "vectorStats": {"traceEngine": "svg", **vector_stats},
             "dataUrl": svg_preview_data_url(cleaned_path),
             "exportDataUrl": f"data:{mime};base64,{data}",
         }
@@ -983,6 +1270,248 @@ def stitch_open_vector_paths(vector_paths: list[dict[str, Any]],
     for index, item in enumerate(paths, 1):
         item["id"] = f"v{index}"
     return paths, merged_count
+
+
+def straighten_centerline_paths(vector_paths: list[dict[str, Any]],
+                                stroke_width: float,
+                                source_width: float,
+                                source_height: float) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Collapse long nearly-straight centerline traces into clean line segments.
+
+    Photos of technical drawings often carry sub-pixel paper/shadow wobble into
+    the skeleton. This keeps curves intact and only snaps paths whose fitted line
+    error is small compared with their span.
+    """
+    if np is None:
+        return vector_paths, {"straightenedCenterlinePaths": 0, "straightenedCenterlinePointsRemoved": 0}
+    straightened = 0
+    points_removed = 0
+    min_span = max(28.0, min(float(source_width), float(source_height)) * 0.045)
+    base_deviation = max(1.6, min(4.0, float(stroke_width or 0.0) * 1.6))
+
+    result: list[dict[str, Any]] = []
+    for item in vector_paths:
+        points = [[float(point[0]), float(point[1])] for point in item.get("points", [])]
+        if item.get("closed") or len(points) < 5:
+            result.append(item)
+            continue
+        length = _polyline_length(points)
+        if length < min_span:
+            result.append(item)
+            continue
+
+        coords = np.array(points, dtype=float)
+        centroid = coords.mean(axis=0)
+        centered = coords - centroid
+        try:
+            values, vectors = np.linalg.eigh(centered.T @ centered)
+        except Exception:
+            result.append(item)
+            continue
+        direction = vectors[:, int(np.argmax(values))]
+        norm = float(np.linalg.norm(direction))
+        if norm <= 1e-9:
+            result.append(item)
+            continue
+        direction = direction / norm
+        projections = centered @ direction
+        span = float(projections.max() - projections.min())
+        if span < min_span or span / max(length, 1e-9) < 0.90:
+            result.append(item)
+            continue
+        perpendicular = centered - projections[:, None] * direction
+        distances = np.linalg.norm(perpendicular, axis=1)
+        max_allowed_deviation = max(base_deviation, min(5.0, span * 0.014))
+        if float(np.percentile(distances, 95)) > max_allowed_deviation or float(distances.max()) > max_allowed_deviation * 1.75:
+            result.append(item)
+            continue
+
+        start_projection = float(projections.min())
+        end_projection = float(projections.max())
+        start = centroid + direction * start_projection
+        end = centroid + direction * end_projection
+        if projections[0] > projections[-1]:
+            start, end = end, start
+
+        min_x, min_y, max_x, max_y = _points_bbox(points)
+        if abs(float(direction[1])) <= math.sin(math.radians(5.0)):
+            y = float(np.median(coords[:, 1]))
+            start = np.array([min_x, y], dtype=float)
+            end = np.array([max_x, y], dtype=float)
+            if points[0][0] > points[-1][0]:
+                start, end = end, start
+        elif abs(float(direction[0])) <= math.sin(math.radians(5.0)):
+            x = float(np.median(coords[:, 0]))
+            start = np.array([x, min_y], dtype=float)
+            end = np.array([x, max_y], dtype=float)
+            if points[0][1] > points[-1][1]:
+                start, end = end, start
+
+        new_points = [
+            [round(float(start[0]), 3), round(float(start[1]), 3)],
+            [round(float(end[0]), 3), round(float(end[1]), 3)],
+        ]
+        updated = {**item, "points": new_points, "closed": False}
+        updated["length"] = _polyline_length(new_points)
+        warnings = list(updated.get("warnings") or [])
+        warnings.append("straightened")
+        updated["warnings"] = list(dict.fromkeys(warnings))
+        result.append(updated)
+        straightened += 1
+        points_removed += max(0, len(points) - len(new_points))
+
+    return result, {
+        "straightenedCenterlinePaths": straightened,
+        "straightenedCenterlinePointsRemoved": points_removed,
+    }
+
+
+def flatten_axis_aligned_centerline_runs(vector_paths: list[dict[str, Any]],
+                                         stroke_width: float,
+                                         source_width: float,
+                                         source_height: float) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    min_span = max(28.0, min(float(source_width), float(source_height)) * 0.045)
+    band_limit = max(2.0, min(5.0, float(stroke_width or 0.0) * 2.0))
+    runs_flattened = 0
+    points_adjusted = 0
+    result: list[dict[str, Any]] = []
+
+    for item in vector_paths:
+        points = [[float(point[0]), float(point[1])] for point in item.get("points", [])]
+        if len(points) < 4:
+            result.append(item)
+            continue
+
+        segment_kinds: list[str | None] = []
+        for start, end in zip(points, points[1:]):
+            dx = float(end[0]) - float(start[0])
+            dy = float(end[1]) - float(start[1])
+            length = math.hypot(dx, dy)
+            if length <= 1e-9:
+                segment_kinds.append(None)
+            elif abs(dy) <= max(band_limit, abs(dx) * 0.12) and abs(dx) >= abs(dy):
+                segment_kinds.append("h")
+            elif abs(dx) <= max(band_limit, abs(dy) * 0.12) and abs(dy) >= abs(dx):
+                segment_kinds.append("v")
+            else:
+                segment_kinds.append(None)
+
+        updated_points = [point[:] for point in points]
+        index = 0
+        changed = False
+        while index < len(segment_kinds):
+            kind = segment_kinds[index]
+            if kind is None:
+                index += 1
+                continue
+            start_index = index
+            while index + 1 < len(segment_kinds) and segment_kinds[index + 1] == kind:
+                index += 1
+            end_index = index + 1
+            run_points = points[start_index : end_index + 1]
+            min_x, min_y, max_x, max_y = _points_bbox(run_points)
+            width = max_x - min_x
+            height = max_y - min_y
+            if kind == "h" and width >= min_span and height <= band_limit:
+                y = sorted(point[1] for point in run_points)[len(run_points) // 2]
+                for point_index in range(start_index, end_index + 1):
+                    if abs(updated_points[point_index][1] - y) > 0.05:
+                        points_adjusted += 1
+                    updated_points[point_index][1] = y
+                runs_flattened += 1
+                changed = True
+            elif kind == "v" and height >= min_span and width <= band_limit:
+                x = sorted(point[0] for point in run_points)[len(run_points) // 2]
+                for point_index in range(start_index, end_index + 1):
+                    if abs(updated_points[point_index][0] - x) > 0.05:
+                        points_adjusted += 1
+                    updated_points[point_index][0] = x
+                runs_flattened += 1
+                changed = True
+            index += 1
+
+        if changed:
+            updated = {**item, "points": [[round(point[0], 3), round(point[1], 3)] for point in updated_points]}
+            updated["length"] = _polyline_length(updated["points"] + ([updated["points"][0]] if updated.get("closed") else []))
+            warnings = list(updated.get("warnings") or [])
+            warnings.append("axis-straightened")
+            updated["warnings"] = list(dict.fromkeys(warnings))
+            result.append(updated)
+        else:
+            result.append(item)
+
+    return result, {
+        "axisStraightenedCenterlineRuns": runs_flattened,
+        "axisStraightenedCenterlinePoints": points_adjusted,
+    }
+
+
+def _laplacian_smooth_points(points: list[list[float]],
+                             closed: bool,
+                             rounds: int,
+                             weight: float) -> list[list[float]]:
+    if len(points) < 4 or rounds <= 0:
+        return [[float(point[0]), float(point[1])] for point in points]
+    smoothed = [[float(point[0]), float(point[1])] for point in points]
+    weight = max(0.0, min(0.85, float(weight)))
+    for _ in range(max(0, int(rounds))):
+        current = [point[:] for point in smoothed]
+        indices = range(len(current)) if closed else range(1, len(current) - 1)
+        for index in indices:
+            prev_point = current[(index - 1) % len(current)]
+            point = current[index]
+            next_point = current[(index + 1) % len(current)]
+            smoothed[index] = [
+                point[0] * (1.0 - weight) + (prev_point[0] + next_point[0]) * 0.5 * weight,
+                point[1] * (1.0 - weight) + (prev_point[1] + next_point[1]) * 0.5 * weight,
+            ]
+    return smoothed
+
+
+def polish_centerline_curves(vector_paths: list[dict[str, Any]],
+                             stroke_width: float,
+                             source_width: float,
+                             source_height: float) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    min_length = max(22.0, min(float(source_width), float(source_height)) * 0.035)
+    epsilon = max(0.75, min(1.15, float(stroke_width or 0.0) * 0.55))
+    polished = 0
+    points_removed = 0
+    result: list[dict[str, Any]] = []
+
+    for item in vector_paths:
+        warnings = list(item.get("warnings") or [])
+        points = [[float(point[0]), float(point[1])] for point in item.get("points", [])]
+        if (
+            item.get("removed")
+            or "axis-straightened" in warnings
+            or "straightened" in warnings
+            or len(points) < 5
+            or float(item.get("length") or _polyline_length(points)) < min_length
+        ):
+            result.append(item)
+            continue
+        closed = bool(item.get("closed"))
+        smoothed = _laplacian_smooth_points(points, closed=closed, rounds=3, weight=0.55)
+        smoothed = _simplify_points(smoothed, epsilon, closed)
+        smoothed = _dedupe_points(smoothed, closed=closed, min_distance=0.35)
+        if len(smoothed) < 2:
+            result.append(item)
+            continue
+        updated = {
+            **item,
+            "points": [[round(float(point[0]), 3), round(float(point[1]), 3)] for point in smoothed],
+        }
+        updated["length"] = _polyline_length(updated["points"] + ([updated["points"][0]] if closed else []))
+        warnings.append("curve-polished")
+        updated["warnings"] = list(dict.fromkeys(warnings))
+        result.append(updated)
+        polished += 1
+        points_removed += max(0, len(points) - len(smoothed))
+
+    return result, {
+        "polishedCenterlineCurves": polished,
+        "polishedCenterlinePointsRemoved": points_removed,
+    }
 
 
 def smooth_closed_points(points: Any, iterations: int) -> Any:
@@ -1601,6 +2130,76 @@ def build_vector_binary(image: Any,
     return binary, used_threshold, threshold_source
 
 
+def bright_stencil_threshold(image: Any) -> float | None:
+    """Find a high threshold for photos of white cut panels on gray backgrounds."""
+    p70 = float(np.percentile(image, 70))
+    p80 = float(np.percentile(image, 80))
+    p90 = float(np.percentile(image, 90))
+    p95 = float(np.percentile(image, 95))
+    if p95 < 210 or p90 - p70 < 12:
+        return None
+    threshold = (p80 + p90) / 2.0
+    return max(185.0, min(248.0, threshold))
+
+
+def build_bright_stencil_candidate(image: Any,
+                                   blur: int,
+                                   adaptive_block: int,
+                                   adaptive_c: float,
+                                   morph_open: int,
+                                   morph_close: int,
+                                   denoise: int,
+                                   remove_border: bool) -> dict[str, Any] | None:
+    threshold = bright_stencil_threshold(image)
+    if threshold is None:
+        return None
+    binary, used_threshold, threshold_source = build_vector_binary(
+        image.copy(),
+        threshold=int(round(threshold)),
+        threshold_mode="manual",
+        blur=max(1, int(blur)),
+        invert=False,
+        adaptive_block=adaptive_block,
+        adaptive_c=adaptive_c,
+        morph_open=morph_open,
+        morph_close=max(2, int(morph_close or 0)),
+        background_normalize=False,
+        denoise=denoise,
+    )
+    threshold_binary = binary.copy()
+    binary, removed_border_components = clean_border_components(binary, remove_border, margin=3)
+    foreground_ratio = float(np.count_nonzero(binary)) / float(max(1, binary.shape[0] * binary.shape[1]))
+    stroke_width = estimate_stroke_width(binary)
+    if foreground_ratio < 0.035 or foreground_ratio > 0.58 or stroke_width < 6.0:
+        return None
+    return {
+        "binary": binary,
+        "thresholdBinary": threshold_binary,
+        "thresholdSource": threshold_source,
+        "usedThreshold": used_threshold,
+        "removedBorderComponents": removed_border_components,
+        "foregroundRatio": foreground_ratio,
+        "strokeWidth": stroke_width,
+    }
+
+
+def is_wide_technical_line_drawing(width: float,
+                                   height: float,
+                                   stroke_width: float,
+                                   foreground_ratio: float,
+                                   invert: bool) -> bool:
+    if not invert or width <= 0 or height <= 0:
+        return False
+    aspect_ratio = float(width) / max(1.0, float(height))
+    return (
+        width >= 320.0
+        and height >= 160.0
+        and aspect_ratio >= 1.25
+        and 0.0 < stroke_width <= 2.8
+        and 0.06 <= foreground_ratio <= 0.18
+    )
+
+
 def trace_outline_vectors(binary: Any,
                           min_area: float,
                           simplify: float,
@@ -1663,7 +2262,8 @@ def svg_file_to_vector_paths(svg_path: Path,
                              max_contours: int,
                              curve_steps: int = 18,
                              skip_light_fills: bool = False,
-                             light_fill_threshold: float = 235.0) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                             light_fill_threshold: float = 235.0,
+                             source_engine: str = "vtracer") -> tuple[list[dict[str, Any]], dict[str, Any]]:
     root = ET.parse(svg_path).getroot()
     vector_paths: list[dict[str, Any]] = []
     skipped_short = 0
@@ -1712,7 +2312,7 @@ def svg_file_to_vector_paths(svg_path: Path,
                     "area": area,
                     "length": length,
                     "sourceComponentId": source_index,
-                    "sourceEngine": "vtracer",
+                    "sourceEngine": source_engine,
                 }
             )
             if len(vector_paths) >= max_contours:
@@ -2287,8 +2887,110 @@ def vectorize_image(path: Path,
     mode = "auto" if requested_mode == "auto" else requested_mode
     pre_trace_stroke_estimate = estimate_stroke_width(binary)
     foreground_ratio = float(np.count_nonzero(binary)) / float(max(1, binary.shape[0] * binary.shape[1]))
+    effective_invert = bool(invert)
+    effective_background_normalize = bool(background_normalize)
+    effective_min_length = float(min_length)
+    effective_stitch_gap = float(stitch_gap)
+    effective_denoise = int(denoise)
+    auto_stencil_stats: dict[str, Any] = {}
+    auto_centerline_stats: dict[str, Any] = {}
     if mode == "auto":
-        mode = "potrace" if 0 < pre_trace_stroke_estimate <= 10.0 and foreground_ratio <= 0.35 else "vtracer"
+        stencil_candidate = None
+        if bool(invert) and 0 < pre_trace_stroke_estimate <= 6.0 and foreground_ratio <= 0.18:
+            stage_start = time.perf_counter()
+            stencil_candidate = build_bright_stencil_candidate(
+                image,
+                blur=blur,
+                adaptive_block=adaptive_block,
+                adaptive_c=adaptive_c,
+                morph_open=morph_open,
+                morph_close=morph_close,
+                denoise=denoise,
+                remove_border=remove_border,
+            )
+            timings["autoStencil"] = time.perf_counter() - stage_start
+        if (
+            stencil_candidate
+            and float(stencil_candidate["strokeWidth"]) >= max(7.0, pre_trace_stroke_estimate * 1.7)
+            and float(stencil_candidate["foregroundRatio"]) >= max(0.08, foreground_ratio * 1.8)
+        ):
+            binary = stencil_candidate["binary"]
+            threshold_binary = stencil_candidate["thresholdBinary"]
+            threshold_source = stencil_candidate["thresholdSource"]
+            used_threshold = float(stencil_candidate["usedThreshold"])
+            removed_border_components = int(stencil_candidate["removedBorderComponents"])
+            pre_trace_stroke_estimate = float(stencil_candidate["strokeWidth"])
+            foreground_ratio = float(stencil_candidate["foregroundRatio"])
+            effective_invert = False
+            effective_background_normalize = False
+            mode = "vtracer"
+            auto_stencil_stats = {
+                "autoStencilTrace": True,
+                "autoStencilThreshold": round(used_threshold, 2),
+                "autoStencilForegroundRatio": round(foreground_ratio, 4),
+                "autoStencilStrokeWidth": round(pre_trace_stroke_estimate, 1),
+            }
+        else:
+            # Potrace works best for genuinely thin line art. Filled ornamental
+            # ribbons with soft tips can have a low foreground ratio while still
+            # needing a smooth filled contour; route those to VTracer.
+            source_height, source_width = binary.shape[:2]
+            if is_wide_technical_line_drawing(
+                width=float(source_width),
+                height=float(source_height),
+                stroke_width=float(pre_trace_stroke_estimate),
+                foreground_ratio=float(foreground_ratio),
+                invert=bool(invert),
+            ):
+                mode = "centerline"
+                stage_start = time.perf_counter()
+                centerline_binary, centerline_threshold, centerline_threshold_source = build_vector_binary(
+                    image.copy(),
+                    threshold=threshold,
+                    threshold_mode=threshold_mode,
+                    blur=blur,
+                    invert=invert,
+                    adaptive_block=adaptive_block,
+                    adaptive_c=adaptive_c,
+                    morph_open=morph_open,
+                    morph_close=morph_close,
+                    background_normalize=False,
+                    denoise=0,
+                )
+                centerline_threshold_binary = centerline_binary.copy()
+                centerline_binary, centerline_removed_border = clean_border_components(
+                    centerline_binary,
+                    remove_border,
+                    margin=3,
+                )
+                centerline_foreground_ratio = float(np.count_nonzero(centerline_binary)) / float(max(1, centerline_binary.shape[0] * centerline_binary.shape[1]))
+                centerline_stroke_width = estimate_stroke_width(centerline_binary)
+                if 0.025 <= centerline_foreground_ratio <= 0.22 and 0 < centerline_stroke_width <= 4.0:
+                    binary = centerline_binary
+                    threshold_binary = centerline_threshold_binary
+                    threshold_source = centerline_threshold_source
+                    used_threshold = float(centerline_threshold)
+                    removed_border_components = int(centerline_removed_border)
+                    foreground_ratio = centerline_foreground_ratio
+                    pre_trace_stroke_estimate = centerline_stroke_width
+                    effective_background_normalize = False
+                    effective_denoise = 0
+                    effective_min_length = min(float(min_length), 4.0)
+                    effective_stitch_gap = max(float(stitch_gap), 3.0)
+                timings["autoCenterline"] = time.perf_counter() - stage_start
+                auto_centerline_stats = {
+                    "autoCenterlineTrace": True,
+                    "autoCenterlineReason": "wide-technical-line-art",
+                    "autoCenterlineAspectRatio": round(float(source_width) / max(1.0, float(source_height)), 3),
+                    "autoCenterlineForegroundRatio": round(float(foreground_ratio), 4),
+                    "autoCenterlineStrokeWidth": round(float(pre_trace_stroke_estimate), 1),
+                    "autoCenterlineBackgroundNormalize": effective_background_normalize,
+                    "autoCenterlineDenoise": 0,
+                    "autoCenterlineMinLength": round(float(effective_min_length), 2),
+                    "autoCenterlineStitchGap": round(float(effective_stitch_gap), 2),
+                }
+            else:
+                mode = "potrace" if 0 < pre_trace_stroke_estimate <= 5.5 and foreground_ratio <= 0.30 else "vtracer"
     skeleton_preview = None
     raw_skeleton_preview = None
     trace_binary_preview = None
@@ -2379,12 +3081,12 @@ def vectorize_image(path: Path,
         stats["vtracerSvgBytes"] = len(vtracer_svg_text.encode("utf-8"))
         timings["trace"] = time.perf_counter() - stage_start
     elif mode == "centerline":
-        centerline_solidify_radius = int(max(0.0, min(5.0, round(float(stitch_gap)))))
+        centerline_solidify_radius = int(max(0.0, min(5.0, round(float(effective_stitch_gap)))))
         if centerline_solidify_radius > 0:
             binary = solidify_centerline_mask(binary, centerline_solidify_radius)
         stage_start = time.perf_counter()
         raw_skeleton_preview = thin_binary(binary)
-        spur_length = adaptive_spur_length(binary, raw_skeleton_preview, float(stitch_gap), float(min_length))
+        spur_length = adaptive_spur_length(binary, raw_skeleton_preview, float(effective_stitch_gap), float(effective_min_length))
         skeleton_preview, pruned_spur_pixels = prune_skeleton_spurs(
             raw_skeleton_preview,
             max_length=spur_length,
@@ -2394,17 +3096,39 @@ def vectorize_image(path: Path,
         stage_start = time.perf_counter()
         vector_paths, stats = trace_skeleton_vectors(
             binary,
-            min_length=max(0.0, float(min_length)),
+            min_length=max(0.0, float(effective_min_length)),
             simplify=max(0.0, float(simplify)),
             smooth=int(smooth),
             max_contours=max(1, int(max_contours)),
-            stitch_gap=float(stitch_gap),
+            stitch_gap=float(effective_stitch_gap),
             skeleton=skeleton_preview,
         )
         stats["prunedSpurPixels"] = pruned_spur_pixels
         stats["centerlineSolidifyRadius"] = centerline_solidify_radius
-        vector_paths, stitched_count = stitch_open_vector_paths(vector_paths, min(2.0, float(stitch_gap)))
+        vector_paths, stitched_count = stitch_open_vector_paths(vector_paths, min(2.0, float(effective_stitch_gap)))
         stats["stitchedGap"] = int(stats.get("stitchedRaw", 0)) + stitched_count
+        vector_paths, straight_stats = straighten_centerline_paths(
+            vector_paths,
+            stroke_width=float(pre_trace_stroke_estimate),
+            source_width=float(image.shape[1]),
+            source_height=float(image.shape[0]),
+        )
+        stats.update(straight_stats)
+        vector_paths, axis_stats = flatten_axis_aligned_centerline_runs(
+            vector_paths,
+            stroke_width=float(pre_trace_stroke_estimate),
+            source_width=float(image.shape[1]),
+            source_height=float(image.shape[0]),
+        )
+        stats.update(axis_stats)
+        if auto_centerline_stats.get("autoCenterlineTrace"):
+            vector_paths, curve_stats = polish_centerline_curves(
+                vector_paths,
+                stroke_width=float(pre_trace_stroke_estimate),
+                source_width=float(image.shape[1]),
+                source_height=float(image.shape[0]),
+            )
+            stats.update(curve_stats)
         timings["trace"] = time.perf_counter() - stage_start
     else:
         mode = "outline"
@@ -2425,11 +3149,13 @@ def vectorize_image(path: Path,
         source_width=float(width),
         source_height=float(height),
         remove_border=remove_border and not bool(stats.get("lineArtTrace")),
-        min_length=max(0.0, float(min_length)),
+        min_length=max(0.0, float(effective_min_length)),
             mode=mode,
     )
     timings["postFilter"] = time.perf_counter() - stage_start
     stats.update(post_stats)
+    stats.update(auto_stencil_stats)
+    stats.update(auto_centerline_stats)
     stats["removedBorderComponents"] = removed_border_components
     # Otomatik mod: ince tarama/cizgi sanati icin Potrace, dolu/kalin sekiller
     # icin VTracer daha iyi sonuc verir. Manuel secimler korunur.
@@ -2452,7 +3178,7 @@ def vectorize_image(path: Path,
     )
     stage_start = time.perf_counter()
     debug_previews = [numpy_image_preview("Gri", image)]
-    if background_normalize:
+    if effective_background_normalize:
         debug_previews.append(numpy_image_preview("Isik Duzeltme", threshold_source))
     debug_previews.extend([
         numpy_image_preview("Eşik/Maske", threshold_binary),
@@ -2484,10 +3210,10 @@ def vectorize_image(path: Path,
             "mode": mode,
             "blur": blur,
             "minArea": min_area,
-            "minLength": min_length,
+            "minLength": effective_min_length,
             "simplify": simplify,
             "smooth": smooth,
-            "invert": invert,
+            "invert": effective_invert,
             "maxContours": max_contours,
             "contrast": contrast,
             "morphOpen": morph_open,
@@ -2496,9 +3222,14 @@ def vectorize_image(path: Path,
             "adaptiveC": adaptive_c,
             "maxDimension": max_dimension,
             "removeBorder": remove_border,
-            "stitchGap": stitch_gap,
-            "backgroundNormalize": background_normalize,
-            "denoise": denoise,
+            "stitchGap": effective_stitch_gap,
+            "backgroundNormalize": effective_background_normalize,
+            "requestedInvert": invert,
+            "requestedBackgroundNormalize": background_normalize,
+            "requestedMinLength": min_length,
+            "requestedStitchGap": stitch_gap,
+            "requestedDenoise": denoise,
+            "denoise": effective_denoise,
             "usedThreshold": used_threshold,
             "processingScale": image_stats["processingScale"],
         },
@@ -2810,7 +3541,8 @@ def svg_local_point(pattern: RasterPattern,
 def build_svg_vector_engrave_lines(pattern: RasterPattern,
                                    travel_feed: float | None = None,
                                    operation: str = "engrave",
-                                   clip_region: ClipRegion | None = None) -> list[str]:
+                                   clip_region: ClipRegion | None = None,
+                                   clip_close_boundary: bool = False) -> list[str]:
     if not pattern.path.exists():
         raise ValueError(f"SVG dosyasi bulunamadi: {pattern.path}")
     converter.validate_power(pattern.power)
@@ -2833,7 +3565,13 @@ def build_svg_vector_engrave_lines(pattern: RasterPattern,
             transformed = [svg_local_point(pattern, point, view_box) for point in polyline]
             if len(transformed) < 2:
                 continue
-            for clipped in clip_polyline_to_region(transformed, clip_region):
+            closed_source = len(transformed) > 2 and converter.dist(transformed[0], transformed[-1]) <= 0.05
+            for clipped in clip_polyline_to_region(
+                transformed,
+                clip_region,
+                close_boundary=clip_close_boundary and closed_source,
+                closed_source=closed_source,
+            ):
                 append_powered_polyline(lines, clipped, pattern.power, pattern.feed, travel_feed)
                 path_count += 1
 
@@ -2900,10 +3638,102 @@ def vector_fill_scan_segments(vector_paths: list[dict[str, Any]],
     return segments
 
 
+def _source_points(points: list[Any]) -> list[Point]:
+    result: list[Point] = []
+    for point in points or []:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        result.append((float(point[0]), float(point[1])))
+    if len(result) > 3 and converter.dist(result[0], result[-1]) <= 0.001:
+        result.pop()
+    return result
+
+
+def _bbox_size(bounds: tuple[float, float, float, float]) -> tuple[float, float]:
+    min_x, min_y, max_x, max_y = bounds
+    return max(0.0, max_x - min_x), max(0.0, max_y - min_y)
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return float("inf")
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def _source_distance_to_polyline(point: Point, polygon: list[Point]) -> float:
+    if len(polygon) < 2:
+        return float("inf")
+    best = float("inf")
+    for index, start in enumerate(polygon):
+        best = min(best, point_segment_distance(point, start, polygon[(index + 1) % len(polygon)]))
+    return best
+
+
+def _auto_ignore_inner_cut_path(candidate: dict[str, Any], parent: dict[str, Any]) -> bool:
+    if candidate["area"] <= 0 or parent["area"] <= candidate["area"]:
+        return False
+    parent_w, parent_h = _bbox_size(parent["bounds"])
+    candidate_w, candidate_h = _bbox_size(candidate["bounds"])
+    if parent_w <= 0 or parent_h <= 0 or candidate_w <= 0 or candidate_h <= 0:
+        return False
+    width_ratio = candidate_w / parent_w
+    height_ratio = candidate_h / parent_h
+    area_ratio = candidate["area"] / parent["area"]
+    if width_ratio < 0.52 or height_ratio < 0.52 or area_ratio < 0.28 or area_ratio > 0.97:
+        return False
+    if not point_in_polygon(candidate["points"][0], parent["points"]):
+        return False
+    sample_step = max(1, len(candidate["points"]) // 24)
+    distances = [
+        _source_distance_to_polyline(candidate["points"][index], parent["points"])
+        for index in range(0, len(candidate["points"]), sample_step)
+    ]
+    close_offset = _median(distances)
+    close_limit = max(0.75, min(6.0, min(candidate_w, candidate_h) * 0.12))
+    return close_offset <= close_limit
+
+
+def auto_ignored_inner_cut_path_indexes(vector_paths: list[dict[str, Any]], fallback_operation: str) -> set[int]:
+    if fallback_operation != "cut":
+        return set()
+    entries: list[dict[str, Any]] = []
+    for index, vector_path in enumerate(vector_paths or []):
+        if vector_path.get("removed") or not bool(vector_path.get("closed", True)):
+            continue
+        raw_operation = str(vector_path.get("operation") or "").lower().replace("-", "_")
+        operation = "cut" if fallback_operation == "cut" and raw_operation == "engrave" else normalize_operation(vector_path.get("operation"), fallback_operation)
+        if operation != "cut":
+            continue
+        points = _source_points(vector_path.get("points", []))
+        if len(points) < 3:
+            continue
+        area = abs(polygon_signed_area(points))
+        if area <= 0.5:
+            continue
+        entries.append(
+            {
+                "index": index,
+                "points": points,
+                "bounds": _points_bbox([[point[0], point[1]] for point in points]),
+                "area": area,
+            }
+        )
+    ignored: set[int] = set()
+    for candidate in entries:
+        for parent in entries:
+            if candidate["index"] == parent["index"] or candidate["index"] in ignored:
+                continue
+            if _auto_ignore_inner_cut_path(candidate, parent):
+                ignored.add(int(candidate["index"]))
+    return ignored
+
+
 def build_embedded_vector_engrave_lines(item: dict[str, Any],
                                         travel_feed: float | None = None,
                                         operation: str = "engrave",
-                                        clip_region: ClipRegion | None = None) -> list[str]:
+                                        clip_region: ClipRegion | None = None,
+                                        clip_close_boundary: bool = False) -> list[str]:
     pattern = RasterPattern(
         path=Path(item.get("path") or item.get("sourcePath") or "vector"),
         x=_float(item.get("x")),
@@ -2921,25 +3751,44 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
     converter.validate_power(pattern.power)
     source_width = _float(item.get("sourceWidth"), pattern.width)
     source_height = _float(item.get("sourceHeight"), pattern.height)
+    vector_engrave_mode = str(item.get("vectorEngraveMode") or "contour").lower()
+    fallback_operation = "cut" if operation == "cut" else "engrave_fill" if vector_engrave_mode == "fill" else "engrave_line"
+
+    def path_operation(vector_path: dict[str, Any]) -> str:
+        raw_operation = str(vector_path.get("operation") or "").lower().replace("-", "_")
+        current_operation = "cut" if fallback_operation == "cut" and raw_operation == "engrave" else normalize_operation(vector_path.get("operation"), fallback_operation)
+        if current_operation == "engrave_fill" and (not bool(vector_path.get("closed", True)) or len(vector_path.get("points", [])) < 3):
+            return "engrave_line"
+        return current_operation
+
+    auto_ignored_indexes = auto_ignored_inner_cut_path_indexes(item.get("vectorPaths", []), fallback_operation)
     active_paths = [
         vector_path
-        for vector_path in item.get("vectorPaths", [])
-        if not vector_path.get("removed") and len(vector_path.get("points", [])) >= 2
+        for index, vector_path in enumerate(item.get("vectorPaths", []))
+        if not vector_path.get("removed")
+        and len(vector_path.get("points", [])) >= 2
+        and index not in auto_ignored_indexes
+        and path_operation(vector_path) != "ignore"
     ]
     if not active_paths:
         raise ValueError("Vektorlestirilmis desende aktif cizgi kalmadi.")
 
     clean_name = str(item.get("name") or "vector").encode("ascii", errors="ignore").decode("ascii") or "vector"
     clean_name = clean_name.replace("(", "_").replace(")", "_")
-    op_label = "cut" if operation == "cut" else "engrave"
+    op_label = "cut" if fallback_operation == "cut" else "engrave"
     lines = [f"({op_label} vector {clean_name} R{fmt(pattern.rotation)})", "S0"]
     vector_stats = item.get("vectorStats") or {}
-    vector_engrave_mode = str(item.get("vectorEngraveMode") or "contour").lower()
-    fill_engrave = operation != "cut" and vector_engrave_mode == "fill" and vector_stats.get("traceEngine") == "potrace"
-    if fill_engrave:
+    engrave_power = _int(item.get("engravePower", item.get("power", pattern.power)), pattern.power)
+    engrave_feed = _float(item.get("engraveFeed", item.get("feed", pattern.feed)), pattern.feed)
+    cut_power = _int(item.get("cutPower", item.get("power", pattern.power)), pattern.power)
+    cut_feed = _float(item.get("cutFeed", item.get("feed", pattern.feed)), pattern.feed)
+    emitted = 0
+
+    fill_paths = [vector_path for vector_path in active_paths if path_operation(vector_path) == "engrave_fill"]
+    if fill_paths:
         source_step = max(0.05, pattern.line_step * source_height / max(0.001, pattern.height))
         segments = vector_fill_scan_segments(
-            active_paths,
+            fill_paths,
             source_width=source_width,
             source_height=source_height,
             source_step=source_step,
@@ -2948,7 +3797,6 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
         if not segments:
             raise ValueError("Dolgulu vektor desen icin kazima satiri olusmadi.")
         reverse = False
-        emitted = 0
         for start_source, end_source in segments:
             start_point = [end_source[0], end_source[1]] if reverse else [start_source[0], start_source[1]]
             end_point = [start_source[0], start_source[1]] if reverse else [end_source[0], end_source[1]]
@@ -2958,28 +3806,34 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
                 append_powered_polyline(
                     lines,
                     [clipped_start, clipped_end],
-                    pattern.power,
-                    pattern.feed,
+                    engrave_power,
+                    engrave_feed,
                     travel_feed,
                 )
                 emitted += 1
             reverse = not reverse
-        if emitted == 0 and clip_region is not None:
-            lines.append(f"({op_label} vector fill clipped empty)")
-            lines.append("S0")
-            return lines
         lines.append(f"({op_label} vector fill end)")
         lines.append("S0")
-        return lines
 
-    emitted = 0
     for vector_path in active_paths:
+        current_operation = path_operation(vector_path)
+        if current_operation == "engrave_fill":
+            continue
         points = vector_path.get("points", [])
         transformed = [embedded_vector_point(pattern, point, source_width, source_height) for point in points]
-        if vector_path.get("closed", True) and transformed and converter.dist(transformed[0], transformed[-1]) > 1e-6:
+        closed_source = bool(vector_path.get("closed", True))
+        if closed_source and transformed and converter.dist(transformed[0], transformed[-1]) > 1e-6:
             transformed.append(transformed[0])
-        for clipped in clip_polyline_to_region(transformed, clip_region):
-            append_powered_polyline(lines, clipped, pattern.power, pattern.feed, travel_feed)
+        for clipped in clip_polyline_to_region(
+            transformed,
+            clip_region,
+            close_boundary=clip_close_boundary and closed_source,
+            closed_source=closed_source,
+        ):
+            if current_operation == "cut":
+                append_powered_polyline(lines, clipped, cut_power, cut_feed, travel_feed)
+            else:
+                append_powered_polyline(lines, clipped, engrave_power, engrave_feed, travel_feed)
             emitted += 1
     if emitted == 0 and clip_region is not None:
         lines.append(f"({op_label} vector clipped empty)")
@@ -2988,6 +3842,20 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
     lines.append(f"({op_label} vector end)")
     lines.append("S0")
     return lines
+
+
+def embedded_vector_has_active_paths(item: dict[str, Any], fallback_operation: str) -> bool:
+    auto_ignored_indexes = auto_ignored_inner_cut_path_indexes(item.get("vectorPaths", []), fallback_operation)
+    for index, vector_path in enumerate(item.get("vectorPaths", [])):
+        if index in auto_ignored_indexes:
+            continue
+        if vector_path.get("removed") or len(vector_path.get("points", [])) < 2:
+            continue
+        raw_operation = str(vector_path.get("operation") or "").lower().replace("-", "_")
+        operation = "cut" if fallback_operation == "cut" and raw_operation == "engrave" else normalize_operation(vector_path.get("operation"), fallback_operation)
+        if operation != "ignore":
+            return True
+    return False
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -3000,6 +3868,159 @@ def _int(value: Any, default: int = 0) -> int:
     if value is None or value == "":
         return default
     return int(float(value))
+
+
+def normalize_operation(value: Any, default: str = "engrave_line") -> str:
+    operation = str(value or default).lower().replace("-", "_")
+    if operation == "engrave":
+        return "engrave_line"
+    if operation in {"cut", "engrave_line", "engrave_fill", "ignore"}:
+        return operation
+    return default
+
+
+def placement_boundary_margin(placement: dict[str, Any]) -> float:
+    return max(0.0, _float(placement.get("boundaryMargin", placement.get("clipMargin", 0.0)), 0.0))
+
+
+def placement_closes_boundary(placement: dict[str, Any]) -> bool:
+    return bool(placement.get("clipCloseBoundary") or placement.get("boundaryClose"))
+
+
+def generation_has_bed_settings(settings: dict[str, Any]) -> bool:
+    return any(key in settings for key in ("bedWidth", "bedHeight", "margin", "gap", "quantity", "allowRotate", "availableArea", "materialArea"))
+
+
+def part_fits_bed(part: LoadedPart, bed_width: float, bed_height: float, margin: float, allow_rotate: bool) -> bool:
+    usable_width = max(0.0, bed_width - margin * 2.0)
+    usable_height = max(0.0, bed_height - margin * 2.0)
+    return (
+        part.width <= usable_width + 0.001 and part.height <= usable_height + 0.001
+    ) or (
+        allow_rotate and part.height <= usable_width + 0.001 and part.width <= usable_height + 0.001
+    )
+
+
+def bounds_fit_bed(bounds: tuple[float, float, float, float], bed_width: float, bed_height: float, margin: float) -> bool:
+    min_x, min_y, max_x, max_y = bounds
+    return (
+        min_x >= margin - 0.001
+        and min_y >= margin - 0.001
+        and max_x <= bed_width - margin + 0.001
+        and max_y <= bed_height - margin + 0.001
+    )
+
+
+def normalize_available_area(settings: dict[str, Any], margin: float) -> ClipRegion | None:
+    area = settings.get("availableArea") or settings.get("materialArea")
+    if not isinstance(area, dict) or str(area.get("type") or "polygon").lower() != "polygon":
+        return None
+    points: list[Point] = []
+    for point in area.get("points") or []:
+        if not isinstance(point, dict):
+            continue
+        try:
+            x = float(point.get("x"))
+            y = float(point.get("y"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            points.append((x, y))
+    if len(points) < 3 or abs(polygon_signed_area(points)) < 0.01:
+        return None
+    return ClipRegion([points], margin)
+
+
+def bounds_sample_points(bounds: tuple[float, float, float, float], step: float = 6.0) -> list[Point]:
+    min_x, min_y, max_x, max_y = bounds
+    points: list[Point] = [
+        (min_x, min_y),
+        (max_x, min_y),
+        (max_x, max_y),
+        (min_x, max_y),
+        ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0),
+    ]
+    width = max(0.0, max_x - min_x)
+    height = max(0.0, max_y - min_y)
+    x_steps = max(1, int(math.ceil(width / max(1.0, step))))
+    y_steps = max(1, int(math.ceil(height / max(1.0, step))))
+    for index in range(1, x_steps):
+        x = min_x + width * index / x_steps
+        points.extend([(x, min_y), (x, max_y)])
+    for index in range(1, y_steps):
+        y = min_y + height * index / y_steps
+        points.extend([(min_x, y), (max_x, y)])
+    return points
+
+
+def bounds_fit_active_area(bounds: tuple[float, float, float, float],
+                           bed_width: float,
+                           bed_height: float,
+                           margin: float,
+                           available_area: ClipRegion | None) -> bool:
+    if available_area is None:
+        return bounds_fit_bed(bounds, bed_width, bed_height, margin)
+    if not bounds_fit_bed(bounds, bed_width, bed_height, 0.0):
+        return False
+    min_x, min_y, max_x, max_y = bounds
+    sample_step = max(2.0, min(8.0, min(max_x - min_x, max_y - min_y) / 3.0 if max_x > min_x and max_y > min_y else 4.0))
+    return all(clip_region_contains(point, available_area) for point in bounds_sample_points(bounds, sample_step))
+
+
+def transformed_bounds(paths: list[list[Point]]) -> tuple[float, float, float, float]:
+    return paths_bounds(paths) if paths else (0.0, 0.0, 0.0, 0.0)
+
+
+def raster_pattern_bounds(pattern: RasterPattern) -> tuple[float, float, float, float]:
+    corners = [
+        pattern_point(pattern, 0.0, 0.0),
+        pattern_point(pattern, pattern.width, 0.0),
+        pattern_point(pattern, pattern.width, pattern.height),
+        pattern_point(pattern, 0.0, pattern.height),
+    ]
+    xs = [point[0] for point in corners]
+    ys = [point[1] for point in corners]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def raster_pattern_corners(pattern: RasterPattern) -> list[Point]:
+    return [
+        pattern_point(pattern, 0.0, 0.0),
+        pattern_point(pattern, pattern.width, 0.0),
+        pattern_point(pattern, pattern.width, pattern.height),
+        pattern_point(pattern, 0.0, pattern.height),
+    ]
+
+
+def bounds_overlap(first: tuple[float, float, float, float],
+                   second: tuple[float, float, float, float],
+                   tolerance: float = 0.001) -> bool:
+    return not (
+        first[2] <= second[0] + tolerance
+        or first[0] >= second[2] - tolerance
+        or first[3] <= second[1] + tolerance
+        or first[1] >= second[3] - tolerance
+    )
+
+
+def clip_region_bounds(polygons: list[list[Point]]) -> tuple[float, float, float, float] | None:
+    points = [point for polygon in polygons for point in polygon]
+    if not points:
+        return None
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def pattern_bounds_inside_clip_region(pattern: RasterPattern, clip_region: ClipRegion) -> bool:
+    return all(clip_region_contains(point, clip_region) for point in raster_pattern_corners(pattern))
+
+
+def pattern_bounds_crosses_clip_region(pattern: RasterPattern, clip_region: ClipRegion) -> bool:
+    region_bounds = clip_region_bounds(clip_region.polygons)
+    if region_bounds is None or not bounds_overlap(raster_pattern_bounds(pattern), region_bounds):
+        return False
+    return not pattern_bounds_inside_clip_region(pattern, clip_region)
 
 
 def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -3022,31 +4043,72 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             inner_first,
         )
 
+    validate_bed = generation_has_bed_settings(settings)
+    bed_width = _float(settings.get("bedWidth"), 0.0)
+    bed_height = _float(settings.get("bedHeight"), 0.0)
+    margin = max(0.0, _float(settings.get("margin"), 0.0))
+    allow_rotate = bool(settings.get("allowRotate", True))
+    available_area = normalize_available_area(settings, margin)
+    if validate_bed and (bed_width <= 0 or bed_height <= 0 or bed_width - margin * 2 <= 0 or bed_height - margin * 2 <= 0):
+        raise ValueError("Tabla olcusu veya kenar payi gecersiz.")
+
+    travel_feed = _float(settings.get("travelFeed"), 3000.0)
+    feed = _float(settings.get("feed"), 500.0)
+    power = _int(settings.get("power"), 1000)
+    engrave_power = _int(settings.get("engravePower"), 250)
+    engrave_feed = _float(settings.get("engraveFeed"), 1800.0)
+    converter.validate_power(engrave_power)
+    # Kerf: isin kalinligi telafisi (0 = kapali). Guvenli ust sinir 1 mm.
+    kerf = min(1.0, max(0.0, _float(settings.get("kerf"), 0.0)))
+
     cut_paths: list[list[Point]] = []
-    clip_polygons_by_placement: dict[str, list[list[Point]]] = {}
-    all_clip_polygons: list[list[Point]] = []
+    clip_data_by_placement: dict[str, dict[str, Any]] = {}
+    pattern_lines: list[str] = []
+    active_output_count = 0
     for placement in state.get("placements", []):
+        operation = normalize_operation(placement.get("operation"), "cut")
+        if operation == "ignore":
+            continue
         part_id = str(placement["partId"])
         part = parts_by_id.get(part_id)
         if part is None:
             raise ValueError(f"Parca bulunamadi: {part_id}")
         transformed = transform_paths(part, placement)
-        cut_paths.extend(transformed)
+        if validate_bed:
+            if not part_fits_bed(part, bed_width, bed_height, margin, allow_rotate):
+                raise ValueError(f"Parca aktif tabla alanina fiziksel olarak sigmiyor: {part.name}")
+            if not bounds_fit_active_area(transformed_bounds(transformed), bed_width, bed_height, margin, available_area):
+                raise ValueError(f"Parca tabla disinda: {part.name}")
+        if operation == "cut":
+            # Kerf telafisi yalniz KESIMDE ve yerlesim (parca) bazinda:
+            # delik tespiti ayni parcanin yollari arasinda yapilmali.
+            cut_paths.extend(apply_kerf_to_paths(transformed, kerf))
+        else:
+            for path in transformed:
+                append_powered_polyline(pattern_lines, path, engrave_power, engrave_feed, travel_feed)
+        active_output_count += len(transformed)
+        # Kirpma sinirlari TASARIM sinirinda kalir (kerf'ten etkilenmez):
+        # desen, parcanin tasarlanan kenarina gore kirpilir.
         placement_clip_polygons = closed_clip_polygons(transformed)
-        clip_polygons_by_placement[str(placement.get("id") or "")] = placement_clip_polygons
-        all_clip_polygons.extend(placement_clip_polygons)
+        clip_data_by_placement[str(placement.get("id") or "")] = {
+            "polygons": placement_clip_polygons,
+            "margin": placement_boundary_margin(placement),
+            "close": placement_closes_boundary(placement),
+        }
 
-    travel_feed = _float(settings.get("travelFeed"), 3000.0)
-    feed = _float(settings.get("feed"), 500.0)
-    power = _int(settings.get("power"), 1000)
-    pattern_lines: list[str] = []
     for item in state.get("patterns", []):
         if not item.get("path"):
             continue
         kind = str(item.get("kind") or "").lower()
-        operation = str(item.get("operation") or "engrave").lower()
-        if kind not in {"svg", "vector"}:
-            operation = "engrave"
+        operation = normalize_operation(item.get("operation"), "engrave_line")
+        if operation == "ignore":
+            continue
+        if kind not in {"svg", "vector"} and operation == "cut":
+            operation = "engrave_fill"
+        gcode_operation = "cut" if operation == "cut" else "engrave"
+        vector_fallback_operation = "cut" if operation == "cut" else "engrave_fill" if operation == "engrave_fill" else "engrave_line"
+        if (kind == "vector" or (kind == "svg" and item.get("vectorPaths"))) and not embedded_vector_has_active_paths(item, vector_fallback_operation):
+            continue
         default_pattern_power = power if operation == "cut" else 250
         default_pattern_feed = feed if operation == "cut" else 1800.0
         pattern = RasterPattern(
@@ -3063,17 +4125,69 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             mirror_x=bool(item.get("mirrorX")),
             mirror_y=bool(item.get("mirrorY")),
         )
+        pattern_bounds = raster_pattern_bounds(pattern)
+        if validate_bed and not bounds_fit_active_area(pattern_bounds, bed_width, bed_height, margin, available_area):
+            raise ValueError(f"Desen tabla disinda: {item.get('name') or pattern.path.name}")
         parent_id = str(item.get("parentId") or "")
-        clip_polygons = clip_polygons_by_placement.get(parent_id) or all_clip_polygons
-        clip_margin = max(0.0, _float(item.get("clipMargin"), 0.0))
+        extra_clip_margin = max(0.0, _float(item.get("clipMargin"), 0.0))
+        clip_close_boundary = bool(item.get("clipCloseBoundary"))
+        if parent_id:
+            if parent_id not in clip_data_by_placement:
+                raise ValueError(f"Desenin bagli oldugu DXF parcasi bulunamadi: {item.get('name') or pattern.path.name}")
+            parent_clip_data = clip_data_by_placement[parent_id]
+            clip_polygons = parent_clip_data["polygons"]
+            if not clip_polygons:
+                raise ValueError(f"Bagli DXF parcasinda kapali kirpma siniri yok: {item.get('name') or pattern.path.name}")
+            clip_margin = float(parent_clip_data.get("margin", 0.0)) + extra_clip_margin
+            clip_close_boundary = clip_close_boundary or bool(parent_clip_data.get("close"))
+        else:
+            clip_polygons = []
+            placement_margins: list[float] = []
+            for placement_clip_data in clip_data_by_placement.values():
+                placement_clip_polygons = placement_clip_data["polygons"]
+                region_bounds = clip_region_bounds(placement_clip_polygons)
+                if region_bounds and bounds_overlap(pattern_bounds, region_bounds):
+                    clip_polygons.extend(placement_clip_polygons)
+                    placement_margins.append(float(placement_clip_data.get("margin", 0.0)))
+                    clip_close_boundary = clip_close_boundary or bool(placement_clip_data.get("close"))
+            clip_margin = (max(placement_margins) if placement_margins else 0.0) + extra_clip_margin
         clip_region = ClipRegion(clip_polygons, clip_margin) if clip_polygons else None
-        if kind == "vector":
-            vector_item = {**item, "power": item.get("power", default_pattern_power), "feed": item.get("feed", default_pattern_feed)}
-            pattern_lines.extend(build_embedded_vector_engrave_lines(vector_item, travel_feed, operation, clip_region))
+        if kind == "vector" or (kind == "svg" and item.get("vectorPaths")):
+            vector_item = {
+                **item,
+                "power": item.get("power", default_pattern_power),
+                "feed": item.get("feed", default_pattern_feed),
+                "cutPower": power,
+                "cutFeed": feed,
+                "engravePower": item.get("power", engrave_power),
+                "engraveFeed": item.get("feed", engrave_feed),
+                "vectorEngraveMode": "fill" if operation == "engrave_fill" else "contour",
+            }
+            pattern_lines.extend(
+                build_embedded_vector_engrave_lines(
+                    vector_item,
+                    travel_feed,
+                    gcode_operation,
+                    clip_region,
+                    clip_close_boundary,
+                )
+            )
         elif kind == "svg" or pattern.path.suffix.lower() == ".svg":
-            pattern_lines.extend(build_svg_vector_engrave_lines(pattern, travel_feed, operation, clip_region))
+            pattern_lines.extend(
+                build_svg_vector_engrave_lines(
+                    pattern,
+                    travel_feed,
+                    gcode_operation,
+                    clip_region,
+                    clip_close_boundary,
+                )
+            )
         else:
             pattern_lines.extend(build_raster_engrave_lines(pattern, travel_feed, clip_region))
+        active_output_count += 1
+
+    if active_output_count == 0:
+        raise ValueError("G-code icin aktif kesim veya kazima yolu yok.")
 
     rapid_feed_value = settings.get("rapidFeed")
     rapid_feed = None if rapid_feed_value in (None, "") else _float(rapid_feed_value)
@@ -3081,6 +4195,7 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     overcut = _float(settings.get("overcut"), 0.8)
     passes = max(1, _int(settings.get("passes"), 1))
     laser_cmd = str(settings.get("laserCmd") or "M4").upper()
+    air_assist_command = str(settings.get("airAssistCommand") or "M8").upper() if bool(settings.get("airAssist", False)) else None
 
     converter.write_gcode(
         output_path=output_path,
@@ -3096,14 +4211,125 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         travel_feed=travel_feed,
         passes=passes,
         pre_cut_lines=pattern_lines,
+        air_assist_command=air_assist_command,
     )
 
     min_x, min_y, max_x, max_y = paths_bounds(cut_paths) if cut_paths else (0.0, 0.0, 0.0, 0.0)
     return {
         "outputPath": str(output_path),
         "cutPathCount": len(cut_paths),
-        "patternCount": len(state.get("patterns", [])),
+        "patternCount": len([item for item in state.get("patterns", []) if normalize_operation(item.get("operation"), "engrave_line") != "ignore"]),
         "cutWidth": max_x - min_x,
         "cutHeight": max_y - min_y,
         "lineCount": len(output_path.read_text(encoding="utf-8").splitlines()),
+    }
+
+
+def _unique_gcode_output_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(2, 1000):
+        candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise ValueError(f"Benzersiz cikti adi bulunamadi: {path}")
+
+
+def _replace_gcode_param(line: str, letter: str, value: float) -> tuple[str, bool]:
+    pattern = re.compile(rf"\b{letter}[-+]?\d+(?:\.\d+)?\b", re.IGNORECASE)
+    replacement = f"{letter}{fmt(float(value))}"
+    changed = False
+
+    def repl(_match: re.Match[str]) -> str:
+        nonlocal changed
+        changed = True
+        return replacement
+
+    return pattern.sub(repl, line, count=1), changed
+
+
+def _positive_s_command(line: str) -> bool:
+    match = re.search(r"\bS([-+]?\d+(?:\.\d+)?)\b", line, flags=re.IGNORECASE)
+    return bool(match and float(match.group(1)) > 0)
+
+
+def convert_gcode_engrave_vectors_to_cut(input_path: Path,
+                                         cut_power: int = 1000,
+                                         cut_feed: float = 500.0,
+                                         output_path: Path | None = None) -> dict[str, Any]:
+    input_path = Path(input_path)
+    if not input_path.exists() or not input_path.is_file():
+        raise ValueError(f"G-code bulunamadi: {input_path}")
+    cut_power = max(0, min(1000, int(round(float(cut_power)))))
+    cut_feed = max(1.0, float(cut_feed))
+    if output_path is None:
+        output_path = input_path.with_name(f"{input_path.stem}_cut{input_path.suffix or '.nc'}")
+    output_path = _unique_gcode_output_path(Path(output_path))
+
+    text = input_path.read_text(encoding="utf-8", errors="replace")
+    lowered = text.lower()
+    if "(engrave raster" in lowered or "(raster" in lowered or "vector fill end" in lowered:
+        raise ValueError("Raster veya dolgulu kazima G-code'u otomatik kesime cevrilmez. Kaynak desende islemi Kesim yapip yeniden G-code olusturun.")
+
+    converted: list[str] = []
+    in_convert_block = False
+    laser_on = False
+    powered_feed_set = False
+    converted_blocks = 0
+    power_changes = 0
+    feed_changes = 0
+    block_start_re = re.compile(r"\(engrave\s+(vector|svg)\b(?!\s+end\))", re.IGNORECASE)
+    block_end_re = re.compile(r"\((?:engrave|cut)\s+(vector|svg)\s+end\)", re.IGNORECASE)
+    motion_re = re.compile(r"^\s*G0?1\b", re.IGNORECASE)
+
+    for raw_line in text.splitlines():
+        line = raw_line
+        if block_start_re.search(line):
+            in_convert_block = True
+            laser_on = False
+            powered_feed_set = False
+            converted_blocks += 1
+            line = re.sub(r"\(engrave", "(cut", line, count=1, flags=re.IGNORECASE)
+        elif in_convert_block and block_end_re.search(line):
+            line = re.sub(r"\(engrave", "(cut", line, count=1, flags=re.IGNORECASE)
+
+        if in_convert_block and not line.lstrip().startswith("("):
+            if re.search(r"\bS[-+]?\d+(?:\.\d+)?\b", line, flags=re.IGNORECASE):
+                if _positive_s_command(line):
+                    line, changed = _replace_gcode_param(line, "S", cut_power)
+                    if changed:
+                        power_changes += 1
+                    laser_on = True
+                    powered_feed_set = False
+                else:
+                    laser_on = False
+                    powered_feed_set = False
+            if laser_on and motion_re.search(line) and not powered_feed_set:
+                if re.search(r"\bF[-+]?\d+(?:\.\d+)?\b", line, flags=re.IGNORECASE):
+                    line, changed = _replace_gcode_param(line, "F", cut_feed)
+                    if changed:
+                        feed_changes += 1
+                else:
+                    line = f"{line} F{fmt(cut_feed)}"
+                    feed_changes += 1
+                powered_feed_set = True
+
+        converted.append(line)
+        if in_convert_block and block_end_re.search(line):
+            in_convert_block = False
+            laser_on = False
+            powered_feed_set = False
+
+    if converted_blocks <= 0:
+        raise ValueError("Bu dosyada cevrilecek vektor/SVG kazima blogu bulunamadi.")
+
+    output_path.write_text("\n".join(converted) + "\n", encoding="utf-8")
+    return {
+        "inputPath": str(input_path),
+        "outputPath": str(output_path),
+        "convertedBlocks": converted_blocks,
+        "powerChanges": power_changes,
+        "feedChanges": feed_changes,
+        "cutPower": cut_power,
+        "cutFeed": cut_feed,
     }
