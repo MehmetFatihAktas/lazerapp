@@ -1571,9 +1571,49 @@ def test_kerf_offsets_outer_out_and_holes_in():
     assert_true(core.apply_kerf_to_paths([outer], 0) == [outer], "kerf 0 must be a no-op")
 
 
+def test_kerf_handles_concave_part_without_degenerate_output():
+    concave = [(0, 0), (30, 0), (30, 10), (10, 10), (10, 30), (0, 30), (0, 0)]
+    result = core.apply_kerf_to_paths([concave], 0.3)[0]
+    xs = [point[0] for point in result]
+    ys = [point[1] for point in result]
+    assert_true(len(result) >= len(concave), "concave kerf output should keep a usable contour")
+    assert_true(all(math.isfinite(value) for value in [*xs, *ys]), "concave kerf output must be finite")
+    assert_true(core.converter.dist(result[0], result[-1]) < 1e-6, "concave kerf output must stay closed")
+    assert_true(abs(core.polygon_signed_area(result[:-1])) > 1.0, "concave kerf output must not collapse")
+    assert_true(max(xs) - min(xs) > 30 and max(ys) - min(ys) > 30, "outer concave contour should grow outward")
+
+
+def test_generate_uses_embedded_part_geometry_when_dxf_path_is_missing():
+    with TemporaryDirectory() as tmp:
+        output = Path(tmp) / "embedded.nc"
+        result = core.generate_from_state(
+            {
+                "parts": [
+                    {
+                        "id": "p1",
+                        "path": str(Path(tmp) / "missing-source.dxf"),
+                        "name": "embedded-source.dxf",
+                        "width": 10,
+                        "height": 8,
+                        "paths": [[[0, 0], [10, 0], [10, 8], [0, 8], [0, 0]]],
+                        "unsupported": {},
+                    }
+                ],
+                "placements": [{"id": "pl1", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"}],
+                "patterns": [],
+                "settings": base_generation_settings(),
+                "outputPath": str(output),
+            }
+        )
+        text = output.read_text(encoding="utf-8")
+        assert_true(result["cutPathCount"] == 1, "embedded DXF geometry should generate one cut path")
+        assert_true("X2 Y2" in text and "X12 Y10" in text, "embedded geometry coordinates should be emitted")
+
+
 def main():
     tests = [
         test_kerf_offsets_outer_out_and_holes_in,
+        test_kerf_handles_concave_part_without_degenerate_output,
         test_filter_keeps_auto_removed_paths,
         test_vectorize_image_returns_debug_stages_and_metadata,
         test_background_normalization_rescues_gradient_photo,
@@ -1628,6 +1668,7 @@ def main():
         test_generate_bound_svg_clips_to_parent_boundary,
         test_generate_closes_clipped_closed_svg_on_parent_boundary,
         test_generate_uses_placement_boundary_margin_and_close_rule,
+        test_generate_uses_embedded_part_geometry_when_dxf_path_is_missing,
     ]
     for test in tests:
         test()

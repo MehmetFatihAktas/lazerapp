@@ -286,9 +286,10 @@ const persistedInputIds = [
   "machinePulseDuration",
 ];
 
-const UNDO_LIMIT = 20;
+const UNDO_LIMIT = 50;
 const undoInputIds = Array.from(new Set([...persistedInputIds.filter((id) => !id.startsWith("machine")), "outputPath"]));
 const undoStack = [];
+const redoStack = [];
 let undoRestoring = false;
 
 function undoInputSnapshot() {
@@ -349,6 +350,7 @@ function createUndoSnapshot(label = "islem") {
 function pushUndo(label = "islem") {
   if (undoRestoring) return;
   undoStack.push(createUndoSnapshot(label));
+  redoStack.length = 0;
   while (undoStack.length > UNDO_LIMIT) undoStack.shift();
 }
 
@@ -383,11 +385,25 @@ function restoreUndoSnapshot(snapshot) {
 function undoLast() {
   const snapshot = undoStack.pop();
   if (!snapshot) {
-    setStatus("Geri alinacak islem yok.");
+    setStatus("Geri alınacak işlem yok.", "warn");
     return;
   }
+  redoStack.push(createUndoSnapshot(snapshot.label || "işlem"));
+  while (redoStack.length > UNDO_LIMIT) redoStack.shift();
   restoreUndoSnapshot(snapshot);
-  setStatus(`Geri alindi: ${snapshot.label || "islem"}.`);
+  setStatus(`Geri alındı: ${snapshot.label || "işlem"}.`, "ok");
+}
+
+function redoLast() {
+  const snapshot = redoStack.pop();
+  if (!snapshot) {
+    setStatus("Yinelenecek işlem yok.", "warn");
+    return;
+  }
+  undoStack.push(createUndoSnapshot(snapshot.label || "işlem"));
+  while (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  restoreUndoSnapshot(snapshot);
+  setStatus(`Yinelendi: ${snapshot.label || "işlem"}.`, "ok");
 }
 
 function bindUndoBeforeEdit(input, label) {
@@ -6102,6 +6118,7 @@ function projectPayload() {
   return {
     schema: "laser-editor-project-v1",
     version: 1,
+    features: { embeddedPartGeometry: true },
     name: projectDefaultName(),
     savedAt: new Date().toISOString(),
     parts: clonePlain(state.parts),
@@ -6281,6 +6298,11 @@ function onKeyDown(event) {
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key === "z" && !event.shiftKey) {
     undoLast();
+    event.preventDefault();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && (key === "y" || (key === "z" && event.shiftKey))) {
+    redoLast();
     event.preventDefault();
     return;
   }

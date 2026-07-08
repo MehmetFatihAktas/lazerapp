@@ -129,6 +129,44 @@ def part_to_payload(part: LoadedPart) -> dict[str, Any]:
     }
 
 
+def part_from_payload(part_data: dict[str, Any], part_id: str) -> LoadedPart:
+    """Rebuild a part from geometry embedded in a saved project payload."""
+    paths: list[list[Point]] = []
+    for raw_path in part_data.get("paths") or []:
+        path: list[Point] = []
+        for raw_point in raw_path or []:
+            if not isinstance(raw_point, (list, tuple)) or len(raw_point) < 2:
+                continue
+            try:
+                x = float(raw_point[0])
+                y = float(raw_point[1])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(x) and math.isfinite(y):
+                path.append((x, y))
+        if len(path) >= 2:
+            paths.append(path)
+    if not paths:
+        raise ValueError(f"Proje icinde gomulu DXF geometrisi yok: {part_data.get('name') or part_id}")
+    path_text = str(part_data.get("path") or part_data.get("name") or f"{part_id}.dxf")
+    width = _float(part_data.get("width"), 0.0)
+    height = _float(part_data.get("height"), 0.0)
+    if width <= 0 or height <= 0:
+        min_x, min_y, max_x, max_y = paths_bounds(paths)
+        width = max_x - min_x
+        height = max_y - min_y
+    unsupported = part_data.get("unsupported") if isinstance(part_data.get("unsupported"), dict) else {}
+    return LoadedPart(
+        id=part_id,
+        path=Path(path_text),
+        name=str(part_data.get("name") or Path(path_text).name or part_id),
+        paths=paths,
+        width=width,
+        height=height,
+        unsupported=unsupported,
+    )
+
+
 def transform_point(point: Point, part_width: float, part_height: float, placement: dict[str, Any]) -> Point:
     x, y = point
     rotation = int(round(float(placement.get("rotation", 0)))) % 360
@@ -4035,13 +4073,21 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     parts_by_id: dict[str, LoadedPart] = {}
     for part_data in state.get("parts", []):
         part_id = str(part_data["id"])
-        parts_by_id[part_id] = load_part(
-            Path(part_data["path"]),
-            part_id,
-            tolerance,
-            join_tolerance,
-            inner_first,
-        )
+        path_text = str(part_data.get("path") or "")
+        source_path = Path(path_text) if path_text else None
+        if source_path and source_path.is_file():
+            parts_by_id[part_id] = load_part(
+                source_path,
+                part_id,
+                tolerance,
+                join_tolerance,
+                inner_first,
+            )
+        elif part_data.get("paths"):
+            parts_by_id[part_id] = part_from_payload(part_data, part_id)
+        else:
+            missing = source_path if source_path else part_data.get("name") or part_id
+            raise ValueError(f"DXF bulunamadi ve projede gomulu geometri yok: {missing}")
 
     validate_bed = generation_has_bed_settings(settings)
     bed_width = _float(settings.get("bedWidth"), 0.0)
