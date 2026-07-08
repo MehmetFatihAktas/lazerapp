@@ -1806,6 +1806,36 @@ details > .wide-action {
   max-width: 420px;
   font-size: 12px;
 }
+.ribbon-body .vector-pro-group {
+  min-width: 260px;
+  max-width: 360px;
+}
+.ribbon-body .vector-pro-group .inline-note {
+  align-self: stretch;
+  max-width: none;
+  margin-top: 0;
+  padding: 8px;
+}
+.ribbon-body .vector-quality-box {
+  border-color: var(--info-border);
+  background: var(--info-bg);
+  color: var(--info);
+}
+.ribbon-body .vector-quality-box.warn {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.vector-quality-list {
+  display: grid;
+  gap: 3px;
+}
+.vector-quality-list b {
+  color: inherit;
+}
+.vector-quality-list span {
+  color: inherit;
+}
 .ribbon-body .advanced-settings { min-width: 260px; }
 .ribbon-body .advanced-settings .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
 .ribbon-body .segmented { height: 30px; }

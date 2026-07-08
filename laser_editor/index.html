@@ -234,6 +234,23 @@
             <span class="ribbon-group-title">Vektör Ayarı</span>
           </div>
           <div class="ribbon-sep"></div>
+          <div class="ribbon-group vector-pro-group">
+            <div class="rib-row">
+              <label class="rib-field wide">Profesyonel mod<select id="vecProfessionalMode">
+                <option value="cut-stencil" selected>Kesim şablonu</option>
+                <option value="line-engrave">Çizgi kazıma</option>
+                <option value="filled-ornament">Dolgu motif</option>
+                <option value="photo-engrave">Foto gravür hazırlık</option>
+              </select></label>
+            </div>
+            <div class="rib-btn-row">
+              <button id="applyVectorModeBtn">Modu Uygula</button>
+            </div>
+            <div id="vectorModeHint" class="inline-note">Kesim şablonu: koyu motifleri temiz kapalı kesim konturlarına çevirir.</div>
+            <div id="vectorQualityBox" class="inline-note vector-quality-box">Kalite raporu: vektör üretildikten sonra görünür.</div>
+            <span class="ribbon-group-title">Profesyonel Hazırlık</span>
+          </div>
+          <div class="ribbon-sep"></div>
           <div class="ribbon-group">
             <div class="rib-btn-row col">
               <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>

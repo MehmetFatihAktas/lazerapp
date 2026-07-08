@@ -67,6 +67,10 @@ const refs = {
   vecThreshold: document.getElementById("vecThreshold"),
   vecMode: document.getElementById("vecMode"),
   vecThresholdMode: document.getElementById("vecThresholdMode"),
+  vecProfessionalMode: document.getElementById("vecProfessionalMode"),
+  vectorModeHint: document.getElementById("vectorModeHint"),
+  vectorQualityBox: document.getElementById("vectorQualityBox"),
+  applyVectorModeBtn: document.getElementById("applyVectorModeBtn"),
   vecBlur: document.getElementById("vecBlur"),
   vecContrast: document.getElementById("vecContrast"),
   vecMorphClose: document.getElementById("vecMorphClose"),
@@ -262,6 +266,114 @@ const vectorSafeDefaults = {
   vecRemoveBorder: true,
   vecBackgroundNormalize: true,
 };
+
+const vectorProfessionalModes = {
+  "cut-stencil": {
+    label: "Kesim şablonu",
+    hint: "Koyu motifleri kapalı kesim konturlarına çevirir; çerçeve ve küçük gürültü temizliği açıktır.",
+    operation: "cut",
+    values: {
+      vecMode: "auto",
+      vecThresholdMode: "otsu",
+      vecBlur: "1",
+      vecContrast: "1.08",
+      vecMorphClose: "1",
+      vecMorphOpen: "0",
+      vecDenoise: "5",
+      vecMinArea: "35",
+      vecMinLength: "10",
+      vecSimplify: "0.45",
+      vecSmooth: "3",
+      vecMaxContours: "2500",
+      vecStitchGap: "0.8",
+      vecMaxDimension: "2400",
+      vecAdaptiveBlock: "35",
+      vecAdaptiveC: "5",
+      vecInvert: true,
+      vecRemoveBorder: true,
+      vecBackgroundNormalize: true,
+    },
+  },
+  "line-engrave": {
+    label: "Çizgi kazıma",
+    hint: "İnce çizimleri merkez çizgi olarak çıkarır; açık konturlar kazıma için kabul edilir.",
+    operation: "engrave_line",
+    values: {
+      vecMode: "centerline",
+      vecThresholdMode: "otsu",
+      vecBlur: "1",
+      vecContrast: "1.1",
+      vecMorphClose: "1",
+      vecMorphOpen: "0",
+      vecDenoise: "4",
+      vecMinArea: "12",
+      vecMinLength: "6",
+      vecSimplify: "0.35",
+      vecSmooth: "2",
+      vecMaxContours: "3000",
+      vecStitchGap: "1.2",
+      vecMaxDimension: "2400",
+      vecAdaptiveBlock: "35",
+      vecAdaptiveC: "5",
+      vecInvert: true,
+      vecRemoveBorder: true,
+      vecBackgroundNormalize: true,
+    },
+  },
+  "filled-ornament": {
+    label: "Dolgu motif",
+    hint: "Dolu süsleme motiflerini dış/çukur konturlar halinde çıkarır; kesim veya çizgi kazımaya sonra çevrilebilir.",
+    operation: "engrave_line",
+    values: {
+      vecMode: "vtracer",
+      vecThresholdMode: "otsu",
+      vecBlur: "1",
+      vecContrast: "1.05",
+      vecMorphClose: "1",
+      vecMorphOpen: "0",
+      vecDenoise: "5",
+      vecMinArea: "25",
+      vecMinLength: "8",
+      vecSimplify: "0.55",
+      vecSmooth: "3",
+      vecMaxContours: "3000",
+      vecStitchGap: "0.5",
+      vecMaxDimension: "2400",
+      vecAdaptiveBlock: "35",
+      vecAdaptiveC: "5",
+      vecInvert: true,
+      vecRemoveBorder: true,
+      vecBackgroundNormalize: true,
+    },
+  },
+  "photo-engrave": {
+    label: "Foto gravür hazırlık",
+    hint: "Gölge düzeltme ve adaptif eşik ile foto gravür ön hazırlığı yapar; gerçek foto tarama ayrıca ayarlanmalıdır.",
+    operation: "engrave_fill",
+    values: {
+      vecMode: "auto",
+      vecThresholdMode: "adaptive",
+      vecBlur: "1",
+      vecContrast: "1.15",
+      vecMorphClose: "0",
+      vecMorphOpen: "0",
+      vecDenoise: "5",
+      vecMinArea: "18",
+      vecMinLength: "6",
+      vecSimplify: "0.5",
+      vecSmooth: "2",
+      vecMaxContours: "3500",
+      vecStitchGap: "0",
+      vecMaxDimension: "2200",
+      vecAdaptiveBlock: "35",
+      vecAdaptiveC: "5",
+      vecInvert: true,
+      vecRemoveBorder: true,
+      vecBackgroundNormalize: true,
+    },
+  },
+};
+
 const persistedInputIds = [
   "bedW",
   "bedH",
@@ -290,6 +402,7 @@ const persistedInputIds = [
   "textStyle",
   "textOperation",
   "nudgeStep",
+  "vecProfessionalMode",
   "vecMode",
   "vecThresholdMode",
   "vecThreshold",
@@ -629,6 +742,7 @@ function loadUiSettings() {
     localStorage.removeItem(SETTINGS_KEY);
   }
   enforceAirAssistDefaults();
+  syncVectorProfessionalModeUi();
 }
 
 function saveUiSettings() {
@@ -944,35 +1058,37 @@ function getVectorSettings() {
   };
 }
 
-function applyAutoVectorPreset() {
-  pushUndo("Vektor profili");
-  const values = {
-    vecMode: "auto",
-    vecThresholdMode: "otsu",
-    vecBlur: "1",
-    vecContrast: "1",
-    vecMorphClose: "1",
-    vecMorphOpen: "0",
-    vecDenoise: "5",
-    vecMinArea: "25",
-    vecMinLength: "8",
-    vecSimplify: "0.55",
-    vecSmooth: "3",
-    vecMaxContours: "3000",
-    vecStitchGap: "0",
-    vecMaxDimension: "2200",
-    vecAdaptiveBlock: "35",
-    vecAdaptiveC: "5",
-  };
-  for (const [id, value] of Object.entries(values)) {
-    const input = refs[id];
-    if (input) input.value = value;
+function vectorProfessionalMode() {
+  const modeId = refs.vecProfessionalMode?.value || "cut-stencil";
+  return vectorProfessionalModes[modeId] || vectorProfessionalModes["cut-stencil"];
+}
+
+function setVectorSettingInput(id, value) {
+  const input = refs[id];
+  if (!input) return;
+  if (input.type === "checkbox") input.checked = Boolean(value);
+  else input.value = String(value);
+}
+
+function syncVectorProfessionalModeUi() {
+  const mode = vectorProfessionalMode();
+  if (refs.vectorModeHint) refs.vectorModeHint.textContent = mode.hint;
+}
+
+function applyVectorProfessionalMode(recordUndo = true) {
+  const mode = vectorProfessionalMode();
+  if (recordUndo) pushUndo("Vektor profesyonel mod");
+  for (const [id, value] of Object.entries(mode.values || {})) {
+    setVectorSettingInput(id, value);
   }
-  if (refs.vecInvert) refs.vecInvert.checked = true;
-  if (refs.vecRemoveBorder) refs.vecRemoveBorder.checked = true;
-  if (refs.vecBackgroundNormalize) refs.vecBackgroundNormalize.checked = true;
+  syncVectorProfessionalModeUi();
   saveUiSettings();
-  setStatus("Otomatik fotograf profili uygulandi. Simdi Foto Sec ve Vektorlestir.");
+  renderVectorQualityBox();
+  setStatus(`${mode.label} ayarı uygulandı. Foto Seç ve Vektörleştir ile yeniden üretin.`, "ok");
+}
+
+function applyAutoVectorPreset() {
+  applyVectorProfessionalMode(true);
 }
 
 async function api(path, payload = {}) {
@@ -3305,6 +3421,78 @@ function vectorPathIsActive(vectorPath, pattern) {
   return Boolean(vectorPath) && !vectorPath.removed && (vectorPath.points || []).length >= 2 && vectorPathOperation(vectorPath, pattern) !== "ignore";
 }
 
+function vectorPathSourceLength(vectorPath) {
+  const points = vectorPath?.points || [];
+  let total = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    total += Math.hypot((Number(current[0]) || 0) - (Number(previous[0]) || 0), (Number(current[1]) || 0) - (Number(previous[1]) || 0));
+  }
+  return total;
+}
+
+function latestVectorPattern() {
+  return [...state.patterns].reverse().find((pattern) => vectorPatternHasPaths(pattern) && pattern.kind === "vector") || null;
+}
+
+function vectorQualitySummary(pattern) {
+  if (!vectorPatternHasPaths(pattern)) return null;
+  const paths = pattern.vectorPaths || [];
+  const operation = patternOperation(pattern);
+  const autoIgnored = autoIgnoredCutInnerPaths(pattern);
+  const active = paths.filter((path) => vectorPathIsActive(path, pattern));
+  const open = active.filter((path) => !path.closed).length;
+  const closed = active.length - open;
+  const tiny = active.filter((path) => {
+    const length = Number(path.length) || vectorPathSourceLength(path);
+    const area = Math.abs(Number(path.area) || 0);
+    return length < 8 || (path.closed && area > 0 && area < 1);
+  }).length;
+  const removedManual = paths.filter((path) => path.removed).length;
+  const stats = pattern.vectorStats || {};
+  const hiddenAuto = Number(stats.removedBorder || 0) + Number(stats.removedShortPost || 0) + autoIgnored.size;
+  const warnings = [];
+  if (operation === "cut" && open > 0) warnings.push(`${open} açık kontur kesimde elle kontrol edilmeli.`);
+  if (active.length > 1200) warnings.push("Kontur sayısı yüksek; kesim süresi ve titreşim artabilir.");
+  if (tiny > 30) warnings.push("Çok küçük kontur var; min alan/min çizgi artırılabilir.");
+  if (Number(stats.removedBorder || 0) > 0) warnings.push("Fotoğraf çerçevesi otomatik temizlendi.");
+  return {
+    operation,
+    total: paths.length,
+    active: active.length,
+    closed,
+    open,
+    tiny,
+    removedManual,
+    hiddenAuto,
+    stitched: Number(stats.stitchedGap || 0),
+    contoursFound: Number(stats.contoursFound || 0),
+    duration: Number(stats.timings?.total || 0),
+    warnings,
+  };
+}
+
+function vectorQualityHtml(pattern) {
+  const summary = vectorQualitySummary(pattern);
+  if (!summary) return "Kalite raporu: vektör üretildikten sonra görünür.";
+  const warningText = summary.warnings.length ? `<span><b>Uyarı:</b> ${escapeHtml(summary.warnings.join(" "))}</span>` : "<span><b>Durum:</b> Üretim için temel kontrol temiz.</span>";
+  const durationText = summary.duration ? ` · ${summary.duration.toFixed(2)} sn` : "";
+  return `<div class="vector-quality-list">
+    <span><b>${escapeHtml(operationLabel(summary.operation))}</b> · aktif ${summary.active}/${summary.total} kontur${durationText}</span>
+    <span>Kapalı ${summary.closed} · açık ${summary.open} · küçük ${summary.tiny}</span>
+    <span>Gizlenen ${summary.hiddenAuto} · elle silinen ${summary.removedManual} · birleşen ${summary.stitched}</span>
+    ${warningText}
+  </div>`;
+}
+
+function renderVectorQualityBox(pattern = selectedVectorPattern() || latestVectorPattern()) {
+  if (!refs.vectorQualityBox) return;
+  const summary = vectorQualitySummary(pattern);
+  refs.vectorQualityBox.classList.toggle("warn", Boolean(summary?.warnings?.length));
+  refs.vectorQualityBox.innerHTML = vectorQualityHtml(pattern);
+}
+
 function vectorPathBounds(vectorPath) {
   const bounds = emptyBounds();
   for (const point of vectorPath?.points || []) {
@@ -3361,6 +3549,26 @@ function operationLabel(operation) {
   );
 }
 
+function setPatternOperationDefaults(pattern, operation) {
+  if (!pattern) return;
+  const nextOperation = normalizeOperation(operation, pattern.kind === "raster" ? "engrave_fill" : "engrave_line");
+  pattern.operation = nextOperation;
+  if (vectorPatternHasPaths(pattern) && nextOperation !== "ignore") {
+    for (const vectorPath of pattern.vectorPaths || []) {
+      if (!vectorPath.removed) vectorPath.operation = nextOperation;
+    }
+  }
+  if (nextOperation === "cut") {
+    pattern.power = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
+    pattern.feed = Math.max(1, mm("cutFeed", 500));
+    pattern.vectorEngraveMode = "contour";
+  } else if (nextOperation === "engrave_line" || nextOperation === "engrave_fill") {
+    pattern.power = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
+    pattern.feed = Math.max(1, mm("engraveFeed", 1800));
+    pattern.vectorEngraveMode = nextOperation === "engrave_fill" ? "fill" : "contour";
+  }
+}
+
 function applyPatternOperation(pattern, operation) {
   const nextOperation = normalizeOperation(operation, pattern?.kind === "raster" ? "engrave_fill" : "engrave_line");
   if (!pattern) return;
@@ -3370,21 +3578,7 @@ function applyPatternOperation(pattern, operation) {
     (pattern.vectorPaths || []).some((vectorPath) => !vectorPath.removed && baseVectorPathOperation(vectorPath, pattern) !== nextOperation);
   if (pattern.operation === nextOperation && !needsPathSync) return;
   pushUndo("Desen islemi");
-  pattern.operation = nextOperation;
-  if (vectorPatternHasPaths(pattern) && nextOperation !== "ignore") {
-    for (const vectorPath of pattern.vectorPaths || []) {
-      if (!vectorPath.removed) vectorPath.operation = nextOperation;
-    }
-  }
-  if (pattern.operation === "cut") {
-    pattern.power = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
-    pattern.feed = Math.max(1, mm("cutFeed", 500));
-    pattern.vectorEngraveMode = "contour";
-  } else if (pattern.operation === "engrave_line" || pattern.operation === "engrave_fill") {
-    pattern.power = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
-    pattern.feed = Math.max(1, mm("engraveFeed", 1800));
-    pattern.vectorEngraveMode = pattern.operation === "engrave_fill" ? "fill" : "contour";
-  }
+  setPatternOperationDefaults(pattern, nextOperation);
   draw();
   updateSelectionPanel();
 }
@@ -3511,6 +3705,7 @@ function togglePatternSelection(patternId) {
 }
 
 function updateSelectionPanel() {
+  renderVectorQualityBox();
   if (!state.selected) {
     refs.selectionPanel.className = "selection-empty";
     refs.selectionPanel.innerHTML = "Seçim yok";
@@ -3691,6 +3886,7 @@ function renderPatternPanel(pattern) {
           <span>Otomatik gizlenen: ${Number(vectorStats.removedBorder || 0) + Number(vectorStats.removedShortPost || 0)} · Çerçeve: ${vectorStats.removedBorder ?? 0} · Birleşen: ${vectorStats.stitchedGap ?? 0}${vectorTiming}</span>
         </div>`
       : "";
+  const vectorQualityCard = hasVectorPaths ? `<div class="svg-clean-info">${vectorQualityHtml(pattern)}</div>` : "";
   const debugInfo =
     pattern.kind === "vector" && pattern.debugPreviews?.length
       ? `<div class="debug-preview-grid">
@@ -3708,6 +3904,7 @@ function renderPatternPanel(pattern) {
     <div class="property-title"><strong>${escapeHtml(pattern.name || "Desen")}</strong><span>${kindText} · ${operationLabel(operation)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm${multiSelectionText}</span></div>
     ${svgInfo}
     ${vectorInfo}
+    ${vectorQualityCard}
     ${debugInfo}
     ${operationControl}
     ${vectorModeControl}
@@ -5202,6 +5399,7 @@ async function vectorizePhoto(options = {}) {
       return;
     }
     pushUndo(replacePattern ? "Vektor yeniden isle" : "Vektor ekle");
+    const professionalMode = vectorProfessionalMode();
     const id = uid("pat");
     const preview = new Image();
     preview.src = vector.preview?.dataUrl || "";
@@ -5249,13 +5447,15 @@ async function vectorizePhoto(options = {}) {
       pattern = replacePattern;
     } else {
       pattern = createVectorPatternForPlacement(id, vector, target);
+      setPatternOperationDefaults(pattern, professionalMode.operation);
       state.patterns.push(pattern);
     }
     select("pattern", pattern.id);
+    renderVectorQualityBox(pattern);
     const stats = vector.stats || {};
     const timeText = stats.timings?.total ? `, süre: ${Number(stats.timings.total).toFixed(2)} sn` : "";
     setStatus(
-      `Vektör hazır. Aktif: ${stats.pathsKept ?? pattern.vectorPaths.length}/${stats.pathsTotal ?? pattern.vectorPaths.length}, bulunan: ${stats.contoursFound ?? "-"}, otomatik gizlenen: ${Number(stats.removedBorder || 0) + Number(stats.removedShortPost || 0)}, birleşen: ${stats.stitchedGap ?? 0}${timeText}.`
+      `Vektör hazır (${professionalMode.label}). Aktif: ${stats.pathsKept ?? pattern.vectorPaths.length}/${stats.pathsTotal ?? pattern.vectorPaths.length}, bulunan: ${stats.contoursFound ?? "-"}, otomatik gizlenen: ${Number(stats.removedBorder || 0) + Number(stats.removedShortPost || 0)}, birleşen: ${stats.stitchedGap ?? 0}${timeText}.`
     );
   } catch (error) {
     setStatus(error.message);
@@ -6919,6 +7119,12 @@ function bindControls() {
   document.getElementById("vectorizePhotoBtn").addEventListener("click", vectorizePhoto);
   document.getElementById("revectorizeBtn").addEventListener("click", revectorizeSelected);
   document.getElementById("vectorAutoPresetBtn")?.addEventListener("click", applyAutoVectorPreset);
+  refs.applyVectorModeBtn?.addEventListener("click", () => applyVectorProfessionalMode(true));
+  refs.vecProfessionalMode?.addEventListener("change", () => {
+    syncVectorProfessionalModeUi();
+    saveUiSettings();
+    renderVectorQualityBox();
+  });
   document.getElementById("saveVectorSvgBtn").addEventListener("click", saveSelectedVectorSvg);
   document.getElementById("autoLayoutBtn").addEventListener("click", autoLayout);
   refs.drawAreaToolBtn?.addEventListener("click", beginMaterialAreaDrawing);
