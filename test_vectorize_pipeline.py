@@ -1037,6 +1037,43 @@ def test_open_vector_path_fill_falls_back_to_line_engrave():
     assert_true(sum(1 for line in lines if line.startswith("S250")) == 1, "open fill path should engrave as one line")
 
 
+def test_raster_photo_engrave_modulates_power_by_grayscale():
+    with TemporaryDirectory() as tmp:
+        path = Path(tmp) / "photo-gradient.png"
+        image = Image.new("L", (6, 2), 255)
+        pixels = image.load()
+        for x, gray in enumerate([255, 210, 160, 100, 45, 0]):
+            pixels[x, 0] = gray
+            pixels[x, 1] = gray
+        image.save(path)
+
+        pattern = core.RasterPattern(
+            path=path,
+            x=0,
+            y=0,
+            width=6,
+            height=2,
+            rotation=0,
+            power=300,
+            feed=1800,
+            line_step=1,
+            threshold=245,
+            raster_mode="grayscale",
+            power_min=20,
+            gamma=1.0,
+            bidirectional=False,
+        )
+
+        lines = core.build_raster_engrave_lines(pattern, travel_feed=3000)
+        text = "\n".join(lines)
+        powered = {int(line[1:]) for line in lines if re.fullmatch(r"S\d+", line) and line != "S0"}
+
+        assert_true("(engrave photo" in text, "photo raster mode should label the grayscale engraving block")
+        assert_true(len(powered) >= 3, f"grayscale engraving should emit multiple S levels, got {powered}")
+        assert_true(max(powered) == 300, "black pixels should reach requested max power")
+        assert_true(min(powered) < max(powered), "midtone pixels should use lower power than black pixels")
+
+
 def gcode_xy_points(lines):
     points = []
     for line in lines:
@@ -1685,6 +1722,7 @@ def main():
         test_vector_path_operations_mix_cut_engrave_and_ignore,
         test_vector_path_operation_fill_uses_scanlines,
         test_open_vector_path_fill_falls_back_to_line_engrave,
+        test_raster_photo_engrave_modulates_power_by_grayscale,
         test_clip_segment_respects_part_margin,
         test_clip_region_handles_reversed_slanted_polygons,
         test_vector_gcode_is_clipped_to_part_margin,

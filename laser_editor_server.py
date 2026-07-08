@@ -318,6 +318,8 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                 self._load_dxf_paths()
             elif self.path == "/api/open-image":
                 self._open_image()
+            elif self.path == "/api/open-raster-image":
+                self._open_raster_image()
             elif self.path == "/api/vectorize-image":
                 self._vectorize_image()
             elif self.path == "/api/save-vector-svg":
@@ -490,11 +492,23 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
         return parts
 
     def _open_image(self) -> None:
-        filename = choose_image_file()
+        payload = self._read_json(optional=True)
+        filename = payload.get("path") or choose_image_file()
         if not filename:
             self._json({"ok": True, "image": None})
             return
         self._json({"ok": True, "image": core.image_payload(Path(filename))})
+
+    def _open_raster_image(self) -> None:
+        payload = self._read_json(optional=True)
+        filename = payload.get("path") or choose_raster_image_file()
+        if not filename:
+            self._json({"ok": True, "image": None})
+            return
+        path = Path(filename)
+        if path.suffix.lower() == ".svg":
+            raise ValueError("Foto gravur icin JPG/PNG gibi raster gorsel secin; SVG vektor desen olarak eklenmeli.")
+        self._json({"ok": True, "image": core.image_payload(path)})
 
     def _vectorize_image(self) -> None:
         payload = self._read_json(optional=True)
@@ -512,11 +526,21 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
             if source_path.suffix.lower() == ".svg":
                 self._json({"ok": True, "vector": svg_as_vector_payload(source_path)})
                 return
+            product_mode = str(payload.get("productMode") or payload.get("professionalMode") or "").lower().replace("-", "_")
+            requested_mode = str(payload.get("mode", "auto"))
+            if product_mode in {"cut_stencil", "cut_template"}:
+                requested_mode = "auto"
+            elif product_mode == "line_engrave":
+                requested_mode = "centerline"
+            elif product_mode in {"filled_ornament", "fill_motif"}:
+                requested_mode = "potrace"
+            elif product_mode == "photo_engrave":
+                raise ValueError("Foto gravur vektorlestirme degildir; foto modunda raster gravur hazirligi kullanin.")
             vector = core.vectorize_image(
                 source_path,
                 threshold=int(float(payload.get("threshold", 140))),
                 threshold_mode=str(payload.get("thresholdMode", "manual")),
-                mode=str(payload.get("mode", "auto")),
+                mode=requested_mode,
                 blur=int(float(payload.get("blur", 3))),
                 min_area=float(payload.get("minArea", 40)),
                 min_length=float(payload.get("minLength", 8)),
@@ -535,6 +559,9 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                 background_normalize=bool(payload.get("backgroundNormalize", True)),
                 denoise=int(float(payload.get("denoise", 3))),
             )
+            if product_mode:
+                vector.setdefault("settings", {})["productMode"] = product_mode
+                vector.setdefault("stats", {})["productMode"] = product_mode
             if payload.get("name"):
                 vector["name"] = str(payload.get("name"))
             self._json({"ok": True, "vector": vector})

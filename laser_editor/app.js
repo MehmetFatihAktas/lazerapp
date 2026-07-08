@@ -272,6 +272,7 @@ const vectorProfessionalModes = {
     label: "Kesim şablonu",
     hint: "Koyu motifleri kapalı kesim konturlarına çevirir; çerçeve ve küçük gürültü temizliği açıktır.",
     operation: "cut",
+    productMode: "cut_template",
     values: {
       vecMode: "auto",
       vecThresholdMode: "otsu",
@@ -298,21 +299,22 @@ const vectorProfessionalModes = {
     label: "Çizgi kazıma",
     hint: "İnce çizimleri merkez çizgi olarak çıkarır; açık konturlar kazıma için kabul edilir.",
     operation: "engrave_line",
+    productMode: "line_engrave",
     values: {
       vecMode: "centerline",
       vecThresholdMode: "otsu",
-      vecBlur: "1",
-      vecContrast: "1.1",
+      vecBlur: "0",
+      vecContrast: "1.12",
       vecMorphClose: "1",
       vecMorphOpen: "0",
       vecDenoise: "4",
-      vecMinArea: "12",
-      vecMinLength: "6",
-      vecSimplify: "0.35",
-      vecSmooth: "2",
-      vecMaxContours: "3000",
-      vecStitchGap: "1.2",
-      vecMaxDimension: "2400",
+      vecMinArea: "4",
+      vecMinLength: "8",
+      vecSimplify: "0.6",
+      vecSmooth: "1",
+      vecMaxContours: "8000",
+      vecStitchGap: "2",
+      vecMaxDimension: "2200",
       vecAdaptiveBlock: "35",
       vecAdaptiveC: "5",
       vecInvert: true,
@@ -322,22 +324,23 @@ const vectorProfessionalModes = {
   },
   "filled-ornament": {
     label: "Dolgu motif",
-    hint: "Dolu süsleme motiflerini dış/çukur konturlar halinde çıkarır; kesim veya çizgi kazımaya sonra çevrilebilir.",
-    operation: "engrave_line",
+    hint: "Dolu siyah motifleri kapalı alanlara çevirir; G-code dolgu tarama satırlarıyla kazır.",
+    operation: "engrave_fill",
+    productMode: "fill_motif",
     values: {
-      vecMode: "vtracer",
+      vecMode: "potrace",
       vecThresholdMode: "otsu",
       vecBlur: "1",
-      vecContrast: "1.05",
-      vecMorphClose: "1",
-      vecMorphOpen: "0",
+      vecContrast: "1.18",
+      vecMorphClose: "2",
+      vecMorphOpen: "1",
       vecDenoise: "5",
-      vecMinArea: "25",
-      vecMinLength: "8",
-      vecSimplify: "0.55",
-      vecSmooth: "3",
-      vecMaxContours: "3000",
-      vecStitchGap: "0.5",
+      vecMinArea: "20",
+      vecMinLength: "12",
+      vecSimplify: "1",
+      vecSmooth: "2",
+      vecMaxContours: "4000",
+      vecStitchGap: "0",
       vecMaxDimension: "2400",
       vecAdaptiveBlock: "35",
       vecAdaptiveC: "5",
@@ -348,8 +351,10 @@ const vectorProfessionalModes = {
   },
   "photo-engrave": {
     label: "Foto gravür hazırlık",
-    hint: "Gölge düzeltme ve adaptif eşik ile foto gravür ön hazırlığı yapar; gerçek foto tarama ayrıca ayarlanmalıdır.",
+    hint: "Gerçek fotoğrafları SVG kontura çevirmez; raster gri ton G-code için desen olarak hazırlar.",
     operation: "engrave_fill",
+    productMode: "photo_engrave",
+    rasterPhoto: true,
     values: {
       vecMode: "auto",
       vecThresholdMode: "adaptive",
@@ -1034,7 +1039,10 @@ function getSettings() {
 }
 
 function getVectorSettings() {
+  const professionalMode = vectorProfessionalMode();
   return {
+    productMode: professionalMode.productMode || "cut_template",
+    productOperation: professionalMode.operation || "cut",
     mode: refs.vecMode?.value || "outline",
     thresholdMode: refs.vecThresholdMode?.value || "manual",
     threshold: clamp(Math.round(mm("vecThreshold", 140)), 0, 255),
@@ -1060,7 +1068,8 @@ function getVectorSettings() {
 
 function vectorProfessionalMode() {
   const modeId = refs.vecProfessionalMode?.value || "cut-stencil";
-  return vectorProfessionalModes[modeId] || vectorProfessionalModes["cut-stencil"];
+  const mode = vectorProfessionalModes[modeId] || vectorProfessionalModes["cut-stencil"];
+  return { id: modeId, ...mode };
 }
 
 function setVectorSettingInput(id, value) {
@@ -1073,6 +1082,7 @@ function setVectorSettingInput(id, value) {
 function syncVectorProfessionalModeUi() {
   const mode = vectorProfessionalMode();
   if (refs.vectorModeHint) refs.vectorModeHint.textContent = mode.hint;
+  if (refs.vectorizePhotoBtn) refs.vectorizePhotoBtn.textContent = mode.rasterPhoto ? "Foto Seç ve Gravür Hazırla" : "Foto Seç ve Vektörleştir";
 }
 
 function applyVectorProfessionalMode(recordUndo = true) {
@@ -1084,7 +1094,7 @@ function applyVectorProfessionalMode(recordUndo = true) {
   syncVectorProfessionalModeUi();
   saveUiSettings();
   renderVectorQualityBox();
-  setStatus(`${mode.label} ayarı uygulandı. Foto Seç ve Vektörleştir ile yeniden üretin.`, "ok");
+  setStatus(`${mode.label} ayarı uygulandı. ${mode.rasterPhoto ? "Foto Seç ve Gravür Hazırla" : "Foto Seç ve Vektörleştir"} ile yeniden üretin.`, "ok");
 }
 
 function applyAutoVectorPreset() {
@@ -3866,6 +3876,21 @@ function renderPatternPanel(pattern) {
       </label>`
     : "";
   const vectorModeControl = "";
+  const rasterMode = pattern.rasterMode || (pattern.photoEngrave ? "grayscale" : "threshold");
+  const rasterControls =
+    pattern.kind === "raster"
+      ? `<label>Raster modu <select data-pattern-text="rasterMode">
+            <option value="threshold" ${rasterMode === "threshold" ? "selected" : ""}>Eşik / aç-kapa</option>
+            <option value="grayscale" ${rasterMode === "grayscale" ? "selected" : ""}>Foto gri ton</option>
+          </select></label>
+          <label>Çizgi <input data-pattern="lineStep" type="number" min="0.05" step="0.05" value="${pattern.lineStep}" /></label>
+          ${
+            rasterMode === "grayscale"
+              ? `<label>Min güç S <input data-pattern="powerMin" type="number" min="0" max="1000" step="10" value="${Number(pattern.powerMin || 0)}" /></label>
+                 <label>Gamma <input data-pattern="gamma" type="number" min="0.2" max="4" step="0.1" value="${Number(pattern.gamma || 1).toFixed(1)}" /></label>`
+              : `<label>Eşik <input data-pattern="threshold" type="number" min="0" max="255" step="1" value="${pattern.threshold}" /></label>`
+          }`
+      : "";
   const svgInfo =
     pattern.kind === "svg" && pattern.cleanStats
       ? `<div class="svg-clean-info">
@@ -3926,12 +3951,10 @@ function renderPatternPanel(pattern) {
       <label>${operation === "cut" ? "Kesim gücü S" : "Kazıma gücü S"} <input data-pattern="power" type="number" min="0" max="1000" step="10" value="${pattern.power}" /></label>
       <label>${operation === "cut" ? "Kesim hızı F" : "Kazıma hızı F"} <input data-pattern="feed" type="number" min="1" step="50" value="${pattern.feed}" /></label>
       ${
-        pattern.kind === "raster"
-          ? `<label>Çizgi <input data-pattern="lineStep" type="number" min="0.05" step="0.05" value="${pattern.lineStep}" /></label>
-             <label>Eşik <input data-pattern="threshold" type="number" min="0" max="255" step="1" value="${pattern.threshold}" /></label>`
-          : filledVectorEngrave
+        rasterControls ||
+        (filledVectorEngrave
             ? `<label>Tarama aralığı <input data-pattern="lineStep" type="number" min="0.05" step="0.05" value="${pattern.lineStep}" /></label>`
-          : ""
+            : "")
       }
     </div>
     ${boundaryCloseControl}
@@ -4209,9 +4232,21 @@ function bindPatternPanel(pattern) {
         pattern[key] = value;
       }
       if (key === "power") pattern[key] = clamp(Math.round(pattern[key]), 0, 1000);
+      if (key === "powerMin") pattern[key] = clamp(Math.round(pattern[key]), 0, 1000);
+      if (key === "gamma") pattern[key] = Math.max(0.2, Math.min(4, pattern[key]));
+      if (key === "lineStep") pattern[key] = Math.max(0.05, pattern[key]);
       if (key === "threshold") pattern[key] = clamp(Math.round(pattern[key]), 0, 255);
       if (key === "clipMargin") pattern[key] = Math.max(0, pattern[key]);
       draw();
+    });
+  });
+  refs.selectionPanel.querySelectorAll("[data-pattern-text]").forEach((input) => {
+    input.addEventListener("change", () => {
+      pushUndo("Desen ayari");
+      pattern[input.dataset.patternText] = input.value;
+      draw();
+      updateSelectionPanel();
+      updateJobAnalysisNow();
     });
   });
   refs.selectionPanel.querySelectorAll("[data-pattern-flag]").forEach((input) => {
@@ -5597,7 +5632,93 @@ async function addImage() {
   }
 }
 
+async function preparePhotoEngrave(options = {}) {
+  const replacePattern = options.replacePattern || null;
+  const sourcePath = options.path || replacePattern?.sourcePath || replacePattern?.originalPath || null;
+  try {
+    setStatus(replacePattern ? "Foto gravür yeniden hazırlanıyor..." : "Foto gravür için raster görsel seçiliyor...");
+    const data = await api("/api/open-raster-image", sourcePath ? { path: sourcePath } : {});
+    if (!data.image) {
+      setStatus("Fotoğraf seçilmedi.");
+      return;
+    }
+    if (data.image.kind !== "raster") {
+      setStatus("Foto gravür için JPG/PNG gibi raster görsel seçin.", "warn");
+      return;
+    }
+
+    const professionalMode = vectorProfessionalMode();
+    pushUndo(replacePattern ? "Foto gravür yeniden hazırla" : "Foto gravür ekle");
+    const id = replacePattern?.id || uid("pat");
+    const image = new Image();
+    image.src = data.image.dataUrl;
+    state.images.set(id, image);
+    image.addEventListener("load", draw, { once: true });
+
+    const target = selectedPlacement() || state.placements[0] || null;
+    const prepared = createPatternForPlacement(id, data.image, target);
+    const photoDefaults = {
+      operation: "engrave_fill",
+      rasterMode: "grayscale",
+      photoEngrave: true,
+      vectorPreset: professionalMode.id,
+      vectorProductMode: professionalMode.productMode,
+      power: clamp(Math.round(mm("engravePower", 250)), 0, 1000),
+      powerMin: 0,
+      feed: Math.max(1, mm("engraveFeed", 1800)),
+      lineStep: 0.2,
+      gamma: 1,
+      bidirectional: true,
+      threshold: 245,
+      vectorPaths: [],
+      originalVectorPaths: [],
+      vectorStats: null,
+      vectorSettings: { productMode: professionalMode.productMode, mode: "raster-grayscale" },
+      debugPreviews: [],
+      vectorEngraveMode: "contour",
+    };
+
+    if (replacePattern) {
+      const previousPlacement = {
+        id: replacePattern.id,
+        parentId: replacePattern.parentId,
+        x: replacePattern.x,
+        y: replacePattern.y,
+        width: replacePattern.width,
+        height: replacePattern.height,
+        rotation: replacePattern.rotation,
+        clipMargin: replacePattern.clipMargin,
+        clipCloseBoundary: replacePattern.clipCloseBoundary,
+        mirrorX: Boolean(replacePattern.mirrorX),
+        mirrorY: Boolean(replacePattern.mirrorY),
+      };
+      Object.assign(replacePattern, prepared, previousPlacement, photoDefaults, {
+        sourcePath: data.image.path,
+        originalPath: data.image.path,
+        name: data.image.name || replacePattern.name,
+      });
+      select("pattern", replacePattern.id);
+    } else {
+      Object.assign(prepared, photoDefaults);
+      state.patterns.push(prepared);
+      select("pattern", prepared.id);
+    }
+
+    draw();
+    updateSelectionPanel();
+    updateJobAnalysisNow();
+    const m4Note = state.laserCmd === "M4" ? "" : " M4 dinamik güç modu bu iş için daha güvenlidir.";
+    setStatus(`Foto gravür raster olarak hazırlandı: gri ton güç modülasyonu, ${photoDefaults.lineStep.toFixed(2)} mm satır aralığı.${m4Note}`, state.laserCmd === "M4" ? "ok" : "warn");
+  } catch (error) {
+    setStatus(error.message, "danger");
+  }
+}
+
 async function vectorizePhoto(options = {}) {
+  if (vectorProfessionalMode().rasterPhoto) {
+    await preparePhotoEngrave(options);
+    return;
+  }
   const replacePattern = options.replacePattern || null;
   const sourcePath = options.path || replacePattern?.sourcePath || replacePattern?.originalPath || null;
   try {
@@ -5659,11 +5780,14 @@ async function vectorizePhoto(options = {}) {
         debugPreviews: vector.debugPreviews || [],
       });
       pattern = replacePattern;
+      setPatternOperationDefaults(pattern, professionalMode.operation);
     } else {
       pattern = createVectorPatternForPlacement(id, vector, target);
       setPatternOperationDefaults(pattern, professionalMode.operation);
       state.patterns.push(pattern);
     }
+    pattern.vectorPreset = professionalMode.id;
+    pattern.vectorProductMode = professionalMode.productMode;
     select("pattern", pattern.id);
     renderVectorQualityBox(pattern);
     const stats = vector.stats || {};
@@ -5729,6 +5853,11 @@ function createPatternForPlacement(id, imageData, placement) {
     feed: Math.max(1, mm("engraveFeed", 1800)),
     lineStep: Math.max(0.05, mm("lineStep", 0.35)),
     threshold: clamp(Math.round(mm("threshold", 140)), 0, 255),
+    rasterMode: imageData.rasterMode || "threshold",
+    powerMin: Number(imageData.powerMin || 0),
+    gamma: Number(imageData.gamma || 1),
+    bidirectional: imageData.bidirectional !== false,
+    photoEngrave: Boolean(imageData.photoEngrave),
     sourcePath: imageData.sourcePath || imageData.path,
     sourceWidth: imageData.sourceWidth || imageData.width || width,
     sourceHeight: imageData.sourceHeight || imageData.height || height,

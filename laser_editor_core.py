@@ -65,6 +65,10 @@ class RasterPattern:
     threshold: int
     mirror_x: bool = False
     mirror_y: bool = False
+    raster_mode: str = "threshold"
+    power_min: int = 0
+    gamma: float = 1.0
+    bidirectional: bool = True
 
 
 @dataclass
@@ -3477,6 +3481,9 @@ def build_raster_engrave_lines(pattern: RasterPattern,
     if pattern.threshold < 0 or pattern.threshold > 255:
         raise ValueError("Desen koyuluk esigi 0 ile 255 arasinda olmali.")
     converter.validate_power(pattern.power)
+    converter.validate_power(pattern.power_min)
+
+    raster_mode = str(pattern.raster_mode or "threshold").lower().replace("-", "_")
 
     columns = max(2, int(math.ceil(pattern.width / pattern.line_step)))
     rows = max(2, int(math.ceil(pattern.height / pattern.line_step)))
@@ -3494,6 +3501,66 @@ def build_raster_engrave_lines(pattern: RasterPattern,
     row_height = pattern.height / rows
     clean_name = pattern.path.name.encode("ascii", errors="ignore").decode("ascii") or "image"
     clean_name = clean_name.replace("(", "_").replace(")", "_")
+
+    if raster_mode in {"grayscale", "gray", "photo", "photo_engrave", "pwm"}:
+        gamma = max(0.2, min(4.0, float(pattern.gamma or 1.0)))
+        power_min = max(0, min(int(pattern.power_min), int(pattern.power)))
+        power_step = 5
+
+        def pixel_power(column_index: int, row_index: int) -> int:
+            gray = max(0, min(255, int(pixels[column_index, row_index])))
+            darkness = max(0.0, min(1.0, (255.0 - float(gray)) / 255.0))
+            if darkness <= 0.01:
+                return 0
+            scaled = math.pow(darkness, gamma)
+            value = power_min + int(round((float(pattern.power) - float(power_min)) * scaled))
+            value = int(round(value / power_step) * power_step)
+            return max(power_min if value > 0 else 0, min(int(pattern.power), value))
+
+        lines = [f"(engrave photo {clean_name} R{fmt(pattern.rotation)} gamma {fmt(gamma)})", "S0"]
+        for row in range(rows):
+            local_y = pattern.height - (row + 0.5) * row_height
+            reverse = bool(pattern.bidirectional) and row % 2 == 1
+            column = columns - 1 if reverse else 0
+
+            def in_bounds(value: int) -> bool:
+                return 0 <= value < columns
+
+            def step(value: int) -> int:
+                return value - 1 if reverse else value + 1
+
+            while in_bounds(column):
+                while in_bounds(column) and pixel_power(column, row) <= 0:
+                    column = step(column)
+                if not in_bounds(column):
+                    break
+                power = pixel_power(column, row)
+                start = column
+                column = step(column)
+                while in_bounds(column) and pixel_power(column, row) == power:
+                    column = step(column)
+                end = column + 1 if reverse else column - 1
+
+                if reverse:
+                    start_x = (start + 1) * col_width
+                    end_x = end * col_width
+                else:
+                    start_x = start * col_width
+                    end_x = (end + 1) * col_width
+                start_point = pattern_point(pattern, start_x, local_y)
+                end_point = pattern_point(pattern, end_x, local_y)
+                for clipped_start, clipped_end in clip_segment_to_region(start_point, end_point, clip_region):
+                    append_powered_polyline(
+                        lines,
+                        [clipped_start, clipped_end],
+                        power,
+                        pattern.feed,
+                        travel_feed,
+                    )
+        lines.append("(engrave photo end)")
+        lines.append("S0")
+        return lines
+
     lines = [f"(engrave image {clean_name} R{fmt(pattern.rotation)})", "S0"]
 
     for row in range(rows):
@@ -4265,6 +4332,10 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             threshold=_int(item.get("threshold"), 140),
             mirror_x=bool(item.get("mirrorX")),
             mirror_y=bool(item.get("mirrorY")),
+            raster_mode=str(item.get("rasterMode") or "threshold"),
+            power_min=_int(item.get("powerMin"), 0),
+            gamma=_float(item.get("gamma"), 1.0),
+            bidirectional=bool(item.get("bidirectional", True)),
         )
         pattern_bounds = raster_pattern_bounds(pattern)
         if validate_bed and not bounds_fit_active_area(pattern_bounds, bed_width, bed_height, margin, available_area):
