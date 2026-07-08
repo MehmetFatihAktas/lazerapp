@@ -2527,6 +2527,81 @@ function materialAreaPreviewDistance() {
   return { mm: mmValue, cm: mmValue / 10 };
 }
 
+function drawMaterialAreaCursor() {
+  if (!state.materialArea.drawing || !state.materialArea.previewPoint) return;
+  const palette = canvasPalette();
+  const points = materialAreaPoints();
+  const preview = state.materialArea.previewPoint;
+  const screen = worldToScreen(preview);
+  const label = points.length
+    ? `Nokta X ${preview.x.toFixed(1)} / Y ${preview.y.toFixed(1)} mm`
+    : `İlk nokta X ${preview.x.toFixed(1)} / Y ${preview.y.toFixed(1)} mm`;
+  const step = materialAreaGridStep();
+  const labelAbove = screen.y > state.view.height - 88;
+  const labelY = labelAbove ? screen.y - 58 : screen.y + 12;
+  const gridLabelY = labelAbove ? screen.y - 30 : screen.y + 42;
+
+  const labelBox = (text, x, y, options = {}) => {
+    ctx.font = options.font || "800 13px Segoe UI";
+    const width = ctx.measureText(text).width + 16;
+    const height = options.height || 25;
+    const boxX = clamp(x, 6, Math.max(6, state.view.width - width - 6));
+    const boxY = clamp(y, 6, Math.max(6, state.view.height - height - 6));
+    ctx.fillStyle = "rgba(255, 255, 255, 0.97)";
+    ctx.strokeStyle = options.stroke || palette.selection;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.roundRect(boxX, boxY, width, height, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = palette.text;
+    ctx.fillText(text, boxX + 8, boxY + 17);
+  };
+
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.lineCap = "round";
+
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.98)";
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(screen.x - 16, screen.y);
+  ctx.lineTo(screen.x + 16, screen.y);
+  ctx.moveTo(screen.x, screen.y - 16);
+  ctx.lineTo(screen.x, screen.y + 16);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, 9, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = points.length ? palette.selection : palette.materialArea;
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.moveTo(screen.x - 16, screen.y);
+  ctx.lineTo(screen.x + 16, screen.y);
+  ctx.moveTo(screen.x, screen.y - 16);
+  ctx.lineTo(screen.x, screen.y + 16);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, 9, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = points.length ? palette.selection : palette.materialArea;
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, 3.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  labelBox(label, screen.x + 12, labelY, { stroke: points.length ? palette.selection : palette.materialArea });
+  if (!points.length) {
+    labelBox(`Grid ${step.toFixed(step < 10 ? 1 : 0)} mm`, screen.x + 12, gridLabelY, {
+      font: "700 12px Segoe UI",
+      height: 24,
+      stroke: palette.materialArea,
+    });
+  }
+  ctx.restore();
+}
+
 function crisp(value) {
   return Math.round(value) + 0.5;
 }
@@ -2617,6 +2692,7 @@ function drawMaterialAreaOverlay() {
     ctx.font = "700 12px Segoe UI";
     ctx.fillText("Grid noktasına tıkla / yatay-dikey çiz / kapatmak için ilk noktaya dön", first.x + 8, first.y - 8);
   }
+  drawMaterialAreaCursor();
   ctx.restore();
 }
 
@@ -4554,6 +4630,7 @@ function applyBedPreset(width, height) {
 function beginMaterialAreaDrawing() {
   pushUndo("Bos alan ciz");
   state.materialArea = { points: [], drawing: true, previewPoint: null };
+  canvas.style.cursor = "crosshair";
   select(null, null);
   draw();
   setStatus("Bos alan cizimi aktif: grid noktalarina tikla; kenarlar yatay/dikey kilitlenir, uzunluk cm/mm olarak gorunur.", "info");
@@ -4572,6 +4649,7 @@ function finishMaterialAreaDrawing() {
   state.materialArea.points = points.map(clampPointToBed);
   state.materialArea.drawing = false;
   state.materialArea.previewPoint = null;
+  canvas.style.cursor = "";
   markLayoutSettingsChanged();
   saveUiSettings();
   draw();
@@ -4585,6 +4663,7 @@ function clearMaterialArea() {
   }
   pushUndo("Bos alani temizle");
   state.materialArea = { points: [], drawing: false, previewPoint: null };
+  canvas.style.cursor = "";
   markLayoutSettingsChanged();
   saveUiSettings();
   draw();
@@ -6384,7 +6463,7 @@ function onPointerMove(event) {
   state.cursor = world;
   if (state.materialArea.drawing) {
     state.materialArea.previewPoint = axisConstrainedMaterialAreaPoint(world);
-    canvas.style.cursor = "crosshair";
+    canvas.style.cursor = "none";
     draw();
     return;
   }
@@ -6708,6 +6787,7 @@ function onKeyDown(event) {
     if (event.key === "Escape") {
       state.materialArea.drawing = false;
       state.materialArea.previewPoint = null;
+      canvas.style.cursor = "";
       draw();
       setStatus("Alan cizimi durduruldu.");
       event.preventDefault();
