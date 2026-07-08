@@ -4350,6 +4350,110 @@ function patternPathOperationCounts(pattern) {
   return counts;
 }
 
+function boundsDistance(first, second) {
+  if (!first || !second) return Infinity;
+  const dx = first.maxX < second.minX ? second.minX - first.maxX : second.maxX < first.minX ? first.minX - second.maxX : 0;
+  const dy = first.maxY < second.minY ? second.minY - first.maxY : second.maxY < first.minY ? first.minY - second.maxY : 0;
+  return Math.hypot(dx, dy);
+}
+
+function polylineMinimumDistance(firstPoints, secondPoints, firstClosed = false, secondClosed = false, stopAt = 0) {
+  let best = Infinity;
+  for (const point of firstPoints || []) {
+    best = Math.min(best, distanceToPolyline(point, secondPoints, secondClosed));
+    if (stopAt > 0 && best <= stopAt) return best;
+  }
+  for (const point of secondPoints || []) {
+    best = Math.min(best, distanceToPolyline(point, firstPoints, firstClosed));
+    if (stopAt > 0 && best <= stopAt) return best;
+  }
+  return best;
+}
+
+function cutSuitabilityIssuesForPattern(pattern, kerf = Math.min(1, Math.max(0, mm("kerf", 0)))) {
+  if (!vectorPatternHasPaths(pattern) || patternOperation(pattern) === "ignore") return [];
+  const openCutPaths = [];
+  const smallClosedPaths = [];
+  const closedCutPaths = [];
+  const smallAreaLimit = 35;
+  const smallDimensionLimit = 3.5;
+  const openGapLimit = Math.max(0.5, kerf * 1.5);
+  const bridgeLimit = Math.max(0.8, kerf * 2.2);
+
+  for (const vectorPath of pattern.vectorPaths || []) {
+    if (!vectorPathIsActive(vectorPath, pattern) || vectorPathOperation(vectorPath, pattern) !== "cut") continue;
+    const worldPoints = vectorWorldPath(pattern, vectorPath);
+    if (worldPoints.length < 2) continue;
+    const closed = Boolean(vectorPath.closed);
+    const bounds = boundsFromPoints(worldPoints);
+    const size = bounds ? boundsSize(bounds) : { width: 0, height: 0 };
+    if (!closed) {
+      const first = worldPoints[0];
+      const last = worldPoints[worldPoints.length - 1];
+      const gap = Math.hypot(first.x - last.x, first.y - last.y);
+      if (gap > openGapLimit) openCutPaths.push({ vectorPath, gap });
+      continue;
+    }
+    const area = worldPolygonArea(worldPoints);
+    const minDimension = Math.min(Math.abs(size.width), Math.abs(size.height));
+    const entry = { vectorPath, points: worldPoints, bounds, area, minDimension };
+    closedCutPaths.push(entry);
+    if (area > 0 && (area <= smallAreaLimit || minDimension <= smallDimensionLimit)) smallClosedPaths.push(entry);
+  }
+
+  const issues = [];
+  if (openCutPaths.length) {
+    const largestGap = Math.max(...openCutPaths.map((item) => item.gap));
+    issues.push({
+      level: "warning",
+      title: "Kesimde açık vektör konturu var",
+      body: `${pattern.name || "Desen"} içinde ${openCutPaths.length} açık kesim konturu var. En büyük uç açıklığı ${largestGap.toFixed(2)} mm; parça tam kopmayabilir veya beklenmeyen çizgi kesilebilir.`,
+      action: "Deseni seç",
+      target: "cut-suitability",
+      patternId: pattern.id,
+    });
+  }
+
+  if (smallClosedPaths.length) {
+    const smallest = smallClosedPaths.reduce((best, item) => (item.area < best.area ? item : best), smallClosedPaths[0]);
+    issues.push({
+      level: "warning",
+      title: "Küçük düşecek parça riski",
+      body: `${pattern.name || "Desen"} içinde ${smallClosedPaths.length} küçük kapalı kesim konturu var. En küçük alan ${smallest.area.toFixed(1)} mm² / dar ölçü ${smallest.minDimension.toFixed(2)} mm; mikro tab gerekebilir.`,
+      action: "Deseni seç",
+      target: "cut-suitability",
+      patternId: pattern.id,
+    });
+  }
+
+  const bridgeCandidates = closedCutPaths.length <= 180 ? closedCutPaths : [];
+  let narrowBridgeCount = 0;
+  let narrowestBridge = Infinity;
+  for (let i = 0; i < bridgeCandidates.length; i += 1) {
+    for (let j = i + 1; j < bridgeCandidates.length; j += 1) {
+      const first = bridgeCandidates[i];
+      const second = bridgeCandidates[j];
+      if (boundsDistance(first.bounds, second.bounds) > bridgeLimit) continue;
+      const distance = polylineMinimumDistance(first.points, second.points, true, true, bridgeLimit);
+      if (distance <= bridgeLimit) {
+        narrowBridgeCount += 1;
+        narrowestBridge = Math.min(narrowestBridge, distance);
+      }
+    }
+  }
+  if (narrowBridgeCount) {
+    issues.push({
+      level: "warning",
+      title: "İnce köprü / yanma riski",
+      body: `${pattern.name || "Desen"} içinde ${narrowBridgeCount} kontur çifti ${bridgeLimit.toFixed(2)} mm'den yakın. En dar mesafe ${narrowestBridge.toFixed(2)} mm; hız/güç veya mikro tab kontrolü önerilir.`,
+      action: "Deseni seç",
+      target: "cut-suitability",
+      patternId: pattern.id,
+    });
+  }
+  return issues;
+}
+
 
 function severityClass(level) {
   return level === "critical" ? "danger" : level === "warning" ? "warn" : "ok";
@@ -4380,7 +4484,8 @@ function computeJobAnalysis() {
     const pathCount = pathCounts.cut + pathCounts.engrave_line + pathCounts.engrave_fill;
     const active = operation !== "ignore" && pathCount > 0;
     const inside = bounds ? rectFitsActiveArea(bounds, b, margin) : true;
-    return { pattern, operation, bounds, active, inside, pathCount, pathCounts };
+    const cutSuitabilityIssues = active ? cutSuitabilityIssuesForPattern(pattern, kerf) : [];
+    return { pattern, operation, bounds, active, inside, pathCount, pathCounts, cutSuitabilityIssues };
   });
 
   const activePlacements = placements.filter((item) => item.active);
@@ -4389,6 +4494,7 @@ function computeJobAnalysis() {
     item.boundaryIssue = item.active ? patternBoundaryIssue(item.pattern, activePlacements) : null;
   }
   const patternBoundaryIssues = activePatterns.map((item) => item.boundaryIssue).filter(Boolean);
+  const cutSuitabilityIssues = activePatterns.flatMap((item) => item.cutSuitabilityIssues || []);
   const outsidePlacements = activePlacements.filter((item) => !item.inside);
   const outsidePatterns = activePatterns.filter((item) => !item.inside);
   const oversizedParts = state.parts.filter((part) => !itemFitsActiveArea(part, b, margin, allowRotate));
@@ -4458,6 +4564,9 @@ function computeJobAnalysis() {
   for (const issue of patternBoundaryIssues) {
     warnings.push(issue);
   }
+  for (const issue of cutSuitabilityIssues) {
+    warnings.push(issue);
+  }
   if (cutPathCount + engraveLineCount + engraveFillCount === 0) {
     warnings.push({
       level: "critical",
@@ -4525,6 +4634,7 @@ function computeJobAnalysis() {
     outsidePlacements,
     outsidePatterns,
     patternBoundaryIssues,
+    cutSuitabilityIssues,
     oversizedParts,
     quantityMismatches,
     ignoredCount,
@@ -4639,8 +4749,9 @@ function renderPatternsList(analysis) {
     return;
   }
   refs.patternsList.innerHTML = analysis.patterns
-    .map(({ pattern, operation, inside, boundaryIssue }) => {
-      const level = operation === "ignore" ? "" : !inside ? "danger" : boundaryIssue ? severityClass(boundaryIssue.level) : "ok";
+    .map(({ pattern, operation, inside, boundaryIssue, cutSuitabilityIssues }) => {
+      const cutIssue = cutSuitabilityIssues?.[0] || null;
+      const level = operation === "ignore" ? "" : !inside ? "danger" : boundaryIssue ? severityClass(boundaryIssue.level) : cutIssue ? "warn" : "ok";
       const stateText =
         operation === "ignore"
           ? "Yok say"
@@ -4650,13 +4761,15 @@ function renderPatternsList(analysis) {
               ? "Kırpılacak"
               : boundaryIssue
                 ? "Sınır hatası"
-                : "Hazır";
+                : cutIssue
+                  ? "Kesim kontrolü"
+                  : "Hazır";
       const clip = pattern.parentId ? "Parçaya bağlı" : "Bağımsız";
       return `<button type="button" class="item ${level}" data-pattern-id="${escapeHtml(pattern.id)}">
         <div>
           <strong>${escapeHtml(pattern.name || "Desen")}</strong>
           <small>${operationLabel(operation)} · ${pattern.width.toFixed(1)} × ${pattern.height.toFixed(1)} mm</small>
-          <small>${clip}${boundaryIssue ? ` · ${escapeHtml(boundaryIssue.title)}` : inside ? "" : " · Tabla dışında"}</small>
+          <small>${clip}${boundaryIssue ? ` · ${escapeHtml(boundaryIssue.title)}` : cutIssue ? ` · ${escapeHtml(cutIssue.title)}` : inside ? "" : " · Tabla dışında"}</small>
         </div>
         <span>${stateText}</span>
       </button>`;
@@ -4767,7 +4880,7 @@ function handleWarningAction(warning) {
     zoomToOutside();
     return;
   }
-  if (warning.target === "pattern-boundary") {
+  if (warning.target === "pattern-boundary" || warning.target === "cut-suitability") {
     if (warning.patternId) select("pattern", warning.patternId);
     return;
   }
@@ -4780,7 +4893,7 @@ function handleWarningAction(warning) {
 
 function focusWarning(warning) {
   if (!warning) return;
-  if (warning.target === "pattern-boundary") {
+  if (warning.target === "pattern-boundary" || warning.target === "cut-suitability") {
     if (warning.patternId) select("pattern", warning.patternId);
     return;
   }
