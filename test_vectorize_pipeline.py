@@ -876,6 +876,39 @@ def test_cut_mode_keeps_small_real_inner_motifs():
     assert_true("X20" in text and "X30" in text, "real inner motif coordinates should be emitted")
 
 
+def test_vector_cut_micro_tabs_leave_power_off_gaps():
+    item = {
+        "path": "vector",
+        "name": "tabbed-cut",
+        "x": 0,
+        "y": 0,
+        "width": 10,
+        "height": 10,
+        "rotation": 0,
+        "power": 900,
+        "feed": 500,
+        "sourceWidth": 10,
+        "sourceHeight": 10,
+        "vectorPaths": [
+            {
+                "points": [[0, 0], [10, 0], [10, 10], [0, 10]],
+                "closed": True,
+                "removed": False,
+                "tabCount": 2,
+                "tabWidth": 1.0,
+            },
+        ],
+    }
+
+    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="cut")
+    text = "\n".join(lines)
+
+    assert_true("(micro tabs 2 x 1mm)" in text, "micro tab metadata should be emitted")
+    assert_true(sum(1 for line in lines if line.startswith("S900")) == 3, "two tabs should split a loop into three powered cuts")
+    assert_true("X9.5 Y10" in text and "X10 Y9.5" in text, "first tab gap endpoints should be in the G-code")
+    assert_true("X0.5 Y0" in text and "X0 Y0.5" in text, "second tab gap endpoints should be in the G-code")
+
+
 def test_convert_engrave_vector_gcode_to_cut_file():
     with TemporaryDirectory() as tmp:
         source = Path(tmp) / "job.nc"
@@ -1646,6 +1679,7 @@ def main():
         test_potrace_vector_cut_uses_contours_not_fill_scanlines,
         test_cut_mode_skips_near_parallel_inner_duplicate_paths,
         test_cut_mode_keeps_small_real_inner_motifs,
+        test_vector_cut_micro_tabs_leave_power_off_gaps,
         test_convert_engrave_vector_gcode_to_cut_file,
         test_convert_gcode_rejects_raster_or_fill_engraving,
         test_vector_path_operations_mix_cut_engrave_and_ignore,

@@ -3421,6 +3421,14 @@ function vectorPathIsActive(vectorPath, pattern) {
   return Boolean(vectorPath) && !vectorPath.removed && (vectorPath.points || []).length >= 2 && vectorPathOperation(vectorPath, pattern) !== "ignore";
 }
 
+function vectorPathTabCount(vectorPath) {
+  return Math.max(0, Math.round(Number(vectorPath?.tabCount ?? vectorPath?.microTabCount ?? 0) || 0));
+}
+
+function vectorPathTabWidth(vectorPath) {
+  return Math.max(0, Number(vectorPath?.tabWidth ?? vectorPath?.microTabWidth ?? 0) || 0);
+}
+
 function vectorPathSourceLength(vectorPath) {
   const points = vectorPath?.points || [];
   let total = 0;
@@ -3982,6 +3990,25 @@ function renderVectorPathPanel(pattern, vectorPath) {
       ? `X${Number(bbox[0]).toFixed(1)} Y${Number(bbox[1]).toFixed(1)} · ${Math.max(0, Number(bbox[2]) - Number(bbox[0])).toFixed(1)} x ${Math.max(0, Number(bbox[3]) - Number(bbox[1])).toFixed(1)} px`
       : "-";
   const warnings = vectorPath.warnings?.length ? vectorPath.warnings.join(", ") : "Yok";
+  const tabCount = vectorPathTabCount(vectorPath);
+  const tabWidth = vectorPathTabWidth(vectorPath);
+  const microTabControl =
+    operation === "cut" && vectorPath.closed
+      ? `<div class="operation-card vector-tab-card">
+      <div>
+        <strong>Mikro köprü</strong>
+        <span>Kapalı kesim konturunda kısa lazer-kapalı boşluklar bırakır; küçük parçalar kendiliğinden düşmesin diye kullanılır.</span>
+      </div>
+      <div class="form-grid">
+        <label>Köprü adedi <input id="vectorPathTabCount" type="number" min="0" step="1" value="${tabCount || 2}" /></label>
+        <label>Genişlik mm <input id="vectorPathTabWidth" type="number" min="0.1" step="0.05" value="${(tabWidth || 0.45).toFixed(2)}" /></label>
+      </div>
+      <div class="button-grid">
+        <button id="panelApplyVectorPathTabs">Köprüleri Uygula</button>
+        <button id="panelClearVectorPathTabs">Köprüleri Temizle</button>
+      </div>
+    </div>`
+      : "";
   refs.selectionPanel.innerHTML = `
     <div class="property-title"><strong>Vektor konturu</strong><span>${escapeHtml(pattern.name || "Desen")}</span></div>
     <div class="svg-clean-info">
@@ -3991,6 +4018,7 @@ function renderVectorPathPanel(pattern, vectorPath) {
       <span>Uzunluk: ${Number(vectorPath.length || 0).toFixed(1)} px · ${vectorPath.closed ? "Kapalı" : "Açık"}</span>
       <span>BBox: ${bboxText}</span>
       <span>Uyarı: ${escapeHtml(warnings)}</span>
+      <span>Köprü: ${tabCount > 0 && tabWidth > 0 ? `${tabCount} adet · ${tabWidth.toFixed(2)} mm` : "Yok"}</span>
       <span>Aktif: ${activeCount} / ${totalCount}</span>
       <span>Koruma: ${escapeHtml(vectorPathProtectionLabel(pattern, vectorPath))}</span>
     </div>
@@ -4006,6 +4034,7 @@ function renderVectorPathPanel(pattern, vectorPath) {
         <button data-vector-path-operation="ignore" class="${operation === "ignore" ? "active" : ""}">Yok say</button>
       </div>
     </div>
+    ${microTabControl}
     <label class="checkline">
       <input id="panelVectorPathLocked" type="checkbox" ${vectorPath.locked ? "checked" : ""} />
       <span>Bu konturu deformasyondan koru</span>
@@ -4071,6 +4100,30 @@ function renderVectorPathPanel(pattern, vectorPath) {
       draw();
       updateSelectionPanel();
     });
+  });
+  document.getElementById("panelApplyVectorPathTabs")?.addEventListener("click", () => {
+    const nextCount = Math.max(0, Math.round(Number(document.getElementById("vectorPathTabCount")?.value) || 0));
+    const nextWidth = Math.max(0, Number(document.getElementById("vectorPathTabWidth")?.value) || 0);
+    pushUndo("Mikro kopru ayari");
+    if (nextCount <= 0 || nextWidth <= 0) {
+      clearMicroTabsFromVectorPath(vectorPath);
+    } else {
+      vectorPath.tabCount = nextCount;
+      vectorPath.tabWidth = nextWidth;
+    }
+    draw();
+    updateSelectionPanel();
+    updateJobAnalysisNow();
+    setStatus(nextCount > 0 && nextWidth > 0 ? `Seçili kontura ${nextCount} adet ${nextWidth.toFixed(2)} mm mikro köprü uygulandı.` : "Seçili konturun mikro köprüleri temizlendi.", "ok");
+  });
+  document.getElementById("panelClearVectorPathTabs")?.addEventListener("click", () => {
+    if (!vectorPathTabCount(vectorPath) && !vectorPathTabWidth(vectorPath)) return;
+    pushUndo("Mikro kopru temizle");
+    clearMicroTabsFromVectorPath(vectorPath);
+    draw();
+    updateSelectionPanel();
+    updateJobAnalysisNow();
+    setStatus("Seçili konturun mikro köprüleri temizlendi.", "ok");
   });
   document.getElementById("panelVectorPathLocked")?.addEventListener("change", (event) => {
     pushUndo("Kontur kilidi");
@@ -4398,7 +4451,9 @@ function cutSuitabilityIssuesForPattern(pattern, kerf = Math.min(1, Math.max(0, 
     const minDimension = Math.min(Math.abs(size.width), Math.abs(size.height));
     const entry = { vectorPath, points: worldPoints, bounds, area, minDimension };
     closedCutPaths.push(entry);
-    if (area > 0 && (area <= smallAreaLimit || minDimension <= smallDimensionLimit)) smallClosedPaths.push(entry);
+    if (area > 0 && (area <= smallAreaLimit || minDimension <= smallDimensionLimit) && !(vectorPathTabCount(vectorPath) > 0 && vectorPathTabWidth(vectorPath) > 0)) {
+      smallClosedPaths.push(entry);
+    }
   }
 
   const issues = [];
@@ -4420,9 +4475,11 @@ function cutSuitabilityIssuesForPattern(pattern, kerf = Math.min(1, Math.max(0, 
       level: "warning",
       title: "Küçük düşecek parça riski",
       body: `${pattern.name || "Desen"} içinde ${smallClosedPaths.length} küçük kapalı kesim konturu var. En küçük alan ${smallest.area.toFixed(1)} mm² / dar ölçü ${smallest.minDimension.toFixed(2)} mm; mikro tab gerekebilir.`,
-      action: "Deseni seç",
+      action: "Köprü ekle",
       target: "cut-suitability",
+      fix: "micro-tabs",
       patternId: pattern.id,
+      pathIds: smallClosedPaths.map((item) => item.vectorPath.id).filter(Boolean),
     });
   }
 
@@ -4450,8 +4507,41 @@ function cutSuitabilityIssuesForPattern(pattern, kerf = Math.min(1, Math.max(0, 
       target: "cut-suitability",
       patternId: pattern.id,
     });
+  } else if (closedCutPaths.length > 180) {
+    issues.push({
+      level: "info",
+      title: "Köprü denetimi atlandı",
+      body: `${pattern.name || "Desen"} içinde ${closedCutPaths.length} kapalı kesim konturu var. Yakınlık denetimi performans için atlandı; gerekirse deseni parçalara ayırıp kontrol edin.`,
+      action: "Deseni seç",
+      target: "cut-suitability",
+      patternId: pattern.id,
+    });
   }
   return issues;
+}
+
+function applyMicroTabsToVectorPaths(pattern, pathIds = null, options = {}) {
+  if (!vectorPatternHasPaths(pattern)) return 0;
+  const ids = pathIds?.length ? new Set(pathIds) : null;
+  const tabCount = Math.max(1, Math.round(Number(options.tabCount ?? 2) || 2));
+  const tabWidth = Math.max(0.1, Number(options.tabWidth ?? 0.45) || 0.45);
+  let changed = 0;
+  for (const vectorPath of pattern.vectorPaths || []) {
+    if (ids && !ids.has(vectorPath.id)) continue;
+    if (!vectorPathIsActive(vectorPath, pattern) || vectorPathOperation(vectorPath, pattern) !== "cut" || !vectorPath.closed) continue;
+    vectorPath.tabCount = tabCount;
+    vectorPath.tabWidth = tabWidth;
+    changed += 1;
+  }
+  return changed;
+}
+
+function clearMicroTabsFromVectorPath(vectorPath) {
+  if (!vectorPath) return;
+  delete vectorPath.tabCount;
+  delete vectorPath.tabWidth;
+  delete vectorPath.microTabCount;
+  delete vectorPath.microTabWidth;
 }
 
 
@@ -4881,6 +4971,17 @@ function handleWarningAction(warning) {
     return;
   }
   if (warning.target === "pattern-boundary" || warning.target === "cut-suitability") {
+    if (warning.fix === "micro-tabs" && warning.patternId) {
+      const pattern = patternById(warning.patternId);
+      if (pattern) {
+        pushUndo("Mikro kopru ekle");
+        const changed = applyMicroTabsToVectorPaths(pattern, warning.pathIds || null, { tabCount: 2, tabWidth: 0.45 });
+        select("pattern", warning.patternId);
+        updateJobAnalysisNow();
+        setStatus(changed ? `${changed} küçük kesim konturuna 2 adet 0.45 mm mikro köprü eklendi.` : "Köprü eklenecek uygun kapalı kesim konturu bulunamadı.", changed ? "ok" : "warn");
+        return;
+      }
+    }
     if (warning.patternId) select("pattern", warning.patternId);
     return;
   }

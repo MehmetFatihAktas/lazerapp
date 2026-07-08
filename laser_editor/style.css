@@ -1403,7 +1403,9 @@ details > .wide-action {
 .vector-move-card .form-grid,
 .vector-move-card .nudge-pad,
 .vector-transform-card .form-grid,
-.vector-transform-card .button-grid {
+.vector-transform-card .button-grid,
+.vector-tab-card .form-grid,
+.vector-tab-card .button-grid {
   margin-top: 2px;
 }
 

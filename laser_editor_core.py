@@ -582,6 +582,94 @@ def closed_clip_polygons(paths: list[list[Point]]) -> list[list[Point]]:
     return polygons
 
 
+def polyline_length(points: list[Point]) -> float:
+    if len(points) < 2:
+        return 0.0
+    return sum(converter.dist(points[index - 1], points[index]) for index in range(1, len(points)))
+
+
+def point_at_polyline_distance(points: list[Point], target: float) -> Point:
+    if not points:
+        return (0.0, 0.0)
+    if target <= 0:
+        return points[0]
+    travelled = 0.0
+    for index in range(1, len(points)):
+        start = points[index - 1]
+        end = points[index]
+        segment = converter.dist(start, end)
+        if segment <= 1e-9:
+            continue
+        if travelled + segment >= target:
+            ratio = (target - travelled) / segment
+            return (start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio)
+        travelled += segment
+    return points[-1]
+
+
+def sub_polyline(points: list[Point], start_distance: float, end_distance: float) -> list[Point]:
+    if len(points) < 2 or end_distance <= start_distance:
+        return []
+    output = [point_at_polyline_distance(points, start_distance)]
+    travelled = 0.0
+    for index in range(1, len(points)):
+        segment_start = travelled
+        segment_end = travelled + converter.dist(points[index - 1], points[index])
+        if segment_start > start_distance + 1e-9 and segment_start < end_distance - 1e-9:
+            output.append(points[index - 1])
+        travelled = segment_end
+    output.append(point_at_polyline_distance(points, end_distance))
+    return [point for index, point in enumerate(output) if index == 0 or converter.dist(output[index - 1], point) > 0.01]
+
+
+def apply_micro_tabs_to_polyline(points: list[Point], tab_count: int, tab_width: float) -> list[list[Point]]:
+    """Split a closed cut path into powered segments, leaving S0 gaps as micro tabs."""
+    if len(points) < 4 or tab_count <= 0 or tab_width <= 0:
+        return [points]
+    if converter.dist(points[0], points[-1]) > 0.05:
+        return [points]
+    total = polyline_length(points)
+    tab_count = max(0, int(tab_count))
+    tab_width = max(0.0, float(tab_width))
+    if total <= 0 or tab_count <= 0 or tab_width <= 0 or tab_count * tab_width >= total * 0.35:
+        return [points]
+    gap_intervals: list[tuple[float, float]] = []
+    spacing = total / tab_count
+    half = tab_width / 2.0
+    for index in range(tab_count):
+        center = (index + 0.5) * spacing
+        start = center - half
+        end = center + half
+        if start < 0:
+            gap_intervals.append((start + total, total))
+            gap_intervals.append((0.0, end))
+        elif end > total:
+            gap_intervals.append((start, total))
+            gap_intervals.append((0.0, end - total))
+        else:
+            gap_intervals.append((start, end))
+    gap_intervals.sort()
+    merged: list[list[float]] = []
+    for start, end in gap_intervals:
+        if not merged or start > merged[-1][1] + 0.01:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    powered: list[list[Point]] = []
+    cursor = 0.0
+    for start, end in merged:
+        if start - cursor > 0.05:
+            segment = sub_polyline(points, cursor, start)
+            if len(segment) >= 2:
+                powered.append(segment)
+        cursor = max(cursor, end)
+    if total - cursor > 0.05:
+        segment = sub_polyline(points, cursor, total)
+        if len(segment) >= 2:
+            powered.append(segment)
+    return powered or [points]
+
+
 def append_powered_polyline(lines: list[str],
                             points: list[Point],
                             power: int,
@@ -3869,7 +3957,14 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
             closed_source=closed_source,
         ):
             if current_operation == "cut":
-                append_powered_polyline(lines, clipped, cut_power, cut_feed, travel_feed)
+                tab_count = _int(vector_path.get("tabCount", vector_path.get("microTabCount", 0)), 0)
+                tab_width = _float(vector_path.get("tabWidth", vector_path.get("microTabWidth", 0.0)), 0.0)
+                if closed_source and tab_count > 0 and tab_width > 0 and clipped and converter.dist(clipped[0], clipped[-1]) <= 0.05:
+                    lines.append(f"(micro tabs {tab_count} x {fmt(tab_width)}mm)")
+                    for tabbed in apply_micro_tabs_to_polyline(clipped, tab_count, tab_width):
+                        append_powered_polyline(lines, tabbed, cut_power, cut_feed, travel_feed)
+                else:
+                    append_powered_polyline(lines, clipped, cut_power, cut_feed, travel_feed)
             else:
                 append_powered_polyline(lines, clipped, engrave_power, engrave_feed, travel_feed)
             emitted += 1
