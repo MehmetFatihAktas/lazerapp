@@ -12,8 +12,9 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 import clean_laser_svg
 import dxf_to_laser_gcode as converter
@@ -37,6 +38,7 @@ Point = tuple[float, float]
 MAX_RASTER_CELLS = 320_000
 SVG_NS = "http://www.w3.org/2000/svg"
 SVG_CLEAN_SUFFIX = "-editor-clean"
+GCODE_WORD_RE = re.compile(r"([A-Za-z])([-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)")
 ET.register_namespace("", SVG_NS)
 
 
@@ -79,6 +81,12 @@ class ClipRegion:
 
 def fmt(value: float) -> str:
     return converter.fmt(value)
+
+
+def gcode_comment_text(value: Any, fallback: str) -> str:
+    text = str(value or fallback).encode("ascii", errors="ignore").decode("ascii") or fallback
+    text = re.sub(r"[\x00-\x1f\x7f()]+", "_", text)
+    return text.strip() or fallback
 
 
 def all_points(paths: list[list[Point]]) -> list[Point]:
@@ -1402,6 +1410,128 @@ def stitch_open_vector_paths(vector_paths: list[dict[str, Any]],
     return paths, merged_count
 
 
+def snap_open_vector_endpoints_to_paths(vector_paths: list[dict[str, Any]],
+                                        max_gap: float,
+                                        max_angle: float = 70.0) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Close tiny endpoint-to-path gaps while preserving separate nearby art.
+
+    Skeleton junctions are represented as separate open paths. Smoothing and
+    coordinate rescaling can leave their shared endpoint a fraction of a pixel
+    away from the adjoining path. Only endpoints whose outward tangent points
+    naturally toward a nearby segment are snapped.
+    """
+    max_gap = max(0.0, float(max_gap or 0.0))
+    if max_gap <= 0:
+        return vector_paths, {"snappedCenterlineEndpoints": 0, "maxSnappedEndpointGap": 0.0}
+
+    paths = [
+        {
+            **item,
+            "points": [[float(point[0]), float(point[1])] for point in item.get("points", [])],
+        }
+        for item in vector_paths
+    ]
+    cell_size = max(4.0, max_gap * 3.0)
+    segment_records: list[tuple[int, list[float], list[float]]] = []
+    segment_grid: dict[tuple[int, int], set[int]] = {}
+
+    for path_index, item in enumerate(paths):
+        points = item.get("points", [])
+        if item.get("removed") or len(points) < 2:
+            continue
+        segment_pairs = list(zip(points, points[1:]))
+        if item.get("closed") and len(points) >= 3:
+            segment_pairs.append((points[-1], points[0]))
+        for start, end in segment_pairs:
+            record_index = len(segment_records)
+            segment_records.append((path_index, start, end))
+            length = _point_distance(start, end)
+            sample_count = max(1, int(math.ceil(length / max(1.0, cell_size * 0.70))))
+            for sample_index in range(sample_count + 1):
+                ratio = sample_index / sample_count
+                x = float(start[0]) + (float(end[0]) - float(start[0])) * ratio
+                y = float(start[1]) + (float(end[1]) - float(start[1])) * ratio
+                cell = (int(math.floor(x / cell_size)), int(math.floor(y / cell_size)))
+                segment_grid.setdefault(cell, set()).add(record_index)
+
+    def closest_point(point: list[float], start: list[float], end: list[float]) -> tuple[list[float], float]:
+        px, py = _point_xy(point)
+        ax, ay = _point_xy(start)
+        bx, by = _point_xy(end)
+        dx = bx - ax
+        dy = by - ay
+        denominator = dx * dx + dy * dy
+        if denominator <= 1e-12:
+            target = [ax, ay]
+        else:
+            ratio = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / denominator))
+            target = [ax + dx * ratio, ay + dy * ratio]
+        return target, _point_distance(point, target)
+
+    def outward_tangent(points: list[list[float]], at_start: bool) -> tuple[float, float]:
+        endpoint = points[0] if at_start else points[-1]
+        candidates = points[1:] if at_start else list(reversed(points[:-1]))
+        for candidate in candidates:
+            if _point_distance(endpoint, candidate) >= 1.0:
+                return float(endpoint[0]) - float(candidate[0]), float(endpoint[1]) - float(candidate[1])
+        candidate = candidates[0]
+        return float(endpoint[0]) - float(candidate[0]), float(endpoint[1]) - float(candidate[1])
+
+    updates: dict[tuple[int, int], tuple[list[float], float]] = {}
+    for path_index, item in enumerate(paths):
+        points = item.get("points", [])
+        if item.get("removed") or item.get("closed") or len(points) < 2:
+            continue
+        for at_start, endpoint_index in ((True, 0), (False, len(points) - 1)):
+            endpoint = points[endpoint_index]
+            tangent = outward_tangent(points, at_start)
+            cell_x = int(math.floor(float(endpoint[0]) / cell_size))
+            cell_y = int(math.floor(float(endpoint[1]) / cell_size))
+            candidate_records: set[int] = set()
+            for grid_y in range(cell_y - 1, cell_y + 2):
+                for grid_x in range(cell_x - 1, cell_x + 2):
+                    candidate_records.update(segment_grid.get((grid_x, grid_y), set()))
+
+            nearest: tuple[float, list[float]] | None = None
+            for record_index in candidate_records:
+                target_path_index, start, end = segment_records[record_index]
+                if target_path_index == path_index:
+                    continue
+                target, gap = closest_point(endpoint, start, end)
+                if nearest is None or gap < nearest[0]:
+                    nearest = (gap, target)
+            if nearest is None or nearest[0] <= 0.30 or nearest[0] > max_gap:
+                continue
+            gap_vector = (
+                nearest[1][0] - float(endpoint[0]),
+                nearest[1][1] - float(endpoint[1]),
+            )
+            if _angle_between_vectors(tangent, gap_vector) <= float(max_angle):
+                updates[(path_index, endpoint_index)] = (nearest[1], nearest[0])
+
+    snapped = 0
+    max_snapped_gap = 0.0
+    changed_paths: set[int] = set()
+    for (path_index, endpoint_index), (target, gap) in updates.items():
+        paths[path_index]["points"][endpoint_index] = [round(float(target[0]), 4), round(float(target[1]), 4)]
+        snapped += 1
+        max_snapped_gap = max(max_snapped_gap, float(gap))
+        changed_paths.add(path_index)
+    for path_index in changed_paths:
+        item = paths[path_index]
+        points = item.get("points", [])
+        item["length"] = _polyline_length(points + ([points[0]] if item.get("closed") and points else []))
+        warnings = list(item.get("warnings") or [])
+        warnings.append("endpoint-snapped")
+        item["warnings"] = list(dict.fromkeys(warnings))
+
+    return paths, {
+        "snappedCenterlineEndpoints": snapped,
+        "maxSnappedEndpointGap": round(max_snapped_gap, 4),
+        "endpointSnapTolerance": round(max_gap, 4),
+    }
+
+
 def straighten_centerline_paths(vector_paths: list[dict[str, Any]],
                                 stroke_width: float,
                                 source_width: float,
@@ -2139,6 +2269,47 @@ def open_vector_source_image(path: Path, max_dimension: int = 1800, contrast: fl
         }
 
 
+def clean_line_art_source_profile(image: Any) -> dict[str, Any]:
+    """Detect clean black line art on a uniform white background.
+
+    These sources should not pass through illumination normalization or strong
+    denoising: both operations can erase anti-aliased flower, bird and text
+    details that are valid laser paths.
+    """
+    if np is None or image is None or getattr(image, "size", 0) == 0:
+        return {"cleanLineArt": False}
+    height, width = image.shape[:2]
+    border_size = max(2, min(32, min(height, width) // 24))
+    border = np.concatenate(
+        (
+            image[:border_size, :].reshape(-1),
+            image[-border_size:, :].reshape(-1),
+            image[:, :border_size].reshape(-1),
+            image[:, -border_size:].reshape(-1),
+        )
+    )
+    white_ratio = float(np.mean(image >= 250))
+    ink_ratio = float(np.mean(image <= 200))
+    border_white_ratio = float(np.mean(border >= 248))
+    border_mean = float(np.mean(border))
+    border_std = float(np.std(border))
+    clean = bool(
+        white_ratio >= 0.72
+        and 0.002 <= ink_ratio <= 0.30
+        and border_white_ratio >= 0.96
+        and border_mean >= 246.0
+        and border_std <= 5.0
+    )
+    return {
+        "cleanLineArt": clean,
+        "sourceWhiteRatio": round(white_ratio, 4),
+        "sourceInkRatio": round(ink_ratio, 4),
+        "sourceBorderWhiteRatio": round(border_white_ratio, 4),
+        "sourceBorderMean": round(border_mean, 2),
+        "sourceBorderStd": round(border_std, 2),
+    }
+
+
 def normalize_vector_background(image: Any, enabled: bool) -> Any:
     if not enabled:
         return image
@@ -2815,6 +2986,244 @@ def solidify_centerline_mask(binary: Any, radius: int) -> Any:
     return solid
 
 
+def fill_centerline_micro_holes(binary: Any,
+                                stroke_width: float) -> tuple[Any, dict[str, Any]]:
+    """Fill only sub-stroke enclosed holes before CAD skeletonization.
+
+    Anti-aliased line intersections can leave one or two background pixels
+    fully enclosed by ink. Thinning interprets those pixels as a real loop and
+    produces triangular artifacts at feet and other dense junctions. The area
+    and span limits scale with stroke width, so meaningful enclosed regions are
+    preserved.
+    """
+    if cv2 is None or np is None or binary is None:
+        return binary, {
+            "filledCenterlineMicroHoles": 0,
+            "filledCenterlineMicroHolePixels": 0,
+        }
+    stroke = max(1.0, float(stroke_width or 1.0))
+    max_area = max(2, min(64, int(round(stroke * stroke * 1.5))))
+    max_span = max(2, min(12, int(round(stroke * 1.5))))
+    background = (binary == 0).astype(np.uint8)
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(background, 8)
+    height, width = binary.shape[:2]
+    result = binary.copy()
+    filled_holes = 0
+    filled_pixels = 0
+    for label in range(1, int(count)):
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        component_width = int(stats[label, cv2.CC_STAT_WIDTH])
+        component_height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if x == 0 or y == 0 or x + component_width >= width or y + component_height >= height:
+            continue
+        if area > max_area or component_width > max_span or component_height > max_span:
+            continue
+        result[labels == label] = 255
+        filled_holes += 1
+        filled_pixels += area
+    return result, {
+        "filledCenterlineMicroHoles": filled_holes,
+        "filledCenterlineMicroHolePixels": filled_pixels,
+        "centerlineMicroHoleAreaLimit": max_area,
+        "centerlineMicroHoleSpanLimit": max_span,
+    }
+
+
+def centerline_dense_junction_holes(binary: Any,
+                                    skeleton: Any,
+                                    stroke_width: float) -> tuple[Any, dict[str, Any]]:
+    """Replace small outlined junction details with their medial centerline.
+
+    Line art can mix true strokes with narrow outlined forms such as fingers,
+    feet, roots or wire junctions. Tracing both sides of those forms creates
+    loops; filling the holes destroys their branches. This pass detects only
+    enclosed, narrow regions with at least three real graph junctions, removes
+    their boundary loop, inserts the region's medial axis and reconnects it at
+    the original junctions. It is orientation-independent and leaves simple
+    petals, text counters and other isolated closed motifs unchanged.
+    """
+    empty_stats = {
+        "centerlinedDenseJunctionHoles": 0,
+        "centerlinedDenseJunctionBridges": 0,
+        "centerlinedDenseJunctionPixels": 0,
+    }
+    if cv2 is None or np is None or binary is None or skeleton is None:
+        return skeleton, empty_stats
+
+    height, width = binary.shape[:2]
+    stroke = max(1.0, float(stroke_width or 1.0))
+    # CAD tracing normally runs near 2400 px. Normalizing thresholds by the
+    # actual trace size keeps the same geometry behavior for low/high-res input.
+    detail_scale = max(0.25, float(max(width, height)) / 1200.0)
+    min_area = max(4, int(round(max(32.0 * detail_scale ** 2, stroke ** 2 * 8.0))))
+    max_area = max(min_area, int(round(max(280.0 * detail_scale ** 2, stroke ** 2 * 80.0))))
+    max_span = max(int(round(48.0 * detail_scale)), int(round(stroke * 28.0)))
+    max_medial_radius = max(8.0 * detail_scale, stroke * 5.0)
+
+    background = (binary == 0).astype(np.uint8)
+    count, labels, component_stats, _centroids = cv2.connectedComponentsWithStats(background, 8)
+
+    ys, xs = np.where(skeleton > 0)
+    pixels = {(int(x), int(y)) for x, y in zip(xs, ys)}
+    neighbor_offsets = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+    junction_mask = np.zeros_like(skeleton, dtype=np.uint8)
+    for pixel in pixels:
+        if len(_skeleton_neighbors(pixels, pixel, neighbor_offsets)) >= 3:
+            junction_mask[pixel[1], pixel[0]] = 1
+
+    ring_radius = max(2, int(round(stroke * 1.5)))
+    ring_kernel = np.ones((ring_radius * 2 + 1, ring_radius * 2 + 1), dtype=np.uint8)
+    candidates: list[dict[str, Any]] = []
+    for label in range(1, int(count)):
+        x = int(component_stats[label, cv2.CC_STAT_LEFT])
+        y = int(component_stats[label, cv2.CC_STAT_TOP])
+        component_width = int(component_stats[label, cv2.CC_STAT_WIDTH])
+        component_height = int(component_stats[label, cv2.CC_STAT_HEIGHT])
+        area = int(component_stats[label, cv2.CC_STAT_AREA])
+        if x == 0 or y == 0 or x + component_width >= width or y + component_height >= height:
+            continue
+        if not min_area <= area <= max_area or max(component_width, component_height) > max_span:
+            continue
+
+        hole = (labels == label).astype(np.uint8)
+        medial_radius = float(cv2.distanceTransform(hole, cv2.DIST_L2, 3).max())
+        if medial_radius > max_medial_radius:
+            continue
+
+        pad = ring_radius * 2
+        min_y = max(0, y - pad)
+        max_y = min(height, y + component_height + pad)
+        min_x = max(0, x - pad)
+        max_x = min(width, x + component_width + pad)
+        local_hole = hole[min_y:max_y, min_x:max_x]
+        ring = cv2.dilate(local_hole, ring_kernel) - local_hole
+        local_junctions = (junction_mask[min_y:max_y, min_x:max_x] & (ring > 0)).astype(np.uint8)
+        junction_count, _junction_labels, _junction_stats, _junction_centroids = cv2.connectedComponentsWithStats(
+            local_junctions,
+            8,
+        )
+        junction_clusters = int(junction_count) - 1
+        if junction_clusters < 3:
+            continue
+        candidates.append(
+            {
+                "label": label,
+                "hole": hole,
+                "bbox": (x, y, component_width, component_height),
+                "area": area,
+                "junctionClusters": junction_clusters,
+            }
+        )
+
+    if not candidates:
+        return skeleton, {
+            **empty_stats,
+            "denseJunctionHoleAreaMin": min_area,
+            "denseJunctionHoleAreaMax": max_area,
+        }
+
+    candidate_mask = np.zeros_like(binary, dtype=np.uint8)
+    medial_masks: list[tuple[dict[str, Any], Any]] = []
+    for candidate in candidates:
+        hole = candidate["hole"]
+        candidate_mask[hole > 0] = 1
+        medial_masks.append((candidate, thin_binary(hole * 255)))
+
+    removal_radius = max(2, int(round(stroke * 1.1)))
+    removal_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (removal_radius * 2 + 1, removal_radius * 2 + 1),
+    )
+    removal_mask = cv2.dilate(candidate_mask, removal_kernel) > 0
+    base = skeleton.copy()
+    removed_pixels = int(np.count_nonzero((base > 0) & removal_mask))
+    base[removal_mask] = 0
+    result = base.copy()
+
+    def nearest_mask_pixel(mask: Any,
+                           center_x: float,
+                           center_y: float,
+                           radius: int) -> tuple[tuple[int, int] | None, float]:
+        radius = max(1, int(radius))
+        min_x = max(0, int(math.floor(center_x)) - radius)
+        max_x = min(width, int(math.ceil(center_x)) + radius + 1)
+        min_y = max(0, int(math.floor(center_y)) - radius)
+        max_y = min(height, int(math.ceil(center_y)) + radius + 1)
+        local_y, local_x = np.where(mask[min_y:max_y, min_x:max_x] > 0)
+        if local_x.size == 0:
+            return None, float("inf")
+        global_x = local_x + min_x
+        global_y = local_y + min_y
+        distances = (global_x - center_x) ** 2 + (global_y - center_y) ** 2
+        nearest_index = int(np.argmin(distances))
+        return (int(global_x[nearest_index]), int(global_y[nearest_index])), float(math.sqrt(distances[nearest_index]))
+
+    bridge_count = 0
+    for candidate, medial in medial_masks:
+        result[medial > 0] = 255
+        medial_y, medial_x = np.where(medial > 0)
+        medial_pixels = {(int(x), int(y)) for x, y in zip(medial_x, medial_y)}
+        endpoints = [
+            pixel
+            for pixel in medial_pixels
+            if len(_skeleton_neighbors(medial_pixels, pixel, neighbor_offsets)) == 1
+        ]
+        if not endpoints:
+            continue
+
+        x, y, component_width, component_height = candidate["bbox"]
+        bridge_radius = max(removal_radius + 2, int(round(stroke * 2.6)))
+        bridge_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (bridge_radius * 2 + 1, bridge_radius * 2 + 1),
+        )
+        near_hole = cv2.dilate(candidate["hole"], bridge_kernel) > 0
+        local_junctions = ((junction_mask > 0) & near_hole).astype(np.uint8)
+        junction_count, _junction_labels, _junction_stats, junction_centroids = cv2.connectedComponentsWithStats(
+            local_junctions,
+            8,
+        )
+        clusters: list[tuple[tuple[float, float], tuple[int, int], float]] = []
+        for junction_label in range(1, int(junction_count)):
+            center_x, center_y = (float(value) for value in junction_centroids[junction_label])
+            target, target_distance = nearest_mask_pixel(base, center_x, center_y, bridge_radius * 2)
+            if target is not None and target_distance <= bridge_radius * 1.7:
+                clusters.append(((center_x, center_y), target, target_distance))
+
+        max_endpoint_distance = max(component_width, component_height) * 0.72
+        matches: list[tuple[float, int, int]] = []
+        for endpoint_index, endpoint in enumerate(endpoints):
+            for cluster_index, (centroid, _target, target_distance) in enumerate(clusters):
+                endpoint_distance = math.dist(endpoint, centroid)
+                if endpoint_distance <= max_endpoint_distance:
+                    matches.append((endpoint_distance + target_distance * 0.4, endpoint_index, cluster_index))
+
+        used_endpoints: set[int] = set()
+        used_clusters: set[int] = set()
+        for _score, endpoint_index, cluster_index in sorted(matches):
+            if endpoint_index in used_endpoints or cluster_index in used_clusters:
+                continue
+            endpoint = endpoints[endpoint_index]
+            centroid, target, _target_distance = clusters[cluster_index]
+            center = (int(round(centroid[0])), int(round(centroid[1])))
+            cv2.line(result, endpoint, center, 255, 1)
+            cv2.line(result, center, target, 255, 1)
+            used_endpoints.add(endpoint_index)
+            used_clusters.add(cluster_index)
+            bridge_count += 1
+
+    return thin_binary(result), {
+        "centerlinedDenseJunctionHoles": len(candidates),
+        "centerlinedDenseJunctionBridges": bridge_count,
+        "centerlinedDenseJunctionPixels": removed_pixels,
+        "denseJunctionHoleAreaMin": min_area,
+        "denseJunctionHoleAreaMax": max_area,
+        "denseJunctionHoleMaxSpan": max_span,
+    }
+
+
 def stitch_raw_point_paths(raw_paths: list[list[Any]],
                            max_gap: float,
                            max_angle: float = 65.0) -> tuple[list[list[Any]], int]:
@@ -2836,7 +3245,10 @@ def trace_skeleton_vectors(binary: Any,
                            smooth: int,
                            max_contours: int,
                            stitch_gap: float = 0.0,
-                           skeleton: Any | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                           skeleton: Any | None = None,
+                           trim_open_ends: bool = True,
+                           post_simplify_epsilon: float | None = None,
+                           preserve_junctions: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if skeleton is None:
         skeleton = thin_binary(binary)
     ys, xs = np.where(skeleton > 0)
@@ -2914,20 +3326,61 @@ def trace_skeleton_vectors(binary: Any,
 
     vector_paths: list[dict[str, Any]] = []
     skipped_short = 0
+    preserved_junction_anchors = 0
+    junction_sensitive_paths = 0
     processed: list[tuple[float, list[list[float]], bool, int]] = []
+
+    def polish_points(source_points: list[list[float]], closed_path: bool, allow_trim: bool) -> list[list[float]]:
+        result = _simplify_points(source_points, float(simplify), closed_path)
+        if allow_trim:
+            result = trim_open_polyline_spurs(result, trim_length)
+        result = (
+            smooth_open_points(result, int(smooth))
+            if not closed_path
+            else [[float(x), float(y)] for x, y in smooth_closed_points(np.array(result), int(smooth))]
+        )
+        post_epsilon = (
+            max(0.15, float(simplify) * 0.65)
+            if post_simplify_epsilon is None
+            else max(0.02, float(post_simplify_epsilon))
+        )
+        if simplify > 0 or post_simplify_epsilon is not None:
+            result = _simplify_points(result, post_epsilon, closed_path)
+        if allow_trim:
+            result = trim_open_polyline_spurs(result, trim_length)
+        return _dedupe_points(result, closed=closed_path, min_distance=max(0.45, float(simplify) * 0.45))
+
     for raw_index, raw_path in enumerate(raw_paths):
         points = [[float(x), float(y)] for x, y in raw_path]
         closed = len(points) > 3 and math.hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1]) <= 1.5
         trim_length = max(4.0, min(18.0, max(float(stitch_gap) * 3.0, float(min_length) * 1.25)))
-        points = _simplify_points(points, float(simplify), closed)
-        if not closed:
-            points = trim_open_polyline_spurs(points, trim_length)
-        points = smooth_open_points(points, int(smooth)) if not closed else [[float(x), float(y)] for x, y in smooth_closed_points(np.array(points), int(smooth))]
-        if simplify > 0:
-            points = _simplify_points(points, max(0.15, float(simplify) * 0.65), closed)
-        if not closed:
-            points = trim_open_polyline_spurs(points, trim_length)
-        points = _dedupe_points(points, closed=closed, min_distance=max(0.45, float(simplify) * 0.45))
+        junction_indices = [
+            index
+            for index, pixel in enumerate(raw_path)
+            if degree.get((int(pixel[0]), int(pixel[1])), 0) >= 3
+        ]
+        if preserve_junctions and not closed and junction_indices:
+            anchor_indices = sorted({0, len(points) - 1, *junction_indices})
+            anchored_points: list[list[float]] = []
+            for anchor_index in range(len(anchor_indices) - 1):
+                start_index = anchor_indices[anchor_index]
+                end_index = anchor_indices[anchor_index + 1]
+                if end_index <= start_index:
+                    continue
+                segment = polish_points(points[start_index:end_index + 1], False, False)
+                if not segment:
+                    continue
+                segment[0] = [float(points[start_index][0]), float(points[start_index][1])]
+                segment[-1] = [float(points[end_index][0]), float(points[end_index][1])]
+                anchored_points.extend(segment if not anchored_points else segment[1:])
+            if len(anchored_points) >= 2:
+                points = anchored_points
+                preserved_junction_anchors += len(set(junction_indices))
+                junction_sensitive_paths += 1
+            else:
+                points = polish_points(points, closed, not closed and trim_open_ends)
+        else:
+            points = polish_points(points, closed, not closed and trim_open_ends)
         length = _polyline_length(points + ([points[0]] if closed and points else []))
         if not closed and len(points) <= 2 and length <= trim_length:
             skipped_short += 1
@@ -2959,7 +3412,67 @@ def trace_skeleton_vectors(binary: Any,
         "skeletonPixels": len(pixels),
         "stitchedRaw": stitched_raw,
         "effectiveStitchGap": effective_stitch_gap,
+        "preservedJunctionAnchors": preserved_junction_anchors,
+        "junctionSensitivePaths": junction_sensitive_paths,
     }
+
+
+def preserve_centerline_dot_components(binary: Any,
+                                       skeleton: Any,
+                                       vector_paths: list[dict[str, Any]],
+                                       stroke_width: float) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Keep clean isolated dots that thinning collapses below a drawable path.
+
+    Eyes, punctuation and similar filled details can become one skeleton pixel.
+    A tiny closed centerline gives them a real laser motion without tracing both
+    edges of the original filled dot.
+    """
+    if cv2 is None or np is None or binary is None or skeleton is None:
+        return vector_paths, {"preservedDotDetails": 0}
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats((binary > 0).astype(np.uint8), 8)
+    stroke = max(1.0, float(stroke_width or 1.0))
+    min_area = max(4.0, stroke * stroke * 1.1)
+    max_area = max(32.0, stroke * stroke * 16.0)
+    max_span = max(7.0, min(16.0, stroke * 6.0))
+    result = list(vector_paths)
+    preserved = 0
+    for label in range(1, int(count)):
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < min_area or area > max_area or width < 2 or height < 2:
+            continue
+        if width > max_span or height > max_span or max(width, height) / max(1.0, min(width, height)) > 1.8:
+            continue
+        component_skeleton_pixels = int(np.count_nonzero((skeleton > 0) & (labels == label)))
+        if component_skeleton_pixels > 2:
+            continue
+        center_x, center_y = (float(value) for value in centroids[label])
+        radius = max(0.75, min(2.5, min(width, height) * 0.24))
+        point_count = 12
+        points = [
+            [
+                center_x + math.cos((math.tau * index) / point_count) * radius,
+                center_y + math.sin((math.tau * index) / point_count) * radius,
+            ]
+            for index in range(point_count)
+        ]
+        result.append(
+            {
+                "id": f"dot-{label}",
+                "points": points,
+                "closed": True,
+                "removed": False,
+                "area": math.pi * radius * radius,
+                "length": math.tau * radius,
+                "sourceComponentId": f"dot-{label}",
+                "warnings": ["preserved-dot"],
+            }
+        )
+        preserved += 1
+    return result, {"preservedDotDetails": preserved}
 
 
 def vectorize_image(path: Path,
@@ -2993,6 +3506,10 @@ def vectorize_image(path: Path,
     stage_start = total_start
     image, image_stats = open_vector_source_image(path, max_dimension=max_dimension, contrast=contrast)
     timings["load"] = time.perf_counter() - stage_start
+    source_profile = clean_line_art_source_profile(image)
+    clean_line_art = bool(source_profile.get("cleanLineArt"))
+    effective_background_normalize = bool(background_normalize) and not clean_line_art
+    effective_denoise = 0 if clean_line_art else int(denoise)
     stage_start = time.perf_counter()
     binary, used_threshold, threshold_source = build_vector_binary(
         image,
@@ -3004,8 +3521,8 @@ def vectorize_image(path: Path,
         adaptive_c=adaptive_c,
         morph_open=morph_open,
         morph_close=morph_close,
-        background_normalize=background_normalize,
-        denoise=denoise,
+        background_normalize=effective_background_normalize,
+        denoise=effective_denoise,
     )
     threshold_binary = binary.copy()
     timings["threshold"] = time.perf_counter() - stage_start
@@ -3014,19 +3531,48 @@ def vectorize_image(path: Path,
     timings["borderCleanup"] = time.perf_counter() - stage_start
 
     requested_mode = (mode or "auto").lower()
-    mode = "auto" if requested_mode == "auto" else requested_mode
+    cad_centerline = requested_mode in {"cad_centerline", "centerline_cad"}
+    mode = "centerline" if cad_centerline else "auto" if requested_mode == "auto" else requested_mode
+    cad_trace_scale = 1.0
+    if cad_centerline:
+        source_height, source_width = image.shape[:2]
+        available_scale = float(max_dimension) / max(1.0, float(max(source_width, source_height)))
+        cad_trace_scale = max(1.0, min(2.0, available_scale))
+        if cad_trace_scale >= 1.20:
+            stage_start = time.perf_counter()
+            trace_width = max(1, int(round(source_width * cad_trace_scale)))
+            trace_height = max(1, int(round(source_height * cad_trace_scale)))
+            trace_image = cv2.resize(image, (trace_width, trace_height), interpolation=cv2.INTER_CUBIC)
+            binary, used_threshold, threshold_source = build_vector_binary(
+                trace_image,
+                threshold=threshold,
+                threshold_mode=threshold_mode,
+                blur=blur,
+                invert=invert,
+                adaptive_block=adaptive_block,
+                adaptive_c=adaptive_c,
+                morph_open=morph_open,
+                morph_close=morph_close,
+                background_normalize=effective_background_normalize,
+                denoise=effective_denoise,
+            )
+            threshold_binary = binary.copy()
+            binary, removed_border_components = clean_border_components(binary, remove_border, margin=3)
+            timings["cadHighResolutionTrace"] = time.perf_counter() - stage_start
+        else:
+            cad_trace_scale = 1.0
     pre_trace_stroke_estimate = estimate_stroke_width(binary)
     foreground_ratio = float(np.count_nonzero(binary)) / float(max(1, binary.shape[0] * binary.shape[1]))
     effective_invert = bool(invert)
-    effective_background_normalize = bool(background_normalize)
     effective_min_length = float(min_length)
     effective_stitch_gap = float(stitch_gap)
-    effective_denoise = int(denoise)
+    if clean_line_art:
+        effective_min_length = min(effective_min_length, 5.0)
     auto_stencil_stats: dict[str, Any] = {}
     auto_centerline_stats: dict[str, Any] = {}
     if mode == "auto":
         stencil_candidate = None
-        if bool(invert) and 0 < pre_trace_stroke_estimate <= 6.0 and foreground_ratio <= 0.18:
+        if not clean_line_art and bool(invert) and 0 < pre_trace_stroke_estimate <= 6.0 and foreground_ratio <= 0.18:
             stage_start = time.perf_counter()
             stencil_candidate = build_bright_stencil_candidate(
                 image,
@@ -3121,6 +3667,12 @@ def vectorize_image(path: Path,
                 }
             else:
                 mode = "potrace" if 0 < pre_trace_stroke_estimate <= 5.5 and foreground_ratio <= 0.30 else "vtracer"
+    if clean_line_art and mode == "centerline":
+        effective_min_length = min(effective_min_length, 2.5)
+        effective_stitch_gap = min(effective_stitch_gap, 0.5)
+    if cad_centerline:
+        effective_min_length = min(effective_min_length, 3.0)
+        effective_stitch_gap = min(max(0.25, effective_stitch_gap), 1.0)
     skeleton_preview = None
     raw_skeleton_preview = None
     trace_binary_preview = None
@@ -3138,13 +3690,13 @@ def vectorize_image(path: Path,
                 invert=invert,
                 adaptive_block=adaptive_block,
                 adaptive_c=adaptive_c,
-                background_normalize=background_normalize,
-                denoise=denoise,
+                background_normalize=effective_background_normalize,
+                denoise=effective_denoise,
             )
             line_scale = max(1, int(line_stats.get("lineArtUpscale", 1)))
             vector_paths, stats = trace_line_art_fill_vectors(
                 line_binary,
-                min_length=max(0.0, float(min_length) * line_scale),
+                min_length=max(0.0, float(effective_min_length) * line_scale),
                 simplify=max(0.06, float(simplify) * 0.12 * line_scale),
                 smooth=0,
                 max_contours=max(1, int(max_contours)),
@@ -3161,7 +3713,7 @@ def vectorize_image(path: Path,
             try:
                 vector_paths, stats = trace_potrace_vectors(
                     image,
-                    min_length=max(0.0, float(min_length)),
+                    min_length=max(0.0, float(effective_min_length)),
                     simplify=max(0.02, float(simplify)),
                     max_contours=max(1, int(max_contours)),
                     blacklevel=blacklevel,
@@ -3173,7 +3725,7 @@ def vectorize_image(path: Path,
             except ValueError:
                 vector_paths, stats, vtracer_svg_text = trace_vtracer_photo_vectors(
                     image,
-                    min_length=max(0.0, float(min_length)),
+                    min_length=max(0.0, float(effective_min_length)),
                     simplify=max(0.02, float(simplify)),
                     max_contours=max(1, int(max_contours)),
                     smooth=int(smooth),
@@ -3186,7 +3738,7 @@ def vectorize_image(path: Path,
         stage_start = time.perf_counter()
         vector_paths, stats, vtracer_svg_text = trace_vtracer_photo_vectors(
             image,
-            min_length=max(0.0, float(min_length)),
+            min_length=max(0.0, float(effective_min_length)),
             simplify=max(0.02, float(simplify)),
             max_contours=max(1, int(max_contours)),
             smooth=int(smooth),
@@ -3201,7 +3753,7 @@ def vectorize_image(path: Path,
         stage_start = time.perf_counter()
         vector_paths, stats, vtracer_svg_text = trace_vtracer_vectors(
             trace_binary,
-            min_length=max(0.0, float(min_length)),
+            min_length=max(0.0, float(effective_min_length)),
             simplify=max(0.02, float(simplify)),
             max_contours=max(1, int(max_contours)),
             color_mode="binary",
@@ -3214,14 +3766,24 @@ def vectorize_image(path: Path,
         centerline_solidify_radius = int(max(0.0, min(5.0, round(float(effective_stitch_gap)))))
         if centerline_solidify_radius > 0:
             binary = solidify_centerline_mask(binary, centerline_solidify_radius)
+        micro_hole_stats: dict[str, Any] = {}
+        if cad_centerline:
+            binary, micro_hole_stats = fill_centerline_micro_holes(
+                binary,
+                stroke_width=float(pre_trace_stroke_estimate),
+            )
         stage_start = time.perf_counter()
         raw_skeleton_preview = thin_binary(binary)
-        spur_length = adaptive_spur_length(binary, raw_skeleton_preview, float(effective_stitch_gap), float(effective_min_length))
-        skeleton_preview, pruned_spur_pixels = prune_skeleton_spurs(
-            raw_skeleton_preview,
-            max_length=spur_length,
-            max_rounds=6,
-        )
+        if cad_centerline:
+            skeleton_preview = raw_skeleton_preview.copy()
+            pruned_spur_pixels = 0
+        else:
+            spur_length = adaptive_spur_length(binary, raw_skeleton_preview, float(effective_stitch_gap), float(effective_min_length))
+            skeleton_preview, pruned_spur_pixels = prune_skeleton_spurs(
+                raw_skeleton_preview,
+                max_length=spur_length,
+                max_rounds=6,
+            )
         timings["skeletonPreview"] = time.perf_counter() - stage_start
         stage_start = time.perf_counter()
         vector_paths, stats = trace_skeleton_vectors(
@@ -3232,9 +3794,13 @@ def vectorize_image(path: Path,
             max_contours=max(1, int(max_contours)),
             stitch_gap=float(effective_stitch_gap),
             skeleton=skeleton_preview,
+            trim_open_ends=not cad_centerline,
+            post_simplify_epsilon=0.25 if cad_centerline else None,
+            preserve_junctions=cad_centerline,
         )
         stats["prunedSpurPixels"] = pruned_spur_pixels
         stats["centerlineSolidifyRadius"] = centerline_solidify_radius
+        stats.update(micro_hole_stats)
         vector_paths, stitched_count = stitch_open_vector_paths(vector_paths, min(2.0, float(effective_stitch_gap)))
         stats["stitchedGap"] = int(stats.get("stitchedRaw", 0)) + stitched_count
         vector_paths, straight_stats = straighten_centerline_paths(
@@ -3259,6 +3825,25 @@ def vectorize_image(path: Path,
                 source_height=float(image.shape[0]),
             )
             stats.update(curve_stats)
+        if cad_centerline:
+            vector_paths, dot_stats = preserve_centerline_dot_components(
+                binary,
+                skeleton_preview,
+                vector_paths,
+                stroke_width=float(pre_trace_stroke_estimate),
+            )
+            stats.update(dot_stats)
+            if cad_trace_scale > 1.0:
+                vector_paths = scaled_vector_paths(vector_paths, 1.0 / cad_trace_scale)
+            original_stroke_width = float(pre_trace_stroke_estimate) / cad_trace_scale
+            endpoint_snap_gap = max(1.0, min(2.0, original_stroke_width))
+            vector_paths, endpoint_stats = snap_open_vector_endpoints_to_paths(
+                vector_paths,
+                max_gap=endpoint_snap_gap,
+                max_angle=70.0,
+            )
+            stats.update(endpoint_stats)
+            stats["cadTopologyPreserved"] = True
         timings["trace"] = time.perf_counter() - stage_start
     else:
         mode = "outline"
@@ -3286,23 +3871,32 @@ def vectorize_image(path: Path,
     stats.update(post_stats)
     stats.update(auto_stencil_stats)
     stats.update(auto_centerline_stats)
+    stats.update(source_profile)
+    stats["detailPreservation"] = clean_line_art
     stats["removedBorderComponents"] = removed_border_components
     # Otomatik mod: ince tarama/cizgi sanati icin Potrace, dolu/kalin sekiller
     # icin VTracer daha iyi sonuc verir. Manuel secimler korunur.
-    stroke_estimate = pre_trace_stroke_estimate
+    stroke_estimate = pre_trace_stroke_estimate / cad_trace_scale if cad_centerline else pre_trace_stroke_estimate
     stats["estimatedStrokeWidth"] = round(stroke_estimate, 1)
     stats["requestedMode"] = requested_mode
     stats["traceEngine"] = mode
+    stats["cadCenterline"] = cad_centerline
+    stats["cadTraceScale"] = round(cad_trace_scale, 4)
     stats["foregroundRatio"] = round(foreground_ratio, 4)
     if mode == "potrace":
         fill_ratio = compound_fill_ratio(vector_paths, float(width), float(height))
         stats["filledTraceRatio"] = round(fill_ratio, 4)
         stats["filledTraceInvert"] = bool(fill_ratio > 0.5)
     stats["suggestedMode"] = "auto"
-    stats["modeMismatch"] = bool(requested_mode != "auto" and stroke_estimate > 0 and mode not in {"potrace", "vtracer"})
+    stats["modeMismatch"] = bool(not cad_centerline and requested_mode != "auto" and stroke_estimate > 0 and mode not in {"potrace", "vtracer"})
     stats["pathsTotal"] = len(vector_paths)
     stats["pathsKept"] = sum(
         1
+        for item in vector_paths
+        if not item.get("removed") and len(item.get("points", [])) >= 2
+    )
+    stats["pointsKept"] = sum(
+        len(item.get("points", []))
         for item in vector_paths
         if not item.get("removed") and len(item.get("points", [])) >= 2
     )
@@ -3360,10 +3954,327 @@ def vectorize_image(path: Path,
             "requestedStitchGap": stitch_gap,
             "requestedDenoise": denoise,
             "denoise": effective_denoise,
+            "cleanLineArt": clean_line_art,
+            "cadCenterline": cad_centerline,
+            "cadTraceScale": round(cad_trace_scale, 4),
             "usedThreshold": used_threshold,
             "processingScale": image_stats["processingScale"],
         },
         "stats": stats,
+    }
+
+
+def _nearest_vector_region_label(labels: Any, x: int, y: int, max_radius: int = 18) -> int:
+    height, width = labels.shape[:2]
+    x = max(0, min(width - 1, int(x)))
+    y = max(0, min(height - 1, int(y)))
+    direct = int(labels[y, x])
+    if direct > 0:
+        return direct
+    for radius in range(1, max(1, int(max_radius)) + 1):
+        min_x = max(0, x - radius)
+        max_x = min(width - 1, x + radius)
+        min_y = max(0, y - radius)
+        max_y = min(height - 1, y + radius)
+        candidates: list[tuple[int, int, int]] = []
+        for current_x in range(min_x, max_x + 1):
+            for current_y in (min_y, max_y):
+                label = int(labels[current_y, current_x])
+                if label > 0:
+                    candidates.append(((current_x - x) ** 2 + (current_y - y) ** 2, current_x, current_y))
+        for current_y in range(min_y + 1, max_y):
+            for current_x in (min_x, max_x):
+                label = int(labels[current_y, current_x])
+                if label > 0:
+                    candidates.append(((current_x - x) ** 2 + (current_y - y) ** 2, current_x, current_y))
+        if candidates:
+            _distance, nearest_x, nearest_y = min(candidates)
+            return int(labels[nearest_y, nearest_x])
+    return 0
+
+
+def _vector_paths_adjacent_to_regions(vector_paths: list[dict[str, Any]],
+                                      labels: Any,
+                                      selected_labels: set[int],
+                                      scale: float,
+                                      sample_offset: float) -> list[str]:
+    if not selected_labels:
+        return []
+    height, width = labels.shape[:2]
+    result: list[str] = []
+    for vector_path in vector_paths:
+        points = vector_path.get("points", [])
+        if vector_path.get("removed") or len(points) < 2:
+            continue
+        scaled = [[float(point[0]) * scale, float(point[1]) * scale] for point in points]
+        pairs = list(zip(scaled, scaled[1:]))
+        if vector_path.get("closed"):
+            pairs.append((scaled[-1], scaled[0]))
+        hits = 0
+        tests = 0
+        for start, end in pairs:
+            dx = float(end[0]) - float(start[0])
+            dy = float(end[1]) - float(start[1])
+            length = math.hypot(dx, dy)
+            if length <= 1e-9:
+                continue
+            normal_x = -dy / length
+            normal_y = dx / length
+            steps = max(1, int(math.ceil(length / 3.0)))
+            for index in range(steps):
+                ratio = (index + 0.5) / steps
+                x = float(start[0]) + dx * ratio
+                y = float(start[1]) + dy * ratio
+                first_x = max(0, min(width - 1, int(round(x + normal_x * sample_offset))))
+                first_y = max(0, min(height - 1, int(round(y + normal_y * sample_offset))))
+                second_x = max(0, min(width - 1, int(round(x - normal_x * sample_offset))))
+                second_y = max(0, min(height - 1, int(round(y - normal_y * sample_offset))))
+                first_label = int(labels[first_y, first_x])
+                second_label = int(labels[second_y, second_x])
+                if first_label <= 0 or second_label <= 0:
+                    continue
+                tests += 1
+                if first_label != second_label and ((first_label in selected_labels) != (second_label in selected_labels)):
+                    hits += 1
+        required_hits = 1 if tests < 8 else 2
+        if hits >= required_hits and hits / max(1, tests) >= 0.015:
+            result.append(str(vector_path.get("id") or ""))
+    return [path_id for path_id in result if path_id]
+
+
+def _dominant_enclosing_vector_path_id(vector_paths: list[dict[str, Any]]) -> str | None:
+    """Return the one closed contour that actually surrounds the whole design.
+
+    Merely touching the exterior white region is not enough: after a frame is
+    removed, hearts, birds and branches also touch that region. A dominant frame
+    must be closed and cover almost the complete original geometry envelope.
+    Removed paths remain in this calculation so deleting a frame cannot promote
+    all newly exposed interior motifs to cutting paths.
+    """
+    usable = [item for item in vector_paths or [] if len(item.get("points", [])) >= 2]
+    if not usable:
+        return None
+    all_points = [point for item in usable for point in item.get("points", [])]
+    if len(all_points) < 2:
+        return None
+    design_min_x, design_min_y, design_max_x, design_max_y = _points_bbox(all_points)
+    design_width = max(1e-6, design_max_x - design_min_x)
+    design_height = max(1e-6, design_max_y - design_min_y)
+    design_area = design_width * design_height
+    candidates: list[tuple[float, float, str]] = []
+    for item in usable:
+        path_id = str(item.get("id") or "")
+        points = item.get("points", [])
+        if not path_id or not item.get("closed") or len(points) < 3:
+            continue
+        min_x, min_y, max_x, max_y = _points_bbox(points)
+        width = max(0.0, max_x - min_x)
+        height = max(0.0, max_y - min_y)
+        width_coverage = width / design_width
+        height_coverage = height / design_height
+        area_coverage = (width * height) / max(1e-6, design_area)
+        if width_coverage < 0.80 or height_coverage < 0.80 or area_coverage < 0.68:
+            continue
+        length = float(item.get("length") or _polyline_length(points + [points[0]]))
+        candidates.append((area_coverage, length, path_id))
+    if not candidates:
+        return None
+    return max(candidates)[2]
+
+
+def _structural_exterior_vector_path_ids(vector_paths: list[dict[str, Any]],
+                                         adjacent_path_ids: list[str],
+                                         dominant_path: dict[str, Any] | None) -> list[str]:
+    """Promote exposed structure without turning tiny details into cuts.
+
+    Removing a surrounding frame makes every isolated motif adjacent to the
+    same white exterior region. Relative length and envelope thresholds keep
+    major hearts, branches and base contours eligible while bird feet, flowers
+    and similar small engraving details remain engraving.
+    """
+    if not dominant_path or not dominant_path.get("removed"):
+        return []
+    usable = [item for item in vector_paths or [] if len(item.get("points", [])) >= 2]
+    if not usable:
+        return []
+    all_points = [point for item in usable for point in item.get("points", [])]
+    if len(all_points) < 2:
+        return []
+    min_x, min_y, max_x, max_y = _points_bbox(all_points)
+    design_diagonal = math.hypot(max_x - min_x, max_y - min_y)
+    dominant_points = dominant_path.get("points", [])
+    dominant_length = float(
+        dominant_path.get("length")
+        or _polyline_length(
+            dominant_points
+            + ([dominant_points[0]] if dominant_path.get("closed") and dominant_points else [])
+        )
+    )
+    min_length = max(24.0, design_diagonal * 0.18, dominant_length * 0.075)
+    min_diagonal = max(12.0, design_diagonal * 0.10)
+    adjacent = {str(path_id) for path_id in adjacent_path_ids}
+    structural: list[str] = []
+    for item in usable:
+        path_id = str(item.get("id") or "")
+        points = item.get("points", [])
+        if not path_id or path_id not in adjacent or item.get("removed"):
+            continue
+        path_min_x, path_min_y, path_max_x, path_max_y = _points_bbox(points)
+        path_diagonal = math.hypot(path_max_x - path_min_x, path_max_y - path_min_y)
+        path_length = float(
+            item.get("length")
+            or _polyline_length(points + ([points[0]] if item.get("closed") and points else []))
+        )
+        if path_length >= min_length and path_diagonal >= min_diagonal:
+            structural.append(path_id)
+    return sorted(set(structural))
+
+
+def classify_vector_region_boundaries(vector_paths: list[dict[str, Any]],
+                                      source_width: float,
+                                      source_height: float,
+                                      seeds: list[Any] | None = None,
+                                      include_exterior: bool = True,
+                                      max_dimension: int = 1600) -> dict[str, Any]:
+    """Classify centerlines by the white regions on their two sides.
+
+    A dominant surrounding frame defines the initial cut boundary. Once that
+    frame is removed, only large newly exposed structural paths are promoted;
+    small motifs remain engraving. Optional seed points select additional
+    enclosed regions.
+    """
+    if cv2 is None or np is None:
+        raise ValueError("Bolge sinifi icin OpenCV bulunamadi.")
+    all_paths = [
+        item
+        for item in vector_paths or []
+        if len(item.get("points", [])) >= 2
+    ]
+    active_paths = [
+        item
+        for item in all_paths
+        if not item.get("removed") and len(item.get("points", [])) >= 2
+    ]
+    width = max(1.0, float(source_width or 1.0))
+    height = max(1.0, float(source_height or 1.0))
+    if not active_paths:
+        return {
+            "cutPathIds": [],
+            "exteriorPathIds": [],
+            "adjacentExteriorPathIds": [],
+            "dominantExteriorPathId": None,
+            "markedPathIds": [],
+            "regions": [],
+            "stats": {
+                "activePaths": 0,
+                "regionCount": 0,
+                "resolvedSeeds": 0,
+                "structuralExteriorPaths": 0,
+                "dominantExteriorRemoved": False,
+                "exteriorPromotionSuppressed": False,
+            },
+        }
+
+    scale = min(1.0, max(64.0, float(max_dimension)) / max(width, height))
+    raster_width = max(32, int(round(width * scale)))
+    raster_height = max(32, int(round(height * scale)))
+    line_thickness = 3
+    line_mask = np.zeros((raster_height, raster_width), dtype=np.uint8)
+    for vector_path in active_paths:
+        points = np.rint(np.array(vector_path.get("points", []), dtype=float) * scale).astype(np.int32).reshape((-1, 1, 2))
+        cv2.polylines(line_mask, [points], bool(vector_path.get("closed")), 255, line_thickness, cv2.LINE_8)
+    line_mask = cv2.morphologyEx(line_mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+    region_count, labels = cv2.connectedComponents((line_mask == 0).astype(np.uint8), connectivity=8)
+    sample_offset = float(line_thickness + 2)
+
+    exterior_labels: set[int] = set()
+    if include_exterior:
+        border_labels = np.concatenate((labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]))
+        exterior_labels = {int(label) for label in np.unique(border_labels) if int(label) > 0}
+    adjacent_exterior_path_ids = _vector_paths_adjacent_to_regions(
+        active_paths,
+        labels,
+        exterior_labels,
+        scale,
+        sample_offset,
+    )
+    dominant_exterior_path_id = _dominant_enclosing_vector_path_id(all_paths)
+    dominant_path = next(
+        (item for item in all_paths if str(item.get("id") or "") == dominant_exterior_path_id),
+        None,
+    )
+    dominant_exterior_removed = bool(dominant_path and dominant_path.get("removed"))
+    exterior_promotion_suppressed = dominant_exterior_removed
+    exterior_path_ids = []
+    if (
+        dominant_exterior_path_id
+        and not dominant_exterior_removed
+        and dominant_exterior_path_id in set(adjacent_exterior_path_ids)
+    ):
+        exterior_path_ids = [dominant_exterior_path_id]
+    elif dominant_exterior_removed:
+        exterior_path_ids = _structural_exterior_vector_path_ids(
+            all_paths,
+            adjacent_exterior_path_ids,
+            dominant_path,
+        )
+
+    marked_path_ids: set[str] = set()
+    region_results: list[dict[str, Any]] = []
+    for raw_seed in seeds or []:
+        if isinstance(raw_seed, dict):
+            source_x = float(raw_seed.get("x", 0.0))
+            source_y = float(raw_seed.get("y", 0.0))
+        elif isinstance(raw_seed, (list, tuple)) and len(raw_seed) >= 2:
+            source_x = float(raw_seed[0])
+            source_y = float(raw_seed[1])
+        else:
+            continue
+        raster_x = int(round(source_x * scale))
+        raster_y = int(round(source_y * scale))
+        label = _nearest_vector_region_label(labels, raster_x, raster_y)
+        if label <= 0:
+            region_results.append({"seed": {"x": source_x, "y": source_y}, "resolved": False, "pathIds": []})
+            continue
+        path_ids = _vector_paths_adjacent_to_regions(
+            active_paths,
+            labels,
+            {label},
+            scale,
+            sample_offset,
+        )
+        marked_path_ids.update(path_ids)
+        region_results.append(
+            {
+                "seed": {"x": source_x, "y": source_y},
+                "resolved": True,
+                "label": label,
+                "areaPixels": int(np.count_nonzero(labels == label)),
+                "pathIds": path_ids,
+            }
+        )
+
+    cut_path_ids = set(exterior_path_ids) | marked_path_ids
+    return {
+        "cutPathIds": sorted(cut_path_ids),
+        "exteriorPathIds": sorted(set(exterior_path_ids)),
+        "adjacentExteriorPathIds": sorted(set(adjacent_exterior_path_ids)),
+        "dominantExteriorPathId": dominant_exterior_path_id,
+        "markedPathIds": sorted(marked_path_ids),
+        "regions": region_results,
+        "stats": {
+            "activePaths": len(active_paths),
+            "regionCount": max(0, int(region_count) - 1),
+            "resolvedSeeds": sum(1 for item in region_results if item.get("resolved")),
+            "adjacentExteriorPaths": len(set(adjacent_exterior_path_ids)),
+            "dominantExteriorPaths": len(set(exterior_path_ids)),
+            "structuralExteriorPaths": len(set(exterior_path_ids)) if dominant_exterior_removed else 0,
+            "dominantExteriorRemoved": dominant_exterior_removed,
+            "exteriorPromotionSuppressed": exterior_promotion_suppressed,
+            "rasterWidth": raster_width,
+            "rasterHeight": raster_height,
+            "scale": round(scale, 6),
+        },
     }
 
 
@@ -3499,8 +4410,7 @@ def build_raster_engrave_lines(pattern: RasterPattern,
     pixels = image.load()
     col_width = pattern.width / columns
     row_height = pattern.height / rows
-    clean_name = pattern.path.name.encode("ascii", errors="ignore").decode("ascii") or "image"
-    clean_name = clean_name.replace("(", "_").replace(")", "_")
+    clean_name = gcode_comment_text(pattern.path.name, "image")
 
     if raster_mode in {"grayscale", "gray", "photo", "photo_engrave", "pwm"}:
         gamma = max(0.2, min(4.0, float(pattern.gamma or 1.0)))
@@ -3735,7 +4645,8 @@ def build_svg_vector_engrave_lines(pattern: RasterPattern,
                                    travel_feed: float | None = None,
                                    operation: str = "engrave",
                                    clip_region: ClipRegion | None = None,
-                                   clip_close_boundary: bool = False) -> list[str]:
+                                   clip_close_boundary: bool = False,
+                                   kerf: float = 0.0) -> list[str]:
     if not pattern.path.exists():
         raise ValueError(f"SVG dosyasi bulunamadi: {pattern.path}")
     converter.validate_power(pattern.power)
@@ -3744,11 +4655,10 @@ def build_svg_vector_engrave_lines(pattern: RasterPattern,
         raise ValueError("SVG viewBox olcusu gecersiz.")
 
     root = ET.parse(pattern.path).getroot()
-    clean_name = pattern.path.name.encode("ascii", errors="ignore").decode("ascii") or "svg"
-    clean_name = clean_name.replace("(", "_").replace(")", "_")
+    clean_name = gcode_comment_text(pattern.path.name, "svg")
     op_label = "cut" if operation == "cut" else "engrave"
     lines = [f"({op_label} svg {clean_name} R{fmt(pattern.rotation)})", "S0"]
-    path_count = 0
+    output_paths: list[list[Point]] = []
 
     for element in root.iter(f"{{{SVG_NS}}}path"):
         path_data = element.get("d")
@@ -3765,15 +4675,18 @@ def build_svg_vector_engrave_lines(pattern: RasterPattern,
                 close_boundary=clip_close_boundary and closed_source,
                 closed_source=closed_source,
             ):
-                append_powered_polyline(lines, clipped, pattern.power, pattern.feed, travel_feed)
-                path_count += 1
+                output_paths.append(clipped)
 
-    if path_count == 0:
+    if not output_paths:
         if clip_region is not None:
             lines.append(f"({op_label} svg clipped empty)")
             lines.append("S0")
             return lines
         raise ValueError("SVG icinde G-code'a cevrilecek path bulunamadi.")
+    if operation == "cut":
+        output_paths = apply_kerf_to_paths(output_paths, kerf)
+    for output_path in output_paths:
+        append_powered_polyline(lines, output_path, pattern.power, pattern.feed, travel_feed)
     lines.append(f"({op_label} svg end)")
     lines.append("S0")
     return lines
@@ -3926,7 +4839,8 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
                                         travel_feed: float | None = None,
                                         operation: str = "engrave",
                                         clip_region: ClipRegion | None = None,
-                                        clip_close_boundary: bool = False) -> list[str]:
+                                        clip_close_boundary: bool = False,
+                                        kerf: float = 0.0) -> list[str]:
     pattern = RasterPattern(
         path=Path(item.get("path") or item.get("sourcePath") or "vector"),
         x=_float(item.get("x")),
@@ -3966,8 +4880,7 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
     if not active_paths:
         raise ValueError("Vektorlestirilmis desende aktif cizgi kalmadi.")
 
-    clean_name = str(item.get("name") or "vector").encode("ascii", errors="ignore").decode("ascii") or "vector"
-    clean_name = clean_name.replace("(", "_").replace(")", "_")
+    clean_name = gcode_comment_text(item.get("name"), "vector")
     op_label = "cut" if fallback_operation == "cut" else "engrave"
     lines = [f"({op_label} vector {clean_name} R{fmt(pattern.rotation)})", "S0"]
     vector_stats = item.get("vectorStats") or {}
@@ -4008,6 +4921,9 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
         lines.append(f"({op_label} vector fill end)")
         lines.append("S0")
 
+    path_entries: list[dict[str, Any]] = []
+    cut_entry_indexes: list[int] = []
+    raw_cut_paths: list[list[Point]] = []
     for vector_path in active_paths:
         current_operation = path_operation(vector_path)
         if current_operation == "engrave_fill":
@@ -4023,18 +4939,39 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
             close_boundary=clip_close_boundary and closed_source,
             closed_source=closed_source,
         ):
+            entry_index = len(path_entries)
+            path_entries.append(
+                {
+                    "operation": current_operation,
+                    "vectorPath": vector_path,
+                    "path": clipped,
+                    "closedSource": closed_source,
+                }
+            )
             if current_operation == "cut":
-                tab_count = _int(vector_path.get("tabCount", vector_path.get("microTabCount", 0)), 0)
-                tab_width = _float(vector_path.get("tabWidth", vector_path.get("microTabWidth", 0.0)), 0.0)
-                if closed_source and tab_count > 0 and tab_width > 0 and clipped and converter.dist(clipped[0], clipped[-1]) <= 0.05:
-                    lines.append(f"(micro tabs {tab_count} x {fmt(tab_width)}mm)")
-                    for tabbed in apply_micro_tabs_to_polyline(clipped, tab_count, tab_width):
-                        append_powered_polyline(lines, tabbed, cut_power, cut_feed, travel_feed)
-                else:
-                    append_powered_polyline(lines, clipped, cut_power, cut_feed, travel_feed)
+                cut_entry_indexes.append(entry_index)
+                raw_cut_paths.append(clipped)
+
+    for entry_index, kerfed_path in zip(cut_entry_indexes, apply_kerf_to_paths(raw_cut_paths, kerf)):
+        path_entries[entry_index]["path"] = kerfed_path
+
+    for entry in path_entries:
+        current_operation = entry["operation"]
+        vector_path = entry["vectorPath"]
+        clipped = entry["path"]
+        closed_source = bool(entry["closedSource"])
+        if current_operation == "cut":
+            tab_count = _int(vector_path.get("tabCount", vector_path.get("microTabCount", 0)), 0)
+            tab_width = _float(vector_path.get("tabWidth", vector_path.get("microTabWidth", 0.0)), 0.0)
+            if closed_source and tab_count > 0 and tab_width > 0 and clipped and converter.dist(clipped[0], clipped[-1]) <= 0.05:
+                lines.append(f"(micro tabs {tab_count} x {fmt(tab_width)}mm)")
+                for tabbed in apply_micro_tabs_to_polyline(clipped, tab_count, tab_width):
+                    append_powered_polyline(lines, tabbed, cut_power, cut_feed, travel_feed)
             else:
-                append_powered_polyline(lines, clipped, engrave_power, engrave_feed, travel_feed)
-            emitted += 1
+                append_powered_polyline(lines, clipped, cut_power, cut_feed, travel_feed)
+        else:
+            append_powered_polyline(lines, clipped, engrave_power, engrave_feed, travel_feed)
+        emitted += 1
     if emitted == 0 and clip_region is not None:
         lines.append(f"({op_label} vector clipped empty)")
         lines.append("S0")
@@ -4085,10 +5022,6 @@ def placement_boundary_margin(placement: dict[str, Any]) -> float:
 
 def placement_closes_boundary(placement: dict[str, Any]) -> bool:
     return bool(placement.get("clipCloseBoundary") or placement.get("boundaryClose"))
-
-
-def generation_has_bed_settings(settings: dict[str, Any]) -> bool:
-    return any(key in settings for key in ("bedWidth", "bedHeight", "margin", "gap", "quantity", "allowRotate", "availableArea", "materialArea"))
 
 
 def part_fits_bed(part: LoadedPart, bed_width: float, bed_height: float, margin: float, allow_rotate: bool) -> bool:
@@ -4223,8 +5156,146 @@ def pattern_bounds_crosses_clip_region(pattern: RasterPattern, clip_region: Clip
     return not pattern_bounds_inside_clip_region(pattern, clip_region)
 
 
+def iter_powered_toolpaths_from_gcode(lines: Iterable[str]) -> Iterator[list[Point]]:
+    active_path: list[Point] = []
+    current: Point = (0.0, 0.0)
+    motion_mode = 0
+    power = 0.0
+
+    def take_active_path() -> list[Point] | None:
+        nonlocal active_path
+        result = active_path if len(active_path) >= 2 else None
+        active_path = []
+        return result
+
+    for raw_item in lines:
+        for raw_line in str(raw_item).splitlines():
+            code = re.sub(r"\([^)]*\)", "", raw_line).split(";", 1)[0].strip()
+            words = [(letter.upper(), float(value)) for letter, value in GCODE_WORD_RE.findall(code)]
+            if not words:
+                continue
+
+            line_motion = motion_mode
+            line_power = power
+            x = current[0]
+            y = current[1]
+            has_axis = False
+            for letter, value in words:
+                if letter == "G":
+                    rounded = int(round(value))
+                    if rounded in {0, 1}:
+                        line_motion = rounded
+                    elif rounded in {2, 3}:
+                        line_motion = rounded
+                elif letter == "M" and int(round(value)) == 5:
+                    line_power = 0.0
+                elif letter == "S":
+                    line_power = value
+                elif letter == "X":
+                    x = value
+                    has_axis = True
+                elif letter == "Y":
+                    y = value
+                    has_axis = True
+
+            target = (x, y)
+            if has_axis:
+                if line_motion in {2, 3} and line_power > 0:
+                    raise ValueError("Nihai takim yolu dogrulanamayan yay hareketi iceriyor.")
+                if line_motion == 1 and line_power > 0 and converter.dist(current, target) > 1e-9:
+                    if not active_path or converter.dist(active_path[-1], current) > 1e-6:
+                        completed = take_active_path()
+                        if completed is not None:
+                            yield completed
+                        active_path = [current]
+                    active_path.append(target)
+                else:
+                    completed = take_active_path()
+                    if completed is not None:
+                        yield completed
+                current = target
+            elif line_power <= 0:
+                completed = take_active_path()
+                if completed is not None:
+                    yield completed
+
+            motion_mode = line_motion
+            power = line_power
+
+    completed = take_active_path()
+    if completed is not None:
+        yield completed
+
+
+def powered_toolpaths_from_gcode(lines: Iterable[str]) -> list[list[Point]]:
+    return list(iter_powered_toolpaths_from_gcode(lines))
+
+
+def validate_final_toolpaths(paths: Iterable[list[Point]],
+                             bed_width: float,
+                             bed_height: float,
+                             margin: float,
+                             available_area: ClipRegion | None) -> None:
+    def validate_point(point: Point) -> None:
+        x, y = point
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError("Nihai takim yolu gecersiz koordinat iceriyor.")
+        if not bounds_fit_bed((x, y, x, y), bed_width, bed_height, margin):
+            raise ValueError(
+                f"Nihai takim yolu tabla veya kenar payi disina cikiyor: X{fmt(x)} Y{fmt(y)}."
+            )
+        if available_area is not None and not clip_region_contains(point, available_area):
+            raise ValueError(
+                f"Nihai takim yolu cizilen kullanilabilir alanin disina cikiyor: X{fmt(x)} Y{fmt(y)}."
+            )
+
+    has_usable_path = False
+    for path in paths:
+        if len(path) < 2:
+            continue
+        has_usable_path = True
+        validate_point(path[0])
+        for start, end in zip(path, path[1:]):
+            validate_point(end)
+            if available_area is None:
+                continue
+            length = converter.dist(start, end)
+            divisions = max(1, int(math.ceil(length / 0.25)))
+            for index in range(1, divisions):
+                ratio = index / divisions
+                validate_point(
+                    (
+                        start[0] + (end[0] - start[0]) * ratio,
+                        start[1] + (end[1] - start[1]) * ratio,
+                    )
+                )
+    if not has_usable_path:
+        raise ValueError("G-code icin aktif kesim veya kazima yolu yok.")
+
+
+def toolpaths_fit_generation_area(paths: Iterable[list[Point]],
+                                  bed_width: float,
+                                  bed_height: float,
+                                  margin: float,
+                                  available_area: ClipRegion | None) -> bool:
+    try:
+        validate_final_toolpaths(paths, bed_width, bed_height, margin, available_area)
+    except ValueError:
+        return False
+    return True
+
+
 def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     settings = state.get("settings", {})
+    if not isinstance(settings, dict):
+        raise ValueError("G-code ayarlari gecersiz.")
+    missing_bed_settings = [
+        key
+        for key in ("bedWidth", "bedHeight")
+        if key not in settings or settings.get(key) in (None, "")
+    ]
+    if missing_bed_settings:
+        raise ValueError("G-code uretimi icin tabla genisligi ve yuksekligi zorunludur.")
     output_path = Path(state.get("outputPath") or "")
     if not output_path:
         raise ValueError("Cikti yolu secilmedi.")
@@ -4251,13 +5322,12 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             missing = source_path if source_path else part_data.get("name") or part_id
             raise ValueError(f"DXF bulunamadi ve projede gomulu geometri yok: {missing}")
 
-    validate_bed = generation_has_bed_settings(settings)
     bed_width = _float(settings.get("bedWidth"), 0.0)
     bed_height = _float(settings.get("bedHeight"), 0.0)
     margin = max(0.0, _float(settings.get("margin"), 0.0))
     allow_rotate = bool(settings.get("allowRotate", True))
     available_area = normalize_available_area(settings, margin)
-    if validate_bed and (bed_width <= 0 or bed_height <= 0 or bed_width - margin * 2 <= 0 or bed_height - margin * 2 <= 0):
+    if bed_width <= 0 or bed_height <= 0 or bed_width - margin * 2 <= 0 or bed_height - margin * 2 <= 0:
         raise ValueError("Tabla olcusu veya kenar payi gecersiz.")
 
     travel_feed = _float(settings.get("travelFeed"), 3000.0)
@@ -4266,6 +5336,9 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     engrave_power = _int(settings.get("engravePower"), 250)
     engrave_feed = _float(settings.get("engraveFeed"), 1800.0)
     converter.validate_power(engrave_power)
+    laser_cmd = str(settings.get("laserCmd") or "M4").strip().upper()
+    if laser_cmd not in {"M3", "M4"}:
+        raise ValueError("Lazer komutu yalniz M3 veya M4 olabilir.")
     # Kerf: isin kalinligi telafisi (0 = kapali). Guvenli ust sinir 1 mm.
     kerf = min(1.0, max(0.0, _float(settings.get("kerf"), 0.0)))
 
@@ -4273,32 +5346,54 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     clip_data_by_placement: dict[str, dict[str, Any]] = {}
     pattern_lines: list[str] = []
     active_output_count = 0
-    for placement in state.get("placements", []):
+    excluded_object_count = 0
+    generated_pattern_count = 0
+    placements_data = state.get("placements", [])
+    known_placement_ids = {str(placement.get("id") or "") for placement in placements_data}
+    non_production_placement_ids: set[str] = set()
+    excluded_placement_ids: set[str] = set()
+    for placement in placements_data:
+        placement_id = str(placement.get("id") or "")
         operation = normalize_operation(placement.get("operation"), "cut")
         if operation == "ignore":
+            non_production_placement_ids.add(placement_id)
             continue
         part_id = str(placement["partId"])
         part = parts_by_id.get(part_id)
         if part is None:
             raise ValueError(f"Parca bulunamadi: {part_id}")
         transformed = transform_paths(part, placement)
-        if validate_bed:
-            if not part_fits_bed(part, bed_width, bed_height, margin, allow_rotate):
-                raise ValueError(f"Parca aktif tabla alanina fiziksel olarak sigmiyor: {part.name}")
-            if not bounds_fit_active_area(transformed_bounds(transformed), bed_width, bed_height, margin, available_area):
-                raise ValueError(f"Parca tabla disinda: {part.name}")
+        if (
+            not part_fits_bed(part, bed_width, bed_height, margin, allow_rotate)
+            or not bounds_fit_active_area(transformed_bounds(transformed), bed_width, bed_height, margin, available_area)
+        ):
+            non_production_placement_ids.add(placement_id)
+            excluded_placement_ids.add(placement_id)
+            excluded_object_count += 1
+            continue
         if operation == "cut":
             # Kerf telafisi yalniz KESIMDE ve yerlesim (parca) bazinda:
             # delik tespiti ayni parcanin yollari arasinda yapilmali.
-            cut_paths.extend(apply_kerf_to_paths(transformed, kerf))
+            placement_paths = apply_kerf_to_paths(transformed, kerf)
+            if not toolpaths_fit_generation_area(placement_paths, bed_width, bed_height, margin, available_area):
+                non_production_placement_ids.add(placement_id)
+                excluded_placement_ids.add(placement_id)
+                excluded_object_count += 1
+                continue
+            cut_paths.extend(placement_paths)
         else:
+            if not toolpaths_fit_generation_area(transformed, bed_width, bed_height, margin, available_area):
+                non_production_placement_ids.add(placement_id)
+                excluded_placement_ids.add(placement_id)
+                excluded_object_count += 1
+                continue
             for path in transformed:
                 append_powered_polyline(pattern_lines, path, engrave_power, engrave_feed, travel_feed)
         active_output_count += len(transformed)
         # Kirpma sinirlari TASARIM sinirinda kalir (kerf'ten etkilenmez):
         # desen, parcanin tasarlanan kenarina gore kirpilir.
         placement_clip_polygons = closed_clip_polygons(transformed)
-        clip_data_by_placement[str(placement.get("id") or "")] = {
+        clip_data_by_placement[placement_id] = {
             "polygons": placement_clip_polygons,
             "margin": placement_boundary_margin(placement),
             "close": placement_closes_boundary(placement),
@@ -4310,6 +5405,13 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         kind = str(item.get("kind") or "").lower()
         operation = normalize_operation(item.get("operation"), "engrave_line")
         if operation == "ignore":
+            continue
+        parent_id = str(item.get("parentId") or "")
+        if parent_id and parent_id not in known_placement_ids:
+            raise ValueError(f"Desenin bagli oldugu DXF parcasi bulunamadi: {item.get('name') or item.get('path')}")
+        if parent_id in non_production_placement_ids:
+            if parent_id in excluded_placement_ids:
+                excluded_object_count += 1
             continue
         if kind not in {"svg", "vector"} and operation == "cut":
             operation = "engrave_fill"
@@ -4338,9 +5440,6 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             bidirectional=bool(item.get("bidirectional", True)),
         )
         pattern_bounds = raster_pattern_bounds(pattern)
-        if validate_bed and not bounds_fit_active_area(pattern_bounds, bed_width, bed_height, margin, available_area):
-            raise ValueError(f"Desen tabla disinda: {item.get('name') or pattern.path.name}")
-        parent_id = str(item.get("parentId") or "")
         extra_clip_margin = max(0.0, _float(item.get("clipMargin"), 0.0))
         clip_close_boundary = bool(item.get("clipCloseBoundary"))
         if parent_id:
@@ -4364,6 +5463,7 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
                     clip_close_boundary = clip_close_boundary or bool(placement_clip_data.get("close"))
             clip_margin = (max(placement_margins) if placement_margins else 0.0) + extra_clip_margin
         clip_region = ClipRegion(clip_polygons, clip_margin) if clip_polygons else None
+        item_lines: list[str]
         if kind == "vector" or (kind == "svg" and item.get("vectorPaths")):
             vector_item = {
                 **item,
@@ -4375,38 +5475,49 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
                 "engraveFeed": item.get("feed", engrave_feed),
                 "vectorEngraveMode": "fill" if operation == "engrave_fill" else "contour",
             }
-            pattern_lines.extend(
-                build_embedded_vector_engrave_lines(
-                    vector_item,
-                    travel_feed,
-                    gcode_operation,
-                    clip_region,
-                    clip_close_boundary,
-                )
+            item_lines = build_embedded_vector_engrave_lines(
+                vector_item,
+                travel_feed,
+                gcode_operation,
+                clip_region,
+                clip_close_boundary,
+                kerf,
             )
         elif kind == "svg" or pattern.path.suffix.lower() == ".svg":
-            pattern_lines.extend(
-                build_svg_vector_engrave_lines(
-                    pattern,
-                    travel_feed,
-                    gcode_operation,
-                    clip_region,
-                    clip_close_boundary,
-                )
+            item_lines = build_svg_vector_engrave_lines(
+                pattern,
+                travel_feed,
+                gcode_operation,
+                clip_region,
+                clip_close_boundary,
+                kerf,
             )
         else:
-            pattern_lines.extend(build_raster_engrave_lines(pattern, travel_feed, clip_region))
+            item_lines = build_raster_engrave_lines(pattern, travel_feed, clip_region)
+        if not toolpaths_fit_generation_area(
+            iter_powered_toolpaths_from_gcode(item_lines),
+            bed_width,
+            bed_height,
+            margin,
+            available_area,
+        ):
+            excluded_object_count += 1
+            continue
+        pattern_lines.extend(item_lines)
         active_output_count += 1
+        generated_pattern_count += 1
 
     if active_output_count == 0:
         raise ValueError("G-code icin aktif kesim veya kazima yolu yok.")
+
+    final_toolpaths = chain(cut_paths, iter_powered_toolpaths_from_gcode(pattern_lines))
+    validate_final_toolpaths(final_toolpaths, bed_width, bed_height, margin, available_area)
 
     rapid_feed_value = settings.get("rapidFeed")
     rapid_feed = None if rapid_feed_value in (None, "") else _float(rapid_feed_value)
     pierce_delay = _float(settings.get("pierceDelay"), 0.0)
     overcut = _float(settings.get("overcut"), 0.8)
     passes = max(1, _int(settings.get("passes"), 1))
-    laser_cmd = str(settings.get("laserCmd") or "M4").upper()
     air_assist_command = str(settings.get("airAssistCommand") or "M8").upper() if bool(settings.get("airAssist", False)) else None
 
     converter.write_gcode(
@@ -4430,7 +5541,8 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "outputPath": str(output_path),
         "cutPathCount": len(cut_paths),
-        "patternCount": len([item for item in state.get("patterns", []) if normalize_operation(item.get("operation"), "engrave_line") != "ignore"]),
+        "patternCount": generated_pattern_count,
+        "excludedObjectCount": excluded_object_count,
         "cutWidth": max_x - min_x,
         "cutHeight": max_y - min_y,
         "lineCount": len(output_path.read_text(encoding="utf-8").splitlines()),

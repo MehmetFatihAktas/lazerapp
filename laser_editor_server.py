@@ -322,6 +322,8 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                 self._open_raster_image()
             elif self.path == "/api/vectorize-image":
                 self._vectorize_image()
+            elif self.path == "/api/classify-vector-regions":
+                self._classify_vector_regions()
             elif self.path == "/api/save-vector-svg":
                 self._save_vector_svg()
             elif self.path == "/api/save-project":
@@ -532,6 +534,8 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                 requested_mode = "auto"
             elif product_mode == "line_engrave":
                 requested_mode = "centerline"
+            elif product_mode == "cad_line_art":
+                requested_mode = "cad_centerline"
             elif product_mode in {"filled_ornament", "fill_motif"}:
                 requested_mode = "potrace"
             elif product_mode == "photo_engrave":
@@ -562,6 +566,26 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
             if product_mode:
                 vector.setdefault("settings", {})["productMode"] = product_mode
                 vector.setdefault("stats", {})["productMode"] = product_mode
+            if product_mode == "cad_line_art":
+                classification = core.classify_vector_region_boundaries(
+                    vector.get("vectorPaths", []),
+                    float(vector.get("sourceWidth", 1.0)),
+                    float(vector.get("sourceHeight", 1.0)),
+                    seeds=[],
+                    include_exterior=True,
+                )
+                cut_ids = set(classification.get("cutPathIds", []))
+                exterior_ids = set(classification.get("exteriorPathIds", []))
+                for vector_path in vector.get("vectorPaths", []):
+                    path_id = str(vector_path.get("id") or "")
+                    vector_path["operation"] = "cut" if path_id in cut_ids else "engrave_line"
+                    vector_path["regionOperation"] = "exterior" if path_id in exterior_ids else "inner"
+                vector["cadLineArt"] = True
+                vector["regionClassificationMode"] = "exterior-cut"
+                vector["cutRegionSeeds"] = []
+                vector["regionClassification"] = classification
+                vector.setdefault("stats", {})["regionCutPaths"] = len(cut_ids)
+                vector.setdefault("stats", {})["regionEngravePaths"] = max(0, len(vector.get("vectorPaths", [])) - len(cut_ids))
             if payload.get("name"):
                 vector["name"] = str(payload.get("name"))
             self._json({"ok": True, "vector": vector})
@@ -571,6 +595,18 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                     temp_path.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+    def _classify_vector_regions(self) -> None:
+        payload = self._read_json()
+        result = core.classify_vector_region_boundaries(
+            payload.get("vectorPaths", []),
+            float(payload.get("sourceWidth", 1.0)),
+            float(payload.get("sourceHeight", 1.0)),
+            seeds=payload.get("seeds", []),
+            include_exterior=bool(payload.get("includeExterior", True)),
+            max_dimension=int(float(payload.get("maxDimension", 1600))),
+        )
+        self._json({"ok": True, "classification": result})
 
     def _save_vector_svg(self) -> None:
         payload = self._read_json()

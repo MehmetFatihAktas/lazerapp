@@ -139,6 +139,90 @@ def test_vectorize_image_returns_debug_stages_and_metadata():
         assert_true(key in sample, f"path metadata missing: {key}")
 
 
+def test_cad_centerline_mode_returns_single_line_metadata():
+    with TemporaryDirectory() as temp_dir:
+        image_path = Path(temp_dir) / "cad-line-art.png"
+        image = Image.new("RGB", (240, 180), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle([15, 15, 225, 165], radius=28, outline="black", width=5)
+        draw.ellipse([65, 45, 175, 145], outline="black", width=5)
+        draw.line([28, 90, 210, 90], fill="black", width=5)
+        draw.ellipse([112, 58, 117, 63], fill="black")
+        image.save(image_path)
+
+        data = core.vectorize_image(
+            image_path,
+            mode="cad_centerline",
+            threshold_mode="otsu",
+            blur=0,
+            contrast=1.08,
+            morph_close=1,
+            simplify=0.9,
+            smooth=3,
+            min_area=4,
+            min_length=3,
+            max_contours=500,
+            stitch_gap=0.5,
+            remove_border=False,
+            background_normalize=False,
+            denoise=0,
+        )
+
+    active = [item for item in data["vectorPaths"] if not item.get("removed")]
+    assert_true(active, "CAD centerline mode should produce usable paths")
+    assert_true(data["stats"]["traceEngine"] == "centerline", "CAD line art must use the centerline engine")
+    assert_true(data["stats"]["cadCenterline"] is True, "CAD centerline metadata should be explicit")
+    assert_true(data["stats"].get("cadTraceScale", 1) > 1, "clean CAD line art should use high-resolution tracing")
+    assert_true(data["stats"].get("cadTopologyPreserved") is True, "CAD tracing should preserve real short junction branches")
+    assert_true(data["stats"].get("prunedSpurPixels") == 0, "CAD tracing must not prune legitimate short connections")
+    assert_true(data["settings"]["cadCenterline"] is True, "saved settings should preserve CAD centerline mode")
+    assert_true(data["sourceWidth"] == 240 and data["sourceHeight"] == 180, "trace upscaling must not change source coordinates")
+    assert_true(data["stats"]["modeMismatch"] is False, "CAD centerline must not be reported as a mode mismatch")
+    assert_true(data["stats"].get("preservedDotDetails", 0) >= 1, "isolated eye/dot details should survive centerline thinning")
+    assert_true(any("preserved-dot" in item.get("warnings", []) for item in active), "preserved dots should be identifiable")
+
+
+def test_vector_region_classifier_supports_exterior_marked_and_frame_removal():
+    paths = [
+        {
+            "id": "outer",
+            "closed": True,
+            "points": [[10, 10], [90, 10], [90, 90], [10, 90]],
+        },
+        {
+            "id": "inner",
+            "closed": True,
+            "points": [[30, 30], [70, 30], [70, 70], [30, 70]],
+        },
+        {
+            "id": "detail",
+            "closed": False,
+            "points": [[40, 50], [60, 50]],
+        },
+    ]
+
+    exterior = core.classify_vector_region_boundaries(paths, 100, 100)
+    assert_true(exterior["exteriorPathIds"] == ["outer"], f"only the outer frame should cut: {exterior}")
+    assert_true("inner" not in exterior["cutPathIds"] and "detail" not in exterior["cutPathIds"], "inner details should engrave")
+
+    marked = core.classify_vector_region_boundaries(paths, 100, 100, seeds=[{"x": 50, "y": 40}])
+    assert_true("inner" in marked["markedPathIds"], "marking an enclosed area should cut its boundary")
+    assert_true("detail" not in marked["markedPathIds"], "an open detail inside the area should remain engraving")
+
+    paths[0]["removed"] = True
+    exposed = core.classify_vector_region_boundaries(paths, 100, 100)
+    assert_true(exposed["exteriorPathIds"] == ["inner"], "the new large exterior contour should become cut")
+    assert_true(exposed["cutPathIds"] == ["inner"], "only structural exterior contours should be promoted")
+    assert_true("inner" in exposed["adjacentExteriorPathIds"], "the classifier may detect exterior contact without turning it into cut")
+    assert_true("detail" not in exposed["cutPathIds"], "small engraving details must stay out of automatic cutting")
+    assert_true(exposed["stats"]["structuralExteriorPaths"] == 1, "the promoted structural contour count should be explicit")
+    assert_true(exposed["stats"]["exteriorPromotionSuppressed"] is True, "removed frame history should suppress bulk detail promotion")
+
+    explicitly_marked = core.classify_vector_region_boundaries(paths, 100, 100, seeds=[{"x": 50, "y": 40}])
+    assert_true("inner" in explicitly_marked["cutPathIds"], "the user must still be able to mark an interior area for cutting")
+    assert_true("detail" not in explicitly_marked["cutPathIds"], "open details inside a marked area should remain engraving")
+
+
 def test_background_normalization_rescues_gradient_photo():
     with TemporaryDirectory() as temp_dir:
         image_path = Path(temp_dir) / "gradient_line_art.png"
@@ -168,9 +252,61 @@ def test_background_normalization_rescues_gradient_photo():
             stitch_gap=6,
             background_normalize=True,
         )
-
     assert_true(flat["stats"]["pathsKept"] > 0, "background normalization should prevent gradient photos from becoming empty")
     assert_true(any(item["name"] == "Isik Duzeltme" for item in flat["debugPreviews"]), "debug previews should show the normalized stage")
+
+
+def test_clean_line_art_preserves_fine_details():
+    with TemporaryDirectory() as temp_dir:
+        image_path = Path(temp_dir) / "clean_family_tree.png"
+        image = Image.new("RGB", (512, 512), "white")
+        draw = ImageDraw.Draw(image)
+        draw.ellipse([54, 42, 458, 446], outline="black", width=3)
+        draw.line([256, 94, 256, 410], fill="black", width=3)
+        for center_x, center_y in ((160, 190), (352, 190), (160, 330), (352, 330)):
+            draw.ellipse([center_x - 42, center_y - 32, center_x + 42, center_y + 32], outline="black", width=2)
+            for offset in (-18, -9, 0, 9, 18):
+                draw.line([center_x + offset, center_y - 7, center_x + offset + 5, center_y + 1], fill="black", width=1)
+        draw.text((198, 438), "BIZ BIR AILEYIZ", fill="black")
+        image.save(image_path)
+
+        data = core.vectorize_image(
+            image_path,
+            mode="auto",
+            threshold_mode="otsu",
+            threshold=140,
+            blur=1,
+            contrast=1.08,
+            morph_close=1,
+            denoise=5,
+            min_area=35,
+            min_length=10,
+            simplify=0.45,
+            smooth=3,
+            max_contours=2500,
+            stitch_gap=0.8,
+            background_normalize=True,
+        )
+        centerline = core.vectorize_image(
+            image_path,
+            mode="centerline",
+            threshold_mode="otsu",
+            blur=0,
+            denoise=4,
+            min_length=8,
+            simplify=0.6,
+            stitch_gap=2,
+            background_normalize=True,
+        )
+
+    assert_true(data["stats"].get("cleanLineArt") is True, "uniform white line art should be detected")
+    assert_true(data["stats"].get("detailPreservation") is True, "clean line art should enable detail preservation")
+    assert_true(data["settings"]["backgroundNormalize"] is False, "illumination normalization should be skipped for clean line art")
+    assert_true(data["settings"]["denoise"] == 0, "denoise should not erase clean one-pixel details")
+    assert_true(data["settings"]["minLength"] <= 5, "short real contours should survive a coarse preset")
+    assert_true(data["stats"].get("pointsKept", 0) > 500, "fine line art should retain a substantial vector point set")
+    assert_true(centerline["settings"]["minLength"] <= 2.5, "centerline mode should keep short clean details")
+    assert_true(centerline["settings"]["stitchGap"] <= 0.5, "centerline mode should not merge nearby clean details")
 
 
 def test_large_filled_border_component_is_not_deleted_as_frame():
@@ -230,6 +366,130 @@ def test_skeleton_spur_pruning_removes_short_hairs():
     assert_true(len(active) <= 2, "hairy single stroke should not become many separate paths")
     assert_true(not short_paths, "short hair paths should not survive as engrave lines")
     assert_true(max(item["length"] for item in active) >= 90, "main stroke should remain")
+
+
+def test_centerline_endpoint_snap_closes_natural_gap_without_sideways_join():
+    natural = [
+        {"id": "stem", "points": [[0, 5], [4, 5]], "closed": False, "removed": False},
+        {"id": "edge", "points": [[5, 0], [5, 10]], "closed": False, "removed": False},
+    ]
+    snapped, stats = core.snap_open_vector_endpoints_to_paths(natural, max_gap=2.0, max_angle=70.0)
+    assert_true(stats["snappedCenterlineEndpoints"] == 1, f"one natural endpoint gap should close: {stats}")
+    assert_true(core._point_distance(snapped[0]["points"][-1], [5, 5]) < 1e-6, "stem should meet the target segment exactly")
+
+    sideways = [
+        {"id": "stem", "points": [[0, 0], [0, 4]], "closed": False, "removed": False},
+        {"id": "shape", "points": [[1, 3], [3, 3], [3, 5], [1, 5]], "closed": True, "removed": False},
+    ]
+    unchanged, sideways_stats = core.snap_open_vector_endpoints_to_paths(sideways, max_gap=2.0, max_angle=70.0)
+    assert_true(sideways_stats["snappedCenterlineEndpoints"] == 0, "a sideways nearby contour must stay separate")
+    assert_true(unchanged[0]["points"][-1] == [0.0, 4.0], "rejected endpoint should not move")
+
+
+def test_centerline_micro_hole_fill_removes_pixel_artifact_but_keeps_real_region():
+    binary = core.np.zeros((32, 32), dtype=core.np.uint8)
+    core.cv2.rectangle(binary, (4, 4), (27, 27), 255, -1)
+    binary[10, 10] = 0
+    binary[16:21, 16:21] = 0
+
+    filled, stats = core.fill_centerline_micro_holes(binary, stroke_width=2.5)
+
+    assert_true(filled[10, 10] == 255, "a one-pixel enclosed anti-alias hole should be filled")
+    assert_true(filled[18, 18] == 0, "a meaningful enclosed region must remain open")
+    assert_true(stats["filledCenterlineMicroHoles"] == 1, f"only the micro hole should be filled: {stats}")
+
+
+def test_cad_centerline_preserves_dense_outlined_details():
+    with TemporaryDirectory() as temp_dir:
+        image_path = Path(temp_dir) / "dense-line-art.png"
+        source = core.np.full((140, 180), 255, dtype=core.np.uint8)
+        core.cv2.rectangle(source, (54, 40), (82, 104), 0, 3)
+        core.cv2.line(source, (10, 104), (168, 104), 0, 3)
+        core.cv2.line(source, (54, 40), (28, 18), 0, 3)
+        core.cv2.line(source, (82, 68), (112, 46), 0, 3)
+        core.cv2.line(source, (61, 104), (56, 113), 0, 2)
+        core.cv2.line(source, (70, 104), (70, 114), 0, 2)
+        core.cv2.line(source, (78, 104), (84, 113), 0, 2)
+        core.cv2.imwrite(str(image_path), source)
+
+        data = core.vectorize_image(
+            image_path,
+            threshold=140,
+            threshold_mode="otsu",
+            mode="cad_centerline",
+            blur=0,
+            min_area=1,
+            min_length=0,
+            simplify=0.25,
+            smooth=0,
+            invert=True,
+            max_contours=1000,
+            contrast=1.0,
+            morph_open=0,
+            morph_close=0,
+            max_dimension=180,
+            remove_border=False,
+            stitch_gap=0.25,
+            background_normalize=False,
+            denoise=0,
+        )
+
+    traced = core.np.zeros_like(source)
+    for item in data["vectorPaths"]:
+        if item.get("removed") or len(item.get("points", [])) < 2:
+            continue
+        points = core.np.array(item["points"], dtype=core.np.float32).round().astype(core.np.int32)
+        core.cv2.polylines(traced, [points], bool(item.get("closed")), 255, 1)
+    expected_binary = core.cv2.threshold(source, 140, 255, core.cv2.THRESH_BINARY_INV)[1]
+    expected_skeleton = core.thin_binary(expected_binary)
+    distance_to_trace = core.cv2.distanceTransform((traced == 0).astype(core.np.uint8), core.cv2.DIST_L2, 3)
+    covered = distance_to_trace[expected_skeleton > 0] <= 2.0
+    coverage = float(core.np.mean(covered)) if covered.size else 0.0
+    assert_true(coverage >= 0.94, f"CAD centerline must preserve dense source strokes, got {coverage:.3f}")
+
+
+def test_cad_centerline_smoothing_keeps_junction_anchors():
+    skeleton = core.np.zeros((130, 150), dtype=core.np.uint8)
+    core.cv2.polylines(
+        skeleton,
+        [core.np.array([[12, 72], [48, 46], [76, 58], [118, 24]], dtype=core.np.int32)],
+        False,
+        255,
+        1,
+    )
+    core.cv2.line(skeleton, (76, 58), (106, 105), 255, 1)
+
+    paths, stats = core.trace_skeleton_vectors(
+        skeleton,
+        min_length=0,
+        simplify=0.9,
+        smooth=3,
+        max_contours=40,
+        stitch_gap=0.5,
+        skeleton=skeleton,
+        trim_open_ends=False,
+        post_simplify_epsilon=0.25,
+        preserve_junctions=True,
+    )
+
+    ys, xs = core.np.where(skeleton > 0)
+    pixels = {(int(x), int(y)) for x, y in zip(xs, ys)}
+    offsets = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+    junctions = {
+        pixel
+        for pixel in pixels
+        if len(core._skeleton_neighbors(pixels, pixel, offsets)) >= 3
+    }
+    traced_points = {
+        (int(round(point[0])), int(round(point[1])))
+        for path in paths
+        if not path.get("removed")
+        for point in path.get("points", [])
+    }
+
+    assert_true(junctions, "synthetic detail must contain a real graph junction")
+    assert_true(stats.get("preservedJunctionAnchors", 0) >= len(junctions), f"junction anchors must be reported: {stats}")
+    assert_true(junctions <= traced_points, f"smoothing must not move shared graph junctions: {junctions - traced_points}")
 
 
 def test_centerline_solidify_collapses_double_edge_bands():
@@ -1218,7 +1478,32 @@ def test_pattern_point_supports_mirroring():
     assert_true(core.pattern_point(mirror_y, 0, 0) == (0, 5), "mirror_y should flip local y across pattern center")
 
 
-def test_generate_rejects_active_placement_outside_bed():
+def test_generate_excludes_active_placement_outside_bed():
+    with TemporaryDirectory() as temp_dir:
+        dxf_path = Path(temp_dir) / "part.dxf"
+        output_path = Path(temp_dir) / "job.nc"
+        write_rect_dxf(dxf_path)
+
+        result = core.generate_from_state(
+            {
+                "parts": [{"id": "p1", "path": str(dxf_path)}],
+                "placements": [
+                    {"id": "inside", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
+                    {"id": "outside", "partId": "p1", "x": 50, "y": 5, "rotation": 0, "operation": "cut"},
+                ],
+                "patterns": [],
+                "settings": base_generation_settings(),
+                "outputPath": str(output_path),
+            }
+        )
+
+        points = gcode_xy_points(output_path.read_text(encoding="utf-8").splitlines())
+        assert_true(result["cutPathCount"] == 1, "only the inside placement should be generated")
+        assert_true(result["excludedObjectCount"] == 1, "outside placement should be reported as excluded")
+        assert_true(points and all(x <= 22.001 and y <= 12.001 for x, y in points), f"outside coordinates must not enter G-code: {points}")
+
+
+def test_generate_rejects_when_every_active_object_is_outside():
     with TemporaryDirectory() as temp_dir:
         dxf_path = Path(temp_dir) / "part.dxf"
         output_path = Path(temp_dir) / "job.nc"
@@ -1228,14 +1513,58 @@ def test_generate_rejects_active_placement_outside_bed():
             core.generate_from_state(
                 {
                     "parts": [{"id": "p1", "path": str(dxf_path)}],
-                    "placements": [{"id": "pl1", "partId": "p1", "x": 50, "y": 5, "rotation": 0, "operation": "cut"}],
+                    "placements": [{"id": "outside", "partId": "p1", "x": 50, "y": 5, "rotation": 0, "operation": "cut"}],
                     "patterns": [],
                     "settings": base_generation_settings(),
                     "outputPath": str(output_path),
                 }
             )
 
-        assert_raises_contains(run, "tabla disinda")
+        assert_raises_contains(run, "aktif kesim veya kazima")
+        assert_true(not output_path.exists(), "an all-outside job must not create an empty G-code file")
+
+
+def test_generate_excludes_pattern_bound_to_outside_placement():
+    with TemporaryDirectory() as temp_dir:
+        dxf_path = Path(temp_dir) / "part.dxf"
+        output_path = Path(temp_dir) / "job.nc"
+        write_rect_dxf(dxf_path)
+
+        result = core.generate_from_state(
+            {
+                "parts": [{"id": "p1", "path": str(dxf_path)}],
+                "placements": [
+                    {"id": "inside", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
+                    {"id": "outside", "partId": "p1", "x": 50, "y": 5, "rotation": 0, "operation": "cut"},
+                ],
+                "patterns": [
+                    {
+                        "id": "child",
+                        "kind": "vector",
+                        "path": "embedded-vector",
+                        "name": "outside-child",
+                        "parentId": "outside",
+                        "x": 50,
+                        "y": 5,
+                        "width": 20,
+                        "height": 10,
+                        "sourceWidth": 20,
+                        "sourceHeight": 10,
+                        "operation": "engrave_line",
+                        "vectorPaths": [
+                            {"operation": "engrave_line", "closed": False, "points": [[0, 5], [20, 5]]},
+                        ],
+                    }
+                ],
+                "settings": base_generation_settings(),
+                "outputPath": str(output_path),
+            }
+        )
+
+        text = output_path.read_text(encoding="utf-8")
+        assert_true(result["cutPathCount"] == 1 and result["patternCount"] == 0, "only the safe parent should generate")
+        assert_true(result["excludedObjectCount"] == 2, "outside parent and its child pattern should both be reported")
+        assert_true("outside-child" not in text, "child of an excluded placement must not enter G-code")
 
 
 def test_generate_validates_available_area_polygon():
@@ -1267,18 +1596,21 @@ def test_generate_validates_available_area_polygon():
         )
         assert_true(output_path.exists(), "placement inside available area should generate")
 
-        def run_outside():
-            core.generate_from_state(
-                {
-                    "parts": [{"id": "p1", "path": str(dxf_path)}],
-                    "placements": [{"id": "pl1", "partId": "p1", "x": 24, "y": 5, "rotation": 0, "operation": "cut"}],
-                    "patterns": [],
-                    "settings": settings,
-                    "outputPath": str(output_path),
-                }
-            )
-
-        assert_raises_contains(run_outside, "tabla disinda")
+        result = core.generate_from_state(
+            {
+                "parts": [{"id": "p1", "path": str(dxf_path)}],
+                "placements": [
+                    {"id": "inside", "partId": "p1", "x": 5, "y": 5, "rotation": 0, "operation": "cut"},
+                    {"id": "outside", "partId": "p1", "x": 24, "y": 5, "rotation": 0, "operation": "cut"},
+                ],
+                "patterns": [],
+                "settings": settings,
+                "outputPath": str(output_path),
+            }
+        )
+        points = gcode_xy_points(output_path.read_text(encoding="utf-8").splitlines())
+        assert_true(result["excludedObjectCount"] == 1, "placement outside custom material area should be excluded")
+        assert_true(points and all(x <= 25.001 for x, _y in points), f"custom-area escape must not enter G-code: {points}")
 
 
 def test_generate_skips_ignored_outside_placements():
@@ -1680,16 +2012,255 @@ def test_generate_uses_embedded_part_geometry_when_dxf_path_is_missing():
         assert_true("X2 Y2" in text and "X12 Y10" in text, "embedded geometry coordinates should be emitted")
 
 
+def test_generate_requires_bed_dimensions():
+    with TemporaryDirectory() as tmp:
+        output = Path(tmp) / "missing-bed.nc"
+
+        def run():
+            core.generate_from_state(
+                {
+                    "parts": [],
+                    "placements": [],
+                    "patterns": [],
+                    "settings": {"feed": 500, "power": 900, "laserCmd": "M4"},
+                    "outputPath": str(output),
+                }
+            )
+
+        assert_raises_contains(run, "tabla genisligi ve yuksekligi")
+        assert_true(not output.exists(), "missing bed dimensions must fail before writing G-code")
+
+
+def test_generate_rejects_laser_command_injection():
+    with TemporaryDirectory() as tmp:
+        output = Path(tmp) / "injected.nc"
+        settings = {
+            **base_generation_settings(),
+            "laserCmd": "M4\nG0 X999 Y999\nM3 S1000",
+        }
+
+        def run():
+            core.generate_from_state(
+                {
+                    "parts": [
+                        {
+                            "id": "p1",
+                            "name": "embedded.dxf",
+                            "width": 10,
+                            "height": 8,
+                            "paths": [[[0, 0], [10, 0], [10, 8], [0, 8], [0, 0]]],
+                        }
+                    ],
+                    "placements": [{"id": "pl1", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"}],
+                    "patterns": [],
+                    "settings": settings,
+                    "outputPath": str(output),
+                }
+            )
+
+        assert_raises_contains(run, "M3 veya M4")
+        assert_true(not output.exists(), "invalid laser command must not create a G-code file")
+
+        direct_output = Path(tmp) / "direct-injected.nc"
+
+        def run_direct():
+            core.converter.write_gcode(
+                output_path=direct_output,
+                paths=[[(1, 1), (2, 2)]],
+                feed=500,
+                power=900,
+                rapid_feed=None,
+                laser_cmd="M4\nG0 X999 Y999",
+                pierce_delay=0,
+                comments=True,
+            )
+
+        assert_raises_contains(run_direct, "M3 or M4")
+        assert_true(not direct_output.exists(), "low-level writer must also reject laser command injection")
+
+
+def test_generate_excludes_vector_geometry_outside_declared_pattern_bounds():
+    with TemporaryDirectory() as tmp:
+        output = Path(tmp) / "escaped-vector.nc"
+        settings = {**base_generation_settings(), "bedWidth": 100, "bedHeight": 100, "margin": 0}
+
+        result = core.generate_from_state(
+            {
+                "parts": [
+                    {
+                        "id": "safe",
+                        "name": "safe.dxf",
+                        "width": 10,
+                        "height": 8,
+                        "paths": [[[0, 0], [10, 0], [10, 8], [0, 8], [0, 0]]],
+                    }
+                ],
+                "placements": [{"id": "safe-pl", "partId": "safe", "x": 2, "y": 2, "rotation": 0, "operation": "cut"}],
+                "patterns": [
+                    {
+                        "id": "pat1",
+                        "kind": "vector",
+                        "path": "embedded-vector",
+                        "name": "escaped-vector",
+                        "x": 10,
+                        "y": 10,
+                        "width": 20,
+                        "height": 20,
+                        "sourceWidth": 20,
+                        "sourceHeight": 20,
+                        "operation": "cut",
+                        "vectorPaths": [
+                            {"operation": "cut", "closed": False, "points": [[0, 10], [500, 10]]},
+                        ],
+                    }
+                ],
+                "settings": settings,
+                "outputPath": str(output),
+            }
+        )
+
+        points = gcode_xy_points(output.read_text(encoding="utf-8").splitlines())
+        assert_true(result["cutPathCount"] == 1, "safe DXF should still generate")
+        assert_true(result["patternCount"] == 0 and result["excludedObjectCount"] == 1, "escaped vector should be excluded as one object")
+        assert_true(points and all(x <= 12.001 and y <= 10.001 for x, y in points), f"escaped vector coordinates must not enter G-code: {points}")
+
+
+def test_generate_excludes_toolpath_that_kerf_pushes_outside_bed():
+    with TemporaryDirectory() as tmp:
+        output = Path(tmp) / "post-kerf-outside.nc"
+        settings = {
+            **base_generation_settings(),
+            "bedWidth": 30,
+            "bedHeight": 20,
+            "margin": 0,
+            "kerf": 0.2,
+        }
+
+        result = core.generate_from_state(
+            {
+                "parts": [
+                    {
+                        "id": "p1",
+                        "name": "square.dxf",
+                        "width": 10,
+                        "height": 10,
+                        "paths": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+                    }
+                ],
+                "placements": [
+                    {"id": "safe", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
+                    {"id": "edge", "partId": "p1", "x": 20, "y": 0, "rotation": 0, "operation": "cut"},
+                ],
+                "patterns": [],
+                "settings": settings,
+                "outputPath": str(output),
+            }
+        )
+
+        points = gcode_xy_points(output.read_text(encoding="utf-8").splitlines())
+        assert_true(result["cutPathCount"] == 1, "safe post-kerf path should generate")
+        assert_true(result["excludedObjectCount"] == 1, "kerf escape should exclude only the edge placement")
+        assert_true(points and all(x <= 12.101 and y <= 12.101 for x, y in points), f"post-kerf escape must not enter G-code: {points}")
+
+
+def test_vector_cut_builders_apply_outer_and_hole_kerf():
+    def path_widths(lines):
+        paths = core.powered_toolpaths_from_gcode(lines)
+        widths = sorted(max(point[0] for point in path) - min(point[0] for point in path) for path in paths)
+        return widths
+
+    vector_item = {
+        "path": "embedded-vector",
+        "name": "kerf-vector",
+        "x": 0,
+        "y": 0,
+        "width": 40,
+        "height": 40,
+        "sourceWidth": 40,
+        "sourceHeight": 40,
+        "power": 900,
+        "feed": 500,
+        "cutPower": 900,
+        "cutFeed": 500,
+        "vectorPaths": [
+            {"operation": "cut", "closed": True, "points": [[5, 5], [35, 5], [35, 35], [5, 35]]},
+            {"operation": "cut", "closed": True, "points": [[15, 15], [25, 15], [25, 25], [15, 25]]},
+        ],
+    }
+    embedded_widths = path_widths(
+        core.build_embedded_vector_engrave_lines(vector_item, operation="cut", kerf=0.2)
+    )
+    assert_true(len(embedded_widths) == 2, f"embedded cut should emit outer and hole paths: {embedded_widths}")
+    assert_true(abs(embedded_widths[0] - 9.8) < 0.02, f"embedded hole should shrink by kerf: {embedded_widths}")
+    assert_true(abs(embedded_widths[1] - 30.2) < 0.02, f"embedded outer contour should grow by kerf: {embedded_widths}")
+
+    with TemporaryDirectory() as tmp:
+        svg_path = Path(tmp) / "kerf.svg"
+        svg_path.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">'
+            '<path d="M5 5 L35 5 L35 35 L5 35 Z" />'
+            '<path d="M15 15 L25 15 L25 25 L15 25 Z" />'
+            '</svg>',
+            encoding="utf-8",
+        )
+        pattern = core.RasterPattern(
+            path=svg_path,
+            x=0,
+            y=0,
+            width=40,
+            height=40,
+            rotation=0,
+            power=900,
+            feed=500,
+            line_step=0.35,
+            threshold=140,
+        )
+        svg_widths = path_widths(
+            core.build_svg_vector_engrave_lines(pattern, operation="cut", kerf=0.2)
+        )
+        assert_true(len(svg_widths) == 2, f"SVG cut should emit outer and hole paths: {svg_widths}")
+        assert_true(abs(svg_widths[0] - 9.8) < 0.02, f"SVG hole should shrink by kerf: {svg_widths}")
+        assert_true(abs(svg_widths[1] - 30.2) < 0.02, f"SVG outer contour should grow by kerf: {svg_widths}")
+
+
+def test_final_toolpath_validator_checks_segments_inside_custom_area():
+    available_area = core.ClipRegion(
+        [
+            [(0, 0), (10, 0), (10, 10), (0, 10)],
+            [(4, 4), (6, 4), (6, 6), (4, 6)],
+        ],
+        margin=0,
+    )
+
+    def run():
+        core.validate_final_toolpaths(
+            [[(1, 5), (9, 5)]],
+            bed_width=10,
+            bed_height=10,
+            margin=0,
+            available_area=available_area,
+        )
+
+    assert_raises_contains(run, "kullanilabilir alanin disina")
+
+
 def main():
     tests = [
         test_kerf_offsets_outer_out_and_holes_in,
         test_kerf_handles_concave_part_without_degenerate_output,
         test_filter_keeps_auto_removed_paths,
         test_vectorize_image_returns_debug_stages_and_metadata,
+        test_cad_centerline_mode_returns_single_line_metadata,
+        test_vector_region_classifier_supports_exterior_marked_and_frame_removal,
         test_background_normalization_rescues_gradient_photo,
+        test_clean_line_art_preserves_fine_details,
         test_large_filled_border_component_is_not_deleted_as_frame,
         test_centerline_stitches_junction_segments_before_filtering,
         test_skeleton_spur_pruning_removes_short_hairs,
+        test_centerline_endpoint_snap_closes_natural_gap_without_sideways_join,
+        test_centerline_micro_hole_fill_removes_pixel_artifact_but_keeps_real_region,
+        test_cad_centerline_preserves_dense_outlined_details,
+        test_cad_centerline_smoothing_keeps_junction_anchors,
         test_centerline_solidify_collapses_double_edge_bands,
         test_centerline_straightens_long_wavy_frame_lines,
         test_centerline_flattens_axis_runs_inside_closed_frame,
@@ -1729,7 +2300,9 @@ def main():
         test_svg_gcode_is_clipped_to_part_margin,
         test_closed_clip_connector_follows_inset_margin_boundary,
         test_pattern_point_supports_mirroring,
-        test_generate_rejects_active_placement_outside_bed,
+        test_generate_excludes_active_placement_outside_bed,
+        test_generate_rejects_when_every_active_object_is_outside,
+        test_generate_excludes_pattern_bound_to_outside_placement,
         test_generate_validates_available_area_polygon,
         test_generate_skips_ignored_outside_placements,
         test_generate_skips_ignored_vector_paths_before_bed_validation,
@@ -1741,6 +2314,12 @@ def main():
         test_generate_closes_clipped_closed_svg_on_parent_boundary,
         test_generate_uses_placement_boundary_margin_and_close_rule,
         test_generate_uses_embedded_part_geometry_when_dxf_path_is_missing,
+        test_generate_requires_bed_dimensions,
+        test_generate_rejects_laser_command_injection,
+        test_generate_excludes_vector_geometry_outside_declared_pattern_bounds,
+        test_generate_excludes_toolpath_that_kerf_pushes_outside_bed,
+        test_vector_cut_builders_apply_outer_and_hole_kerf,
+        test_final_toolpath_validator_checks_segments_inside_custom_area,
     ]
     for test in tests:
         test()

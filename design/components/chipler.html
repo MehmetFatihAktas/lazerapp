@@ -1,0 +1,101 @@
+<!-- @dsCard group="Bileşenler" name="Durum çipleri" width="460" -->
+<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>Durum çipleri</title><style>
+:root{
+  --bg0:#0f141a; --bg1:#151c24; --bg2:#1c2531; --bg3:#232f3d;
+  --line:#2a3644; --line-strong:#3b4a5c;
+  --ink:#e6edf3; --muted:#8b98a9; --faint:#5b6775;
+  --accent:#f59e0b; --accent-strong:#d97706; --accent-ink:#1a1205;
+  --cut:#ff5a48; --engrave:#4d9fff; --fill:#93a3b8; --ignore:#5b6775;
+  --ok:#3fb950; --warn:#d29922; --danger:#f85149; --selection:#58a6ff;
+  --canvas:#0b0f14; --bed:#f5f7f9; --grid:#20303f;
+  --r-panel:10px; --r-ctl:7px;
+  --shadow:0 10px 30px rgba(0,0,0,.45);
+  --font:"Segoe UI",Inter,Roboto,system-ui,sans-serif;
+  --mono:Consolas,"Cascadia Mono",monospace;
+}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;padding:20px;background:var(--bg0);color:var(--ink);
+  font:13px/1.45 var(--font);-webkit-font-smoothing:antialiased}
+h1,h2,h3{margin:0}
+.card-note{color:var(--muted);font-size:11px;margin:14px 0 0}
+
+/* --- butonlar --- */
+.btn{height:32px;padding:0 12px;border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--bg2);color:var(--ink);font:600 13px var(--font);cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--line-strong);background:var(--bg3)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{background:var(--accent-strong);border-color:var(--accent-strong)}
+.btn.danger{background:transparent;border-color:var(--danger);color:var(--danger)}
+.btn.ghost{background:transparent}
+.btn.small{height:26px;padding:0 9px;font-size:12px}
+.btn.wide{width:100%}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.active{border-color:var(--selection);background:rgba(88,166,255,.12);color:var(--selection)}
+
+/* --- girisler --- */
+.field{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
+.field b{font-weight:600}
+.input,select.input{height:32px;padding:0 10px;border:1px solid var(--line);border-radius:var(--r-ctl);
+  background:var(--bg0);color:var(--ink);font:13px var(--font);width:100%}
+.input:focus{outline:none;border-color:var(--selection);box-shadow:0 0 0 2px rgba(88,166,255,.2)}
+.unit{position:relative;display:flex;align-items:center}
+.unit .input{padding-right:44px;font-family:var(--mono)}
+.unit em{position:absolute;right:10px;font:600 11px var(--font);font-style:normal;color:var(--faint)}
+.checkline{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink);cursor:pointer}
+.checkline input{width:15px;height:15px;accent-color:var(--accent)}
+
+/* --- chip --- */
+.chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;
+  border:1px solid var(--line);background:var(--bg2);font:600 11px var(--font);color:var(--muted)}
+.chip i{width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.chip.ok{border-color:rgba(63,185,80,.4);color:var(--ok)}.chip.ok i{background:var(--ok)}
+.chip.warn{border-color:rgba(210,153,34,.4);color:var(--warn)}.chip.warn i{background:var(--warn)}
+.chip.err{border-color:rgba(248,81,73,.4);color:var(--danger)}.chip.err i{background:var(--danger)}
+.chip.locked{border-color:var(--line-strong);color:var(--ink)}.chip.locked i{background:var(--selection)}
+
+/* --- segmented --- */
+.seg{display:inline-flex;padding:3px;gap:2px;background:var(--bg0);border:1px solid var(--line);border-radius:9px}
+.seg button{height:26px;padding:0 14px;border:0;border-radius:6px;background:transparent;
+  color:var(--muted);font:600 12px var(--font);cursor:pointer}
+.seg button.on{background:var(--bg3);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line-strong)}
+.seg button.on.amber{background:var(--accent);color:var(--accent-ink);box-shadow:none}
+
+/* --- panel bolumu --- */
+.panel{width:100%;background:var(--bg1);border:1px solid var(--line);border-radius:var(--r-panel);overflow:hidden}
+.panel>header{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;
+  border-bottom:1px solid var(--line);cursor:pointer}
+.panel>header h3{font:700 12px var(--font);letter-spacing:.4px;text-transform:uppercase;color:var(--muted)}
+.panel>header .chev{color:var(--faint);font-size:10px}
+.panel .body{padding:12px;display:flex;flex-direction:column;gap:10px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.hint{font-size:11px;color:var(--faint);margin:0}
+
+/* --- liste karti --- */
+.item{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--bg2)}
+.item.selected{border-color:var(--selection);box-shadow:0 0 0 1px var(--selection)}
+.item .thumb{width:34px;height:34px;border-radius:6px;background:var(--bg0);border:1px solid var(--line);
+  display:grid;place-items:center;color:var(--faint)}
+.item .meta{flex:1;min-width:0}
+.item .meta b{display:block;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .meta span{font:11px var(--mono);color:var(--muted)}
+.op{font:700 10px var(--font);padding:2px 7px;border-radius:5px}
+.op.cut{color:var(--cut);background:rgba(255,90,72,.12)}
+.op.engrave{color:var(--engrave);background:rgba(77,159,255,.12)}
+
+/* --- uyari --- */
+.note{display:flex;gap:9px;padding:9px 11px;border-radius:8px;font-size:12px;border:1px solid}
+.note i{font-style:normal;font-weight:700}
+.note.warn{background:rgba(210,153,34,.08);border-color:rgba(210,153,34,.35);color:#e8c56a}
+.note.err{background:rgba(248,81,73,.08);border-color:rgba(248,81,73,.35);color:#ff8a80}
+.note.ok{background:rgba(63,185,80,.08);border-color:rgba(63,185,80,.35);color:#7ee2a8}
+</style></head><body>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+  <span class="chip locked"><i></i>Birim: mm</span>
+  <span class="chip"><i></i>Tabla: 400 × 400</span>
+  <span class="chip ok"><i></i>Yerleşim tamam</span>
+  <span class="chip warn"><i></i>Uyarı: 2</span>
+  <span class="chip err"><i></i>Tabla dışında: 1</span>
+</div>
+<p class="card-note">Üretim durumu üst barda hep görünür. Renk yalnızca duruma bağlanır; metin olmadan renk tek başına kullanılmaz.</p>
+</body></html>

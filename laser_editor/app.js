@@ -28,6 +28,13 @@ const refs = {
   outputPath: document.getElementById("outputPath"),
   textInput: document.getElementById("textInput"),
   textFont: document.getElementById("textFont"),
+  textFontPicker: document.getElementById("textFontPicker"),
+  textFontButton: document.getElementById("textFontButton"),
+  textFontButtonLabel: document.getElementById("textFontButtonLabel"),
+  textFontMenu: document.getElementById("textFontMenu"),
+  textFontSearch: document.getElementById("textFontSearch"),
+  textFontOptions: document.getElementById("textFontOptions"),
+  textFontEmpty: document.getElementById("textFontEmpty"),
   textFontUpload: document.getElementById("textFontUpload"),
   textFontHint: document.getElementById("textFontHint"),
   textHeight: document.getElementById("textHeight"),
@@ -42,6 +49,11 @@ const refs = {
   bedW: document.getElementById("bedW"),
   bedH: document.getElementById("bedH"),
   quantity: document.getElementById("quantity"),
+  dxfQuantityModal: document.getElementById("dxfQuantityModal"),
+  dxfQuantityForm: document.getElementById("dxfQuantityForm"),
+  dxfQuantitySummary: document.getElementById("dxfQuantitySummary"),
+  dxfQuantityInput: document.getElementById("dxfQuantityInput"),
+  dxfQuantityCancelBtn: document.getElementById("dxfQuantityCancelBtn"),
   gap: document.getElementById("gap"),
   margin: document.getElementById("margin"),
   bedAlignMode: document.getElementById("bedAlignMode"),
@@ -151,6 +163,8 @@ function canvasPalette() {
     materialArea: cssColor("--material-area", "#0E9384"),
     materialAreaFill: cssAlpha("--material-area", 0.14, "#0E9384"),
     materialAreaOutside: cssAlpha("--material-area", 0.08, "#0E9384"),
+    warning: cssColor("--warning", "#D97706"),
+    success: cssColor("--success", "#14965F"),
     warningBg: cssAlpha("--warning", 0.10, "#D97706"),
     text: cssColor("--text", "#172033"),
     panel: cssColor("--panel", "#FFFFFF"),
@@ -183,6 +197,23 @@ const state = {
     drawing: false,
     previewPoint: null,
   },
+  vectorRegionTool: {
+    active: false,
+    pending: false,
+    patternId: null,
+  },
+  vectorRepairTool: {
+    active: false,
+    mode: "straighten",
+    drawing: false,
+    patternId: null,
+    pathId: null,
+    radius: 1,
+    startIndex: null,
+    startAnchor: null,
+    draftWorldPoints: [],
+    pointerId: null,
+  },
   currentAnalysis: null,
   machine: {
     available: false,
@@ -203,9 +234,18 @@ const state = {
 };
 
 const SETTINGS_KEY = "laser-editor-settings-v3";
-const VECTOR_SETTINGS_VERSION = 7;
+const VECTOR_SETTINGS_VERSION = 9;
 const CLIENT_SESSION_KEY = "laser-editor-client-id-v1";
 let jobAnalysisTimer = null;
+let pendingDxfQuantityResolve = null;
+let dxfQuantityReturnFocus = null;
+let activeTextFontPreview = null;
+let textFontApplyToken = 0;
+let canvasDrawFrame = null;
+let canvasResizeFrame = null;
+let canvasResizeObserver = null;
+let canvasInteraction = null;
+let canvasInteractionTimer = null;
 
 const TEXT_FONT_PRESETS = [
   { id: "laser-single", label: "Laser tek çizgi", kind: "single", family: "" },
@@ -246,28 +286,57 @@ function scheduleJobAnalysis(delay = 150) {
 }
 
 const vectorSafeDefaults = {
-  vecMode: "auto",
+  vecProfessionalMode: "cad-line-art",
+  vecMode: "centerline",
   vecThresholdMode: "otsu",
-  vecBlur: "1",
-  vecContrast: "1",
+  vecBlur: "0",
+  vecContrast: "1.08",
   vecMorphClose: "1",
   vecMorphOpen: "0",
-  vecDenoise: "5",
-  vecMinArea: "25",
-  vecMinLength: "8",
-  vecSimplify: "0.55",
+  vecDenoise: "0",
+  vecMinArea: "4",
+  vecMinLength: "3",
+  vecSimplify: "0.9",
   vecSmooth: "3",
-  vecMaxContours: "3000",
-  vecStitchGap: "0",
-  vecMaxDimension: "2200",
+  vecMaxContours: "8000",
+  vecStitchGap: "0.5",
+  vecMaxDimension: "2400",
   vecAdaptiveBlock: "35",
   vecAdaptiveC: "5",
   vecInvert: true,
-  vecRemoveBorder: true,
-  vecBackgroundNormalize: true,
+  vecRemoveBorder: false,
+  vecBackgroundNormalize: false,
 };
 
 const vectorProfessionalModes = {
+  "cad-line-art": {
+    label: "CAD tek çizgi · dış kesim",
+    hint: "Siyah çizgileri merkezden tek ve pürüzsüz yol olarak çıkarır. Çerçeve silinirse yalnız büyük yeni dış konturlar kesime geçer; küçük ayrıntılar kazımada kalır.",
+    operation: "engrave_line",
+    productMode: "cad_line_art",
+    mixedOperations: true,
+    values: {
+      vecMode: "centerline",
+      vecThresholdMode: "otsu",
+      vecBlur: "0",
+      vecContrast: "1.08",
+      vecMorphClose: "1",
+      vecMorphOpen: "0",
+      vecDenoise: "0",
+      vecMinArea: "4",
+      vecMinLength: "3",
+      vecSimplify: "0.9",
+      vecSmooth: "3",
+      vecMaxContours: "8000",
+      vecStitchGap: "0.5",
+      vecMaxDimension: "2400",
+      vecAdaptiveBlock: "35",
+      vecAdaptiveC: "5",
+      vecInvert: true,
+      vecRemoveBorder: false,
+      vecBackgroundNormalize: false,
+    },
+  },
   "cut-stencil": {
     label: "Kesim şablonu",
     hint: "Koyu motifleri kapalı kesim konturlarına çevirir; çerçeve ve küçük gürültü temizliği açıktır.",
@@ -501,12 +570,16 @@ function createUndoSnapshot(label = "islem") {
 
 function pushUndo(label = "islem") {
   if (undoRestoring) return;
+  if (canvasInteraction) finishCanvasInteraction({ redraw: false, updateUi: false });
   undoStack.push(createUndoSnapshot(label));
   redoStack.length = 0;
   while (undoStack.length > UNDO_LIMIT) undoStack.shift();
 }
 
 function restoreUndoSnapshot(snapshot) {
+  window.clearTimeout(canvasInteractionTimer);
+  canvasInteractionTimer = null;
+  canvasInteraction = null;
   undoRestoring = true;
   try {
     state.parts = clonePlain(snapshot.parts || []);
@@ -537,6 +610,7 @@ function restoreUndoSnapshot(snapshot) {
 }
 
 function undoLast() {
+  if (canvasInteraction) finishCanvasInteraction({ redraw: false, updateUi: false });
   const snapshot = undoStack.pop();
   if (!snapshot) {
     setStatus("Geri alınacak işlem yok.", "warn");
@@ -549,6 +623,7 @@ function undoLast() {
 }
 
 function redoLast() {
+  if (canvasInteraction) finishCanvasInteraction({ redraw: false, updateUi: false });
   const snapshot = redoStack.pop();
   if (!snapshot) {
     setStatus("Yinelenecek işlem yok.", "warn");
@@ -606,14 +681,242 @@ function customFontValue(font) {
   return `custom:${font.id}`;
 }
 
-function selectedTextFontDefinition() {
-  const value = refs.textFont?.value || "laser-single";
-  if (value.startsWith("custom:")) {
-    const id = value.slice("custom:".length);
+function textFontValue(font) {
+  return font.custom ? customFontValue(font) : font.id;
+}
+
+function textFontDefinitions() {
+  return [
+    ...TEXT_FONT_PRESETS,
+    ...state.customFonts.map((font) => ({ ...font, kind: "outline", custom: true })),
+  ];
+}
+
+function textFontDefinitionByValue(value) {
+  const normalized = value || "laser-single";
+  if (normalized.startsWith("custom:")) {
+    const id = normalized.slice("custom:".length);
     const font = state.customFonts.find((item) => item.id === id);
-    if (font) return { ...font, kind: "outline", custom: true, value };
+    if (font) return { ...font, kind: "outline", custom: true, value: normalized };
   }
-  return TEXT_FONT_PRESETS.find((item) => item.id === value) || TEXT_FONT_PRESETS[0];
+  return TEXT_FONT_PRESETS.find((item) => item.id === normalized) || TEXT_FONT_PRESETS[0];
+}
+
+function selectedTextFontDefinition() {
+  return textFontDefinitionByValue(refs.textFont?.value || "laser-single");
+}
+
+function textFontCssFamily(font) {
+  if (font?.kind === "single") return "Consolas, 'Courier New', monospace";
+  return font?.family || "Arial, sans-serif";
+}
+
+function editableTextValue(pattern) {
+  const stored = pattern?.textSettings?.text;
+  if (typeof stored === "string" && stored.trim()) return stored;
+  const name = String(pattern?.name || "");
+  if (!name.startsWith("Metin: ")) return "";
+  const recovered = name.slice("Metin: ".length);
+  if (!recovered.endsWith("…")) return recovered;
+  const currentInput = String(refs.textInput?.value || "").trim();
+  return currentInput.startsWith(recovered.slice(0, -1)) ? currentInput : "";
+}
+
+function editableTextPattern(pattern = selectedPattern()) {
+  if (!pattern) return null;
+  return pattern.generatedKind === "text" || pattern.textSettings?.mode ? pattern : null;
+}
+
+function textFontValueForPattern(pattern) {
+  const settings = pattern?.textSettings || {};
+  const definitions = textFontDefinitions();
+  if (settings.fontValue && definitions.some((font) => textFontValue(font) === settings.fontValue)) {
+    return settings.fontValue;
+  }
+  const byFamily = definitions.find((font) => font.family && settings.family === font.family);
+  if (byFamily) return textFontValue(byFamily);
+  const byName = definitions.find((font) => (font.name || font.label) === settings.font);
+  return byName ? textFontValue(byName) : settings.mode === "single-line" ? "laser-single" : "arial";
+}
+
+function updateTextFontSelectionUi(value = refs.textFont?.value || "laser-single") {
+  const font = textFontDefinitionByValue(value);
+  if (refs.textFontButtonLabel) {
+    refs.textFontButtonLabel.textContent = font.name || font.label;
+    refs.textFontButtonLabel.style.fontFamily = textFontCssFamily(font);
+  }
+  refs.textFontOptions?.querySelectorAll("[data-font-value]").forEach((button) => {
+    button.setAttribute("aria-selected", button.dataset.fontValue === value ? "true" : "false");
+  });
+}
+
+function setTextFontControlValue(value) {
+  if (!refs.textFont) return;
+  const values = Array.from(refs.textFont.options).map((option) => option.value);
+  refs.textFont.value = values.includes(value) ? value : "laser-single";
+  updateTextFontSelectionUi(refs.textFont.value);
+  updateTextFontHint();
+}
+
+function syncTextControlsFromPattern(pattern) {
+  const editable = editableTextPattern(pattern);
+  if (!editable) return;
+  const settings = editable.textSettings || {};
+  const text = editableTextValue(editable);
+  if (text && refs.textInput) refs.textInput.value = text;
+  if (refs.textHeight && Number(settings.height) > 0) refs.textHeight.value = Number(settings.height);
+  if (refs.textTracking && Number.isFinite(Number(settings.tracking))) refs.textTracking.value = Number(settings.tracking);
+  if (refs.textWeight && settings.weight) refs.textWeight.value = String(settings.weight);
+  if (refs.textStyle && settings.style) refs.textStyle.value = settings.style;
+  if (refs.textOperation) refs.textOperation.value = settings.operation || patternOperation(editable);
+  setTextFontControlValue(textFontValueForPattern(editable));
+}
+
+function previewSelectedTextFont(value) {
+  const pattern = editableTextPattern();
+  const text = editableTextValue(pattern);
+  if (!pattern || !text) return;
+  activeTextFontPreview = {
+    patternId: pattern.id,
+    value,
+    font: textFontDefinitionByValue(value),
+    text,
+    settings: { ...(pattern.textSettings || {}) },
+  };
+  draw();
+}
+
+function clearTextFontPreview() {
+  if (!activeTextFontPreview) return;
+  activeTextFontPreview = null;
+  draw();
+}
+
+function positionTextFontMenu() {
+  if (!refs.textFontMenu || !refs.textFontButton || refs.textFontMenu.classList.contains("hidden")) return;
+  const rect = refs.textFontButton.getBoundingClientRect();
+  const width = Math.min(Math.max(300, rect.width), Math.max(240, window.innerWidth - 16));
+  refs.textFontMenu.style.width = `${width}px`;
+  const downSpace = window.innerHeight - rect.bottom - 8;
+  const upSpace = rect.top - 8;
+  const openDown = downSpace >= Math.min(300, upSpace);
+  const available = Math.max(150, openDown ? downSpace : upSpace);
+  refs.textFontMenu.style.maxHeight = `${Math.min(470, available)}px`;
+  const measuredHeight = Math.min(refs.textFontMenu.scrollHeight, Math.min(470, available));
+  const top = openDown ? rect.bottom + 4 : Math.max(8, rect.top - measuredHeight - 4);
+  const left = clamp(rect.left, 8, Math.max(8, window.innerWidth - width - 8));
+  refs.textFontMenu.style.left = `${left}px`;
+  refs.textFontMenu.style.top = `${top}px`;
+}
+
+function textFontMenuIsOpen() {
+  return Boolean(refs.textFontMenu && !refs.textFontMenu.classList.contains("hidden"));
+}
+
+function filterTextFontOptions(query = "") {
+  const normalized = String(query).trim().toLocaleLowerCase("tr-TR");
+  let visibleCount = 0;
+  refs.textFontOptions?.querySelectorAll(".font-option-section").forEach((section) => {
+    let sectionCount = 0;
+    section.querySelectorAll("[data-font-value]").forEach((button) => {
+      const visible = !normalized || String(button.dataset.fontName || "").toLocaleLowerCase("tr-TR").includes(normalized);
+      button.classList.toggle("hidden", !visible);
+      if (visible) {
+        visibleCount += 1;
+        sectionCount += 1;
+      }
+    });
+    section.classList.toggle("hidden", sectionCount === 0);
+  });
+  refs.textFontEmpty?.classList.toggle("hidden", visibleCount > 0);
+  return visibleCount;
+}
+
+function closeTextFontMenu(options = {}) {
+  if (!refs.textFontMenu) return;
+  refs.textFontMenu.classList.add("hidden");
+  refs.textFontButton?.setAttribute("aria-expanded", "false");
+  if (refs.textFontSearch) refs.textFontSearch.value = "";
+  filterTextFontOptions();
+  if (!options.keepPreview) clearTextFontPreview();
+  if (options.restoreFocus) refs.textFontButton?.focus();
+}
+
+function openTextFontMenu() {
+  if (!refs.textFontMenu || !refs.textFontButton) return;
+  refs.textFontMenu.classList.remove("hidden");
+  refs.textFontButton.setAttribute("aria-expanded", "true");
+  updateTextFontSelectionUi();
+  filterTextFontOptions();
+  positionTextFontMenu();
+  refs.textFontSearch?.focus();
+}
+
+function visibleTextFontButtons() {
+  return Array.from(refs.textFontOptions?.querySelectorAll("[data-font-value]") || []).filter(
+    (button) => !button.classList.contains("hidden")
+  );
+}
+
+function focusTextFontOption(current, delta) {
+  const buttons = visibleTextFontButtons();
+  if (!buttons.length) return;
+  const currentIndex = buttons.indexOf(current);
+  const index = currentIndex < 0 ? (delta > 0 ? 0 : buttons.length - 1) : (currentIndex + delta + buttons.length) % buttons.length;
+  buttons[index].focus();
+}
+
+async function chooseTextFont(value) {
+  setTextFontControlValue(value);
+  saveUiSettings();
+  const pattern = editableTextPattern();
+  const text = editableTextValue(pattern);
+  if (!pattern || !text) {
+    closeTextFontMenu();
+    return;
+  }
+  previewSelectedTextFont(value);
+  closeTextFontMenu({ keepPreview: true });
+  await applyFontToSelectedText(pattern, value);
+}
+
+function appendTextFontGroup(label, fonts) {
+  if (!fonts.length || !refs.textFontOptions) return;
+  const section = document.createElement("div");
+  section.className = "font-option-section";
+  const heading = document.createElement("div");
+  heading.className = "font-option-group";
+  heading.textContent = label;
+  section.appendChild(heading);
+  fonts.forEach((font) => {
+    const value = textFontValue(font);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "font-option";
+    button.dataset.fontValue = value;
+    button.dataset.fontName = font.name || font.label;
+    button.setAttribute("role", "option");
+    const name = document.createElement("span");
+    name.className = "font-option-name";
+    name.textContent = font.name || font.label;
+    name.style.fontFamily = textFontCssFamily(font);
+    const sample = document.createElement("span");
+    sample.className = "font-option-sample";
+    sample.textContent = "Aa 123";
+    sample.style.fontFamily = textFontCssFamily(font);
+    button.append(name, sample);
+    button.addEventListener("pointerenter", () => previewSelectedTextFont(value));
+    button.addEventListener("focus", () => previewSelectedTextFont(value));
+    button.addEventListener("click", () => chooseTextFont(value));
+    button.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        focusTextFontOption(button, event.key === "ArrowDown" ? 1 : -1);
+      }
+    });
+    section.appendChild(button);
+  });
+  refs.textFontOptions.appendChild(section);
 }
 
 function renderTextFontOptions(selectedValue = "") {
@@ -621,23 +924,27 @@ function renderTextFontOptions(selectedValue = "") {
   if (!select) return;
   const selected = selectedValue || select.value || "laser-single";
   select.innerHTML = "";
+  if (refs.textFontOptions) refs.textFontOptions.innerHTML = "";
   const appendGroup = (label, fonts) => {
     if (!fonts.length) return;
     const group = document.createElement("optgroup");
     group.label = label;
     fonts.forEach((font) => {
       const option = document.createElement("option");
-      option.value = font.custom ? customFontValue(font) : font.id;
+      option.value = textFontValue(font);
       option.textContent = font.name || font.label;
+      option.style.fontFamily = textFontCssFamily(font);
       group.appendChild(option);
     });
     select.appendChild(group);
+    appendTextFontGroup(label, fonts);
   };
   appendGroup("Lazer fontu", TEXT_FONT_PRESETS.filter((font) => font.kind === "single"));
   appendGroup("Sistem fontları", TEXT_FONT_PRESETS.filter((font) => font.kind !== "single"));
-  appendGroup("Yüklenen fontlar", state.customFonts.map((font) => ({ ...font, custom: true })));
+  appendGroup("Yüklenen fontlar", state.customFonts.map((font) => ({ ...font, kind: "outline", custom: true })));
   const values = Array.from(select.options).map((option) => option.value);
   select.value = values.includes(selected) ? selected : "laser-single";
+  updateTextFontSelectionUi(select.value);
   updateTextFontHint();
 }
 
@@ -1067,8 +1374,8 @@ function getVectorSettings() {
 }
 
 function vectorProfessionalMode() {
-  const modeId = refs.vecProfessionalMode?.value || "cut-stencil";
-  const mode = vectorProfessionalModes[modeId] || vectorProfessionalModes["cut-stencil"];
+  const modeId = refs.vecProfessionalMode?.value || "cad-line-art";
+  const mode = vectorProfessionalModes[modeId] || vectorProfessionalModes["cad-line-art"];
   return { id: modeId, ...mode };
 }
 
@@ -1484,6 +1791,7 @@ function updateProduceFlowSummary() {
   if (result) {
     parts.push(`Kesim alanı: ${Number(result.cutWidth || 0).toFixed(1)} × ${Number(result.cutHeight || 0).toFixed(1)} mm`);
     parts.push(`${result.lineCount} satır`);
+    if (Number(result.excludedObjectCount || 0) > 0) parts.push(`${result.excludedObjectCount} nesne üretim dışı`);
   }
   const preview = state.machine.preview;
   if (preview) {
@@ -1752,6 +2060,58 @@ function defaultPartQuantity() {
   return Math.max(1, Math.round(Number(refs.quantity?.value) || 1));
 }
 
+function dxfQuantityDialogOpen() {
+  return Boolean(refs.dxfQuantityModal && !refs.dxfQuantityModal.classList.contains("hidden"));
+}
+
+function closeDxfQuantityDialog(quantity = null) {
+  if (!dxfQuantityDialogOpen() && !pendingDxfQuantityResolve) return;
+  refs.dxfQuantityModal?.classList.add("hidden");
+  refs.dxfQuantityInput?.setCustomValidity("");
+  const resolve = pendingDxfQuantityResolve;
+  pendingDxfQuantityResolve = null;
+  const returnFocus = dxfQuantityReturnFocus;
+  dxfQuantityReturnFocus = null;
+  resolve?.(quantity);
+  window.requestAnimationFrame(() => returnFocus?.focus?.());
+}
+
+function requestDxfQuantity(parts) {
+  if (!refs.dxfQuantityModal || !refs.dxfQuantityInput) {
+    return Promise.resolve(defaultPartQuantity());
+  }
+  if (pendingDxfQuantityResolve) closeDxfQuantityDialog(null);
+  const count = parts.length;
+  const firstName = String(parts[0]?.name || "DXF");
+  refs.dxfQuantitySummary.textContent = count === 1
+    ? firstName
+    : `${count} DXF seçildi. Adet her DXF için uygulanır.`;
+  refs.dxfQuantityInput.value = String(Math.min(999, defaultPartQuantity()));
+  refs.dxfQuantityInput.setCustomValidity("");
+  dxfQuantityReturnFocus = document.activeElement;
+  refs.dxfQuantityModal.classList.remove("hidden");
+  window.requestAnimationFrame(() => {
+    refs.dxfQuantityInput.focus();
+    refs.dxfQuantityInput.select();
+  });
+  return new Promise((resolve) => {
+    pendingDxfQuantityResolve = resolve;
+  });
+}
+
+function submitDxfQuantityDialog(event) {
+  event.preventDefault();
+  const quantity = Number(refs.dxfQuantityInput?.value);
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) {
+    refs.dxfQuantityInput?.setCustomValidity("1 ile 999 arasında tam sayı girin.");
+    refs.dxfQuantityInput?.reportValidity();
+    refs.dxfQuantityInput?.focus();
+    refs.dxfQuantityInput?.select();
+    return;
+  }
+  closeDxfQuantityDialog(quantity);
+}
+
 function partQuantity(part) {
   return Math.max(1, Math.round(Number(part?.quantity) || 1));
 }
@@ -1813,11 +2173,21 @@ function pruneUnusedParts() {
   state.parts = state.parts.filter((part) => usedPartIds.has(part.id));
 }
 
+function syncPartQuantityToPlacements(partId) {
+  const part = partById(partId);
+  if (!part) return 0;
+  const remaining = state.placements.filter((placement) => placement.partId === partId).length;
+  if (remaining > 0) part.quantity = remaining;
+  return remaining;
+}
+
 function deletePlacementById(id) {
+  const placement = placementById(id);
   const childPatterns = state.patterns.filter((item) => item.parentId === id);
   for (const pattern of childPatterns) state.images.delete(pattern.id);
   state.placements = state.placements.filter((item) => item.id !== id);
   state.patterns = state.patterns.filter((item) => item.parentId !== id);
+  if (placement) syncPartQuantityToPlacements(placement.partId);
   pruneUnusedParts();
 }
 
@@ -1908,6 +2278,20 @@ function jobBounds() {
   return boundsReady(bounds) ? bounds : null;
 }
 
+function productionJobBounds(analysis) {
+  const bounds = emptyBounds();
+  for (const item of analysis?.productionPlacements || []) {
+    includePoint(bounds, { x: item.bounds.minX, y: item.bounds.minY });
+    includePoint(bounds, { x: item.bounds.maxX, y: item.bounds.maxY });
+  }
+  for (const item of analysis?.productionPatterns || []) {
+    if (!item.bounds) continue;
+    includePoint(bounds, { x: item.bounds.minX, y: item.bounds.minY });
+    includePoint(bounds, { x: item.bounds.maxX, y: item.bounds.maxY });
+  }
+  return boundsReady(bounds) ? bounds : null;
+}
+
 function moveAll(dx, dy) {
   if (!dx && !dy) return;
   for (const placement of state.placements) {
@@ -1963,6 +2347,59 @@ function vectorWorldPath(pattern, vectorPath) {
   return (vectorPath.points || []).map((point) => patternWorldPoint(pattern, vectorLocalPoint(pattern, point)));
 }
 
+function vectorPatternPointCount(pattern) {
+  const reported = Number(pattern?.vectorStats?.pointsKept);
+  if (Number.isFinite(reported) && reported > 0) return reported;
+  return (pattern?.vectorPaths || []).reduce(
+    (total, vectorPath) => total + (vectorPath.removed ? 0 : (vectorPath.points || []).length),
+    0
+  );
+}
+
+function vectorScreenAffine(pattern) {
+  const sourceWidth = Math.max(0.001, Number(pattern.sourceWidth) || Number(pattern.width) || 1);
+  const sourceHeight = Math.max(0.001, Number(pattern.sourceHeight) || Number(pattern.height) || 1);
+  const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
+  const angle = ((Number(pattern.rotation) || 0) * Math.PI) / 180;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const scaleX = ((pattern.mirrorX ? -1 : 1) * pattern.width * state.view.scale) / sourceWidth;
+  const scaleY = ((pattern.mirrorY ? -1 : 1) * pattern.height * state.view.scale) / sourceHeight;
+  return {
+    centerX: center.x,
+    centerY: center.y,
+    halfSourceWidth: sourceWidth / 2,
+    halfSourceHeight: sourceHeight / 2,
+    ax: scaleX * cos,
+    bx: scaleY * sin,
+    ay: -scaleX * sin,
+    by: scaleY * cos,
+  };
+}
+
+function appendAffineVectorPath(points, affine, stride = 1, closed = false) {
+  if (!points || points.length < 2) return false;
+  const step = Math.max(1, Math.floor(stride));
+  const appendPoint = (point, first) => {
+    const sourceX = Number(point[0]) - affine.halfSourceWidth;
+    const sourceY = Number(point[1]) - affine.halfSourceHeight;
+    const x = affine.centerX + sourceX * affine.ax + sourceY * affine.bx;
+    const y = affine.centerY + sourceX * affine.ay + sourceY * affine.by;
+    if (first) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  };
+  ctx.beginPath();
+  appendPoint(points[0], true);
+  let lastIndex = 0;
+  for (let index = step; index < points.length; index += step) {
+    appendPoint(points[index], false);
+    lastIndex = index;
+  }
+  if (lastIndex !== points.length - 1) appendPoint(points[points.length - 1], false);
+  if (closed) ctx.closePath();
+  return true;
+}
+
 function vectorPathPreservesDuringPatternResize(pattern, vectorPath) {
   if (!vectorPath || vectorPath.removed) return false;
   if (vectorPath.locked) return true;
@@ -1986,16 +2423,34 @@ function preserveLockedVectorPaths(oldPattern, newPattern) {
   }
 }
 
+function vectorPatternNeedsResizePreserve(pattern) {
+  if (!vectorPatternHasPaths(pattern)) return false;
+  return (pattern.vectorPaths || []).some((vectorPath) => vectorPathPreservesDuringPatternResize(pattern, vectorPath));
+}
+
 function updatePatternGeometry(pattern, updates = {}, options = {}) {
   if (!pattern) return;
-  const oldPattern = clonePatternPayload(pattern);
+  const needsPreserve = options.preserveLocked !== false && vectorPatternNeedsResizePreserve(pattern);
+  const oldPattern = needsPreserve
+    ? {
+        x: Number(pattern.x) || 0,
+        y: Number(pattern.y) || 0,
+        width: Number(pattern.width) || 1,
+        height: Number(pattern.height) || 1,
+        rotation: Number(pattern.rotation) || 0,
+        mirrorX: Boolean(pattern.mirrorX),
+        mirrorY: Boolean(pattern.mirrorY),
+        sourceWidth: pattern.sourceWidth,
+        sourceHeight: pattern.sourceHeight,
+      }
+    : null;
   for (const [key, value] of Object.entries(updates)) {
     if (value === undefined || value === null || Number.isNaN(Number(value))) continue;
     pattern[key] = Number(value);
   }
   pattern.width = Math.max(1, Number(pattern.width) || 1);
   pattern.height = Math.max(1, Number(pattern.height) || 1);
-  if (options.preserveLocked !== false && (oldPattern.width !== pattern.width || oldPattern.height !== pattern.height || oldPattern.x !== pattern.x || oldPattern.y !== pattern.y)) {
+  if (oldPattern && (oldPattern.width !== pattern.width || oldPattern.height !== pattern.height || oldPattern.x !== pattern.x || oldPattern.y !== pattern.y)) {
     preserveLockedVectorPaths(oldPattern, pattern);
   }
 }
@@ -2459,8 +2914,7 @@ function drawWithPatternClip(pattern, drawContent) {
   return region;
 }
 
-function drawPatternBitmap(pattern, alpha) {
-  const image = state.images.get(pattern.id);
+function drawTransformedPatternImage(pattern, image, alpha) {
   const center = worldToScreen({ x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 });
   const width = pattern.width * state.view.scale;
   const height = pattern.height * state.view.scale;
@@ -2469,13 +2923,17 @@ function drawPatternBitmap(pattern, alpha) {
   ctx.rotate((-pattern.rotation * Math.PI) / 180);
   ctx.scale(pattern.mirrorX ? -1 : 1, pattern.mirrorY ? -1 : 1);
   ctx.globalAlpha = alpha;
-  if (image && image.complete) {
+  if (image && (image.complete === undefined || image.complete)) {
     ctx.drawImage(image, -width / 2, -height / 2, width, height);
   } else {
     ctx.fillStyle = cssAlpha("--travel", 0.18, "#A855F7");
     ctx.fillRect(-width / 2, -height / 2, width, height);
   }
   ctx.restore();
+}
+
+function drawPatternBitmap(pattern, alpha) {
+  drawTransformedPatternImage(pattern, state.images.get(pattern.id), alpha);
 }
 
 function worldToScreen(point) {
@@ -2510,6 +2968,17 @@ function resizeCanvas() {
   state.view.width = rect.width;
   state.view.height = rect.height;
   draw();
+}
+
+function scheduleCanvasResize() {
+  if (canvasResizeFrame !== null) cancelAnimationFrame(canvasResizeFrame);
+  canvasResizeFrame = requestAnimationFrame(() => {
+    canvasResizeFrame = null;
+    const rect = canvas.getBoundingClientRect();
+    if (Math.abs(rect.width - state.view.width) > 0.5 || Math.abs(rect.height - state.view.height) > 0.5) {
+      resizeCanvas();
+    }
+  });
 }
 
 function computeView() {
@@ -2590,6 +3059,7 @@ function applyJobOffset() {
 }
 
 function zoomView(factor, screenPoint = null) {
+  beginCanvasInteraction("view-zoom");
   const point = screenPoint || { x: state.view.width / 2, y: state.view.height / 2 };
   const before = screenToWorld(point);
   state.view.zoom = clamp(state.view.zoom * factor, 0.25, 16);
@@ -2597,7 +3067,8 @@ function zoomView(factor, screenPoint = null) {
   const after = worldToScreen(before);
   state.view.panX += point.x - after.x;
   state.view.panY += point.y - after.y;
-  draw();
+  requestCanvasDraw();
+  scheduleCanvasInteractionEnd();
 }
 
 function niceGridStep(targetMm) {
@@ -2894,7 +3365,7 @@ function drawGrid() {
     ctx.fillRect(0, shelfY, state.view.width, state.view.height - shelfY);
     ctx.fillStyle = palette.outside;
     ctx.font = "700 12px Segoe UI";
-    ctx.fillText("Tabla dışında kalanlar - G-code oluşturulamaz", Math.max(12, topLeft.x), shelfY + 18);
+    ctx.fillText("Tabla dışında kalanlar - G-code'a dahil edilmez", Math.max(12, topLeft.x), shelfY + 18);
   }
 
   ctx.fillStyle = palette.ruler;
@@ -2988,12 +3459,80 @@ function drawPlacementCenterGuides(placement, size) {
   ctx.restore();
 }
 
+function drawTextFontPreview(pattern, preview) {
+  if (!preview?.text || !preview.font) return pattern;
+  const settings = preview.settings || {};
+  const centerX = pattern.x + pattern.width / 2;
+  const centerY = pattern.y + pattern.height / 2;
+  if (preview.font.kind === "single" && window.LaserGeometry) {
+    const geometry = window.LaserGeometry.buildText(preview.text, {
+      height: Math.max(2, Number(settings.height) || 20),
+      tracking: Number(settings.tracking) || 0,
+    });
+    if (geometry?.vectorPaths?.length) {
+      const temporary = {
+        ...pattern,
+        id: `${pattern.id}:font-preview`,
+        x: centerX - geometry.sourceWidth / 2,
+        y: centerY - geometry.sourceHeight / 2,
+        width: geometry.sourceWidth,
+        height: geometry.sourceHeight,
+        sourceWidth: geometry.sourceWidth,
+        sourceHeight: geometry.sourceHeight,
+        vectorPaths: geometry.vectorPaths.map((path) => ({ ...path, operation: "engrave_line" })),
+        operation: "engrave_line",
+        vectorEngraveMode: "contour",
+      };
+      drawVectorPattern(temporary);
+      return temporary;
+    }
+  }
+
+  const lines = String(preview.text).split(/\r?\n/);
+  const fontPx = Math.max(8, (Number(settings.height) || 20) * state.view.scale);
+  const trackingPx = (Number(settings.tracking) || 0) * state.view.scale;
+  const lineHeight = fontPx * 1.28;
+  ctx.save();
+  ctx.font = textCanvasFont(fontPx, preview.font, settings);
+  const widths = lines.map((line) => measureTrackedText(ctx, line, trackingPx));
+  const widthPx = Math.max(1, ...widths);
+  const heightPx = Math.max(fontPx, lines.length * lineHeight);
+  const center = worldToScreen({ x: centerX, y: centerY });
+  ctx.translate(center.x, center.y);
+  ctx.rotate((-pattern.rotation * Math.PI) / 180);
+  ctx.scale(pattern.mirrorX ? -1 : 1, pattern.mirrorY ? -1 : 1);
+  const operation = settings.operation || patternOperation(pattern);
+  const palette = canvasPalette();
+  ctx.fillStyle = operation === "cut" ? palette.cut : operation === "engrave_fill" ? palette.engraveFill : palette.engraveLine;
+  ctx.globalAlpha = 0.82;
+  ctx.textBaseline = "alphabetic";
+  lines.forEach((line, index) => {
+    const x = -widths[index] / 2;
+    const y = -heightPx / 2 + fontPx + index * lineHeight;
+    drawTrackedText(ctx, line, x, y, trackingPx);
+  });
+  ctx.restore();
+  const previewWidth = widthPx / Math.max(0.001, state.view.scale);
+  const previewHeight = heightPx / Math.max(0.001, state.view.scale);
+  return {
+    ...pattern,
+    x: centerX - previewWidth / 2,
+    y: centerY - previewHeight / 2,
+    width: previewWidth,
+    height: previewHeight,
+  };
+}
+
 function drawPatterns() {
   for (const pattern of state.patterns) {
     const ignored = patternOperation(pattern) === "ignore";
+    const fontPreview = activeTextFontPreview?.patternId === pattern.id ? activeTextFontPreview : null;
+    let selectionPattern = pattern;
     ctx.save();
     if (ignored) ctx.globalAlpha = 0.38;
-    if (vectorPatternHasPaths(pattern)) {
+    if (fontPreview) {
+      selectionPattern = drawTextFontPreview(pattern, fontPreview);
+    } else if (vectorPatternHasPaths(pattern)) {
       drawVectorPattern(pattern);
     } else {
       if (patternClipRegion(pattern)) {
@@ -3005,10 +3544,338 @@ function drawPatterns() {
     }
 
     if (selectedIs("pattern", pattern.id)) {
-      drawPatternSelectionOutline(pattern, state.selected?.type === "pattern" && state.selected.id === pattern.id);
+      drawPatternSelectionOutline(selectionPattern, state.selected?.type === "pattern" && state.selected.id === pattern.id);
+    }
+    if (isCadLineArtPattern(pattern) && state.selected?.id === pattern.id) {
+      drawCadCutRegionMarkers(pattern);
     }
     ctx.restore();
   }
+}
+
+function drawCadCutRegionMarkers(pattern) {
+  const seeds = pattern.cutRegionSeeds || [];
+  if (!seeds.length) return;
+  const palette = canvasPalette();
+  ctx.save();
+  ctx.font = "700 10px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  seeds.forEach((seed, index) => {
+    const world = patternWorldPoint(pattern, vectorLocalPoint(pattern, [Number(seed.x) || 0, Number(seed.y) || 0]));
+    const screen = worldToScreen(world);
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, 8, 0, Math.PI * 2);
+    ctx.fillStyle = palette.panel;
+    ctx.fill();
+    ctx.strokeStyle = palette.cut;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = palette.cut;
+    ctx.fillText(String(index + 1), screen.x, screen.y + 0.5);
+  });
+  ctx.restore();
+}
+
+function drawVectorRegionCursor() {
+  if (!state.vectorRegionTool.active || !state.cursor) return;
+  const pattern = patternById(state.vectorRegionTool.patternId);
+  if (!isCadLineArtPattern(pattern)) return;
+  const palette = canvasPalette();
+  const screen = worldToScreen(state.cursor);
+  const inside = pointInPolygon(state.cursor, patternCorners(pattern));
+  const color = inside ? palette.cut : palette.outside;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = palette.panel;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(screen.x - 15, screen.y);
+  ctx.lineTo(screen.x + 15, screen.y);
+  ctx.moveTo(screen.x, screen.y - 15);
+  ctx.lineTo(screen.x, screen.y + 15);
+  ctx.stroke();
+  const label = inside ? "Kapalı alanı kesime al" : "Desenin içine gelin";
+  ctx.font = "700 11px Segoe UI";
+  const width = ctx.measureText(label).width + 14;
+  const labelX = clamp(screen.x + 16, 4, Math.max(4, state.view.width - width - 4));
+  const labelY = clamp(screen.y - 27, 4, Math.max(4, state.view.height - 26));
+  ctx.fillStyle = palette.panel;
+  ctx.fillRect(labelX, labelY, width, 22);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(labelX + 0.5, labelY + 0.5, width - 1, 21);
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, labelX + 7, labelY + 11);
+  ctx.restore();
+}
+
+function cancelVectorRepairTool(message = "") {
+  state.vectorRepairTool.active = false;
+  state.vectorRepairTool.mode = "straighten";
+  state.vectorRepairTool.drawing = false;
+  state.vectorRepairTool.patternId = null;
+  state.vectorRepairTool.pathId = null;
+  state.vectorRepairTool.startIndex = null;
+  state.vectorRepairTool.startAnchor = null;
+  state.vectorRepairTool.draftWorldPoints = [];
+  state.vectorRepairTool.pointerId = null;
+  canvas.style.cursor = "";
+  if (message) setStatus(message);
+}
+
+function drawVectorRepairCursor() {
+  const tool = state.vectorRepairTool;
+  if (!tool.active || !state.cursor) return;
+  const pattern = patternById(tool.patternId);
+  const vectorPath = (pattern?.vectorPaths || []).find((item) => item.id === tool.pathId);
+  if (!pattern || !vectorPath) return;
+  const palette = canvasPalette();
+  const screen = worldToScreen(state.cursor);
+  const redraw = tool.mode === "redraw";
+  const radiusPx = redraw ? 10 : Math.max(8, Number(tool.radius || 1) * state.view.scale);
+  ctx.save();
+  ctx.strokeStyle = palette.warning;
+  ctx.fillStyle = cssAlpha("--warning", redraw ? 0.14 : 0.08, "#D97706");
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, radiusPx, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(screen.x - 5, screen.y);
+  ctx.lineTo(screen.x + 5, screen.y);
+  ctx.moveTo(screen.x, screen.y - 5);
+  ctx.lineTo(screen.x, screen.y + 5);
+  ctx.stroke();
+  if (redraw && tool.draftWorldPoints.length > 1) {
+    ctx.beginPath();
+    tool.draftWorldPoints.map(worldToScreen).forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.strokeStyle = palette.selection;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.stroke();
+  }
+  if (redraw) {
+    const nearest = nearestVectorPathSegment(
+      vectorWorldPath(pattern, vectorPath),
+      state.cursor,
+      Boolean(vectorPath.closed)
+    );
+    if (nearest && nearest.distance <= vectorRedrawSnapDistance()) {
+      const snapped = worldToScreen({ x: nearest.point[0], y: nearest.point[1] });
+      if (tool.drawing && tool.draftWorldPoints.length) {
+        const previous = worldToScreen(tool.draftWorldPoints[tool.draftWorldPoints.length - 1]);
+        ctx.beginPath();
+        ctx.moveTo(previous.x, previous.y);
+        ctx.lineTo(snapped.x, snapped.y);
+        ctx.strokeStyle = palette.success;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(snapped.x, snapped.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = palette.success;
+      ctx.fill();
+      ctx.strokeStyle = palette.panel;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function repairVectorPathAtWorld(worldPoint) {
+  const tool = state.vectorRepairTool;
+  const pattern = patternById(tool.patternId);
+  const vectorPath = (pattern?.vectorPaths || []).find((item) => item.id === tool.pathId);
+  const points = vectorPath?.points || [];
+  if (!pattern || !vectorPath || points.length < 4) {
+    cancelVectorRepairTool("Düzeltilecek kontur bulunamadı.");
+    return false;
+  }
+
+  const worldPoints = vectorWorldPath(pattern, vectorPath);
+  let nearestIndex = 0;
+  let nearestDistance = Infinity;
+  worldPoints.forEach((point, index) => {
+    const distance = Math.hypot(point.x - worldPoint.x, point.y - worldPoint.y);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  });
+  const radius = Math.max(0.1, Number(tool.radius || 1));
+  if (nearestDistance > radius * 1.35) {
+    setStatus("Düzeltme çemberini seçili konturun üzerine getirin.", "warn");
+    return false;
+  }
+
+  const metricPoints = worldPoints.map((point) => [point.x, point.y]);
+  const nextPoints = window.LaserVectorEdit?.repairPolylineArc(
+    points,
+    metricPoints,
+    Boolean(vectorPath.closed),
+    nearestIndex,
+    radius
+  );
+  if (!nextPoints) {
+    setStatus("Bu noktada düzeltilecek yeterli kontur aralığı yok.", "warn");
+    return false;
+  }
+
+  pushUndo("Yerel kontur düzelt");
+  vectorPath.points = nextPoints.map((point) => [Number(point[0]) || 0, Number(point[1]) || 0]);
+  refreshVectorPathMetrics(vectorPath);
+  cancelVectorRepairTool();
+  draw();
+  updateSelectionPanel();
+  updateJobAnalysisNow();
+  setStatus("Seçili konturun işaretlenen bölümü düzleştirildi.", "ok");
+  return true;
+}
+
+function vectorRepairTarget() {
+  const tool = state.vectorRepairTool;
+  const pattern = patternById(tool.patternId);
+  const vectorPath = (pattern?.vectorPaths || []).find((item) => item.id === tool.pathId);
+  return pattern && vectorPath ? { pattern, vectorPath, worldPoints: vectorWorldPath(pattern, vectorPath) } : null;
+}
+
+function nearestVectorPathSegment(worldPoints, worldPoint, closed = false) {
+  return window.LaserVectorEdit?.nearestPointOnPolyline(
+    worldPoints.map((point) => [point.x, point.y]),
+    [worldPoint.x, worldPoint.y],
+    closed
+  ) || null;
+}
+
+function vectorRedrawSnapDistance() {
+  return clamp(12 / Math.max(0.01, state.view.scale), 0.4, 3);
+}
+
+function beginVectorPathRedraw(worldPoint, pointerId) {
+  const target = vectorRepairTarget();
+  if (!target || target.worldPoints.length < 2) {
+    cancelVectorRepairTool("Yeniden çizilecek kontur bulunamadı.");
+    return false;
+  }
+  const nearest = nearestVectorPathSegment(target.worldPoints, worldPoint, Boolean(target.vectorPath.closed));
+  if (!nearest || nearest.distance > vectorRedrawSnapDistance()) {
+    setStatus("Çizime seçili konturun üzerinden başlayın.", "warn");
+    return false;
+  }
+  const start = { x: nearest.point[0], y: nearest.point[1] };
+  state.vectorRepairTool.drawing = true;
+  state.vectorRepairTool.startIndex = null;
+  state.vectorRepairTool.startAnchor = nearest;
+  state.vectorRepairTool.pointerId = pointerId;
+  state.vectorRepairTool.draftWorldPoints = [{ ...start }];
+  setStatus("Fareyi basılı tutup yeni eğriyi çizin; mevcut konturun üzerinde bırakın.");
+  requestCanvasDraw();
+  return true;
+}
+
+function appendVectorPathRedraw(worldPoint) {
+  const tool = state.vectorRepairTool;
+  const points = tool.draftWorldPoints;
+  const previous = points[points.length - 1];
+  const minDistance = clamp(2 / Math.max(0.01, state.view.scale), 0.04, 0.4);
+  if (!previous || Math.hypot(worldPoint.x - previous.x, worldPoint.y - previous.y) >= minDistance) {
+    points.push({ ...worldPoint });
+  }
+}
+
+function finishVectorPathRedraw(worldPoint) {
+  const tool = state.vectorRepairTool;
+  const target = vectorRepairTarget();
+  if (!target || !tool.drawing) return false;
+  appendVectorPathRedraw(worldPoint);
+  const nearest = nearestVectorPathSegment(target.worldPoints, worldPoint, Boolean(target.vectorPath.closed));
+  tool.drawing = false;
+  tool.pointerId = null;
+  if (!nearest || nearest.distance > vectorRedrawSnapDistance()) {
+    tool.startIndex = null;
+    tool.startAnchor = null;
+    tool.draftWorldPoints = [];
+    setStatus("Çizimi bitirmek için fareyi seçili konturun üzerinde bırakın.", "warn");
+    draw();
+    return false;
+  }
+  const prepared = window.LaserVectorEdit?.preparePolylineAnchors(
+    target.vectorPath.points,
+    target.worldPoints.map((point) => [point.x, point.y]),
+    Boolean(target.vectorPath.closed),
+    tool.startAnchor,
+    nearest
+  );
+  if (!prepared || tool.draftWorldPoints.length < 3) {
+    tool.startIndex = null;
+    tool.startAnchor = null;
+    tool.draftWorldPoints = [];
+    setStatus("Başlangıçtan farklı bir kontur noktasına kadar çizim yapın.", "warn");
+    draw();
+    return false;
+  }
+
+  const startMetric = prepared.metricPoints[prepared.startIndex];
+  const endMetric = prepared.metricPoints[prepared.endIndex];
+  const drawnWorld = tool.draftWorldPoints.map((point) => [point.x, point.y]);
+  drawnWorld[0] = [...startMetric];
+  drawnWorld[drawnWorld.length - 1] = [...endMetric];
+  const sampleDistance = clamp(0.45 / Math.max(0.01, state.view.scale), 0.02, 0.16);
+  const smoothedWorld = window.LaserVectorEdit?.fitOpenPolyline(drawnWorld, {
+    minDistance: sampleDistance,
+    tolerance: clamp(0.8 / Math.max(0.01, state.view.scale), 0.04, 0.18),
+    passes: 1,
+  });
+  if (!smoothedWorld?.length) {
+    tool.startIndex = null;
+    tool.startAnchor = null;
+    tool.draftWorldPoints = [];
+    setStatus("Çizilen kontur yumuşatılamadı.", "danger");
+    draw();
+    return false;
+  }
+  const replacement = smoothedWorld.map((point) => patternSourcePointFromWorld(target.pattern, { x: point[0], y: point[1] }));
+  replacement[0] = [...prepared.points[prepared.startIndex]];
+  replacement[replacement.length - 1] = [...prepared.points[prepared.endIndex]];
+  const nextPoints = window.LaserVectorEdit?.replacePolylineSection(
+    prepared.points,
+    prepared.metricPoints,
+    Boolean(target.vectorPath.closed),
+    prepared.startIndex,
+    prepared.endIndex,
+    replacement
+  );
+  if (!nextPoints) {
+    tool.startIndex = null;
+    tool.startAnchor = null;
+    tool.draftWorldPoints = [];
+    setStatus("Bu iki nokta arasında kontur değiştirilemedi.", "danger");
+    draw();
+    return false;
+  }
+
+  pushUndo("Konturu yeniden çiz");
+  target.vectorPath.points = nextPoints;
+  refreshVectorPathMetrics(target.vectorPath);
+  cancelVectorRepairTool();
+  draw();
+  updateSelectionPanel();
+  updateJobAnalysisNow();
+  setStatus("Çizdiğiniz bölüm kontura yapıştırıldı ve otomatik yumuşatıldı.", "ok");
+  return true;
 }
 
 function drawPatternSelectionOutline(pattern, active = false) {
@@ -3099,7 +3966,133 @@ function drawVectorGhostStrokes(pattern, filledPreview) {
   }
 }
 
+function vectorStrokeColor(palette, operation, selectedPath) {
+  if (selectedPath) return palette.selection;
+  if (operation === "cut") return palette.cut;
+  if (operation === "ignore") return palette.ignored;
+  if (operation === "engrave_fill") return palette.engraveFill;
+  return palette.engraveLine;
+}
+
+function createInteractionVectorBitmap(pattern) {
+  if (!vectorPatternHasPaths(pattern)) return null;
+  const sourceWidth = Math.max(1, Number(pattern.sourceWidth) || Number(pattern.width) || 1);
+  const sourceHeight = Math.max(1, Number(pattern.sourceHeight) || Number(pattern.height) || 1);
+  const displayedMax = Math.max(pattern.width, pattern.height) * Math.max(0.001, state.view.scale);
+  const bitmapMax = clamp(Math.round(displayedMax), 320, 1400);
+  const bitmapScale = bitmapMax / Math.max(sourceWidth, sourceHeight);
+  const bitmap = document.createElement("canvas");
+  bitmap.width = Math.max(1, Math.round(sourceWidth * bitmapScale));
+  bitmap.height = Math.max(1, Math.round(sourceHeight * bitmapScale));
+  const bitmapContext = bitmap.getContext("2d");
+  if (!bitmapContext) return null;
+
+  const palette = canvasPalette();
+  const pointCount = vectorPatternPointCount(pattern);
+  const stride = Math.max(1, Math.ceil(pointCount / 24000));
+  const appendPoint = (point, first) => {
+    const x = Number(point[0]) * bitmapScale;
+    const y = Number(point[1]) * bitmapScale;
+    if (first) bitmapContext.moveTo(x, y);
+    else bitmapContext.lineTo(x, y);
+  };
+
+  for (const vectorPath of pattern.vectorPaths || []) {
+    if (vectorPath.removed) continue;
+    const points = vectorPath.points || [];
+    if (points.length < 2) continue;
+    const operation = vectorPathOperation(vectorPath, pattern);
+    const selectedPath =
+      state.selected?.type === "vectorPath" &&
+      state.selected.id === pattern.id &&
+      state.selected.pathId === vectorPath.id;
+    bitmapContext.beginPath();
+    appendPoint(points[0], true);
+    let lastIndex = 0;
+    for (let index = stride; index < points.length; index += stride) {
+      appendPoint(points[index], false);
+      lastIndex = index;
+    }
+    if (lastIndex !== points.length - 1) appendPoint(points[points.length - 1], false);
+    if (vectorPath.closed) bitmapContext.closePath();
+    if (operation === "engrave_fill" && vectorPath.closed) {
+      bitmapContext.fillStyle = colorWithAlpha(palette.engraveFill, 0.42);
+      bitmapContext.fill("evenodd");
+    }
+    bitmapContext.strokeStyle = vectorStrokeColor(palette, operation, selectedPath);
+    bitmapContext.lineWidth = selectedPath ? 2.6 : operation === "cut" ? 1.6 : 1.4;
+    bitmapContext.setLineDash(operation === "ignore" ? [6, 4] : []);
+    bitmapContext.stroke();
+  }
+  bitmapContext.setLineDash([]);
+  return bitmap;
+}
+
+function interactionVectorBitmap(pattern) {
+  if (!canvasInteraction) return null;
+  if (!canvasInteraction.vectorBitmaps) canvasInteraction.vectorBitmaps = new Map();
+  if (canvasInteraction.vectorBitmaps.has(pattern.id)) {
+    return canvasInteraction.vectorBitmaps.get(pattern.id);
+  }
+  const bitmap = createInteractionVectorBitmap(pattern);
+  canvasInteraction.vectorBitmaps.set(pattern.id, bitmap);
+  return bitmap;
+}
+
+function drawAffineVectorStrokes(pattern, stride = 1, alpha = 1) {
+  const palette = canvasPalette();
+  const affine = vectorScreenAffine(pattern);
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  for (const vectorPath of pattern.vectorPaths || []) {
+    if (vectorPath.removed) continue;
+    const points = vectorPath.points || [];
+    if (points.length < 2) continue;
+    const operation = vectorPathOperation(vectorPath, pattern);
+    const selectedPath =
+      state.selected?.type === "vectorPath" &&
+      state.selected.id === pattern.id &&
+      state.selected.pathId === vectorPath.id;
+    if (!appendAffineVectorPath(points, affine, stride, Boolean(vectorPath.closed))) continue;
+    ctx.strokeStyle = vectorStrokeColor(palette, operation, selectedPath);
+    ctx.lineWidth = selectedPath ? 2.6 : operation === "cut" ? 1.6 : 1.4;
+    ctx.setLineDash(operation === "ignore" ? [6, 4] : []);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawFastVectorPattern(pattern) {
+  const sourceImage = state.images.get(pattern.id);
+  if (sourceImage && sourceImage.complete) {
+    drawWithPatternClip(pattern, () => drawTransformedPatternImage(pattern, sourceImage, 0.32));
+    return;
+  }
+  const bitmap = interactionVectorBitmap(pattern);
+  if (bitmap) {
+    drawWithPatternClip(pattern, () => drawTransformedPatternImage(pattern, bitmap, 0.92));
+    return;
+  }
+  const pointCount = vectorPatternPointCount(pattern);
+  const stride = Math.max(1, Math.ceil(pointCount / 1800));
+  const clipRegion = patternClipRegion(pattern);
+  if (!clipRegion) {
+    drawAffineVectorStrokes(pattern, stride, 0.9);
+    return;
+  }
+  ctx.save();
+  applyCanvasClipRegion(clipRegion);
+  drawAffineVectorStrokes(pattern, stride, 0.9);
+  eraseClipMarginBand(clipRegion);
+  ctx.restore();
+}
+
 function drawVectorPattern(pattern) {
+  if ((state.drag || canvasInteraction) && vectorPatternPointCount(pattern) > 2500) {
+    drawFastVectorPattern(pattern);
+    return;
+  }
   const palette = canvasPalette();
   const clipRegion = patternClipRegion(pattern);
   const filledPreview = vectorPatternFilledPreview(pattern);
@@ -3119,6 +4112,11 @@ function drawVectorPattern(pattern) {
   }
 
   if (clipRegion) drawVectorGhostStrokes(pattern, filledPreview);
+
+  if (!clipRegion && !filledPreview) {
+    drawAffineVectorStrokes(pattern);
+    return;
+  }
 
   for (const vectorPath of pattern.vectorPaths || []) {
     if (vectorPath.removed) continue;
@@ -3208,14 +4206,103 @@ function vectorPatternFillInvert(pattern) {
   return Boolean(pattern?.vectorStats?.filledTraceInvert);
 }
 
+function patternTransformSnapshot(pattern) {
+  if (!pattern) return null;
+  return {
+    x: Number(pattern.x) || 0,
+    y: Number(pattern.y) || 0,
+    width: Number(pattern.width) || 1,
+    height: Number(pattern.height) || 1,
+    rotation: Number(pattern.rotation) || 0,
+    mirrorX: Boolean(pattern.mirrorX),
+    mirrorY: Boolean(pattern.mirrorY),
+    sourceWidth: pattern.sourceWidth,
+    sourceHeight: pattern.sourceHeight,
+  };
+}
+
+function beginCanvasInteraction(kind, options = {}) {
+  const pattern = options.pattern || null;
+  const patternId = pattern?.id || null;
+  if (canvasInteraction?.kind === kind && canvasInteraction.patternId === patternId) {
+    if (options.preserveLocked && !canvasInteraction.preserveLocked) {
+      canvasInteraction.preserveLocked = true;
+      canvasInteraction.startPattern = patternTransformSnapshot(pattern);
+    }
+    canvasInteraction.updatePanel ||= Boolean(options.updatePanel);
+    canvasInteraction.updateAnalysis ||= Boolean(options.updateAnalysis);
+    return canvasInteraction;
+  }
+  if (canvasInteraction) finishCanvasInteraction({ redraw: false });
+  if (options.undoLabel) pushUndo(options.undoLabel);
+  canvasInteraction = {
+    kind,
+    patternId,
+    startPattern: options.preserveLocked ? patternTransformSnapshot(pattern) : null,
+    preserveLocked: Boolean(options.preserveLocked),
+    updatePanel: Boolean(options.updatePanel),
+    updateAnalysis: Boolean(options.updateAnalysis),
+    vectorBitmaps: new Map(),
+  };
+  return canvasInteraction;
+}
+
+function scheduleCanvasInteractionEnd(delay = 160) {
+  window.clearTimeout(canvasInteractionTimer);
+  canvasInteractionTimer = window.setTimeout(() => {
+    canvasInteractionTimer = null;
+    finishCanvasInteraction();
+  }, delay);
+}
+
+function finishCanvasInteraction(options = {}) {
+  const redraw = options.redraw !== false;
+  const updateUi = options.updateUi !== false;
+  window.clearTimeout(canvasInteractionTimer);
+  canvasInteractionTimer = null;
+  const interaction = canvasInteraction;
+  if (!interaction) return;
+  canvasInteraction = null;
+  if (interaction.preserveLocked && interaction.startPattern && interaction.patternId) {
+    const pattern = patternById(interaction.patternId);
+    if (pattern && vectorPatternNeedsResizePreserve(pattern)) {
+      preserveLockedVectorPaths(interaction.startPattern, pattern);
+    }
+  }
+  if (redraw) flushCanvasDraw();
+  if (updateUi && interaction.updatePanel) {
+    const pattern = interaction.patternId ? patternById(interaction.patternId) : null;
+    if (!syncPatternPanelGeometry(pattern)) updateSelectionPanel();
+  }
+  if (updateUi && interaction.updateAnalysis) updateJobAnalysisNow();
+}
+
+function requestCanvasDraw() {
+  if (canvasDrawFrame !== null) return;
+  canvasDrawFrame = window.requestAnimationFrame(() => {
+    canvasDrawFrame = null;
+    draw();
+  });
+}
+
+function flushCanvasDraw() {
+  if (canvasDrawFrame !== null) {
+    window.cancelAnimationFrame(canvasDrawFrame);
+    canvasDrawFrame = null;
+  }
+  draw();
+}
+
 function draw() {
   computeView();
   ctx.clearRect(0, 0, state.view.width, state.view.height);
   drawGrid();
   drawPatterns();
   drawPlacements();
+  drawVectorRegionCursor();
+  drawVectorRepairCursor();
   drawSelectedPatternHandles();
-  scheduleJobAnalysis(state.drag ? 180 : 80);
+  scheduleJobAnalysis(state.drag ? 220 : canvasInteraction ? 500 : 80);
 }
 
 function selectionKey(item) {
@@ -3485,6 +4572,7 @@ function vectorQualitySummary(pattern) {
     removedManual,
     hiddenAuto,
     stitched: Number(stats.stitchedGap || 0),
+    junctionAnchors: Number(stats.preservedJunctionAnchors || 0),
     contoursFound: Number(stats.contoursFound || 0),
     duration: Number(stats.timings?.total || 0),
     warnings,
@@ -3497,9 +4585,9 @@ function vectorQualityHtml(pattern) {
   const warningText = summary.warnings.length ? `<span><b>Uyarı:</b> ${escapeHtml(summary.warnings.join(" "))}</span>` : "<span><b>Durum:</b> Üretim için temel kontrol temiz.</span>";
   const durationText = summary.duration ? ` · ${summary.duration.toFixed(2)} sn` : "";
   return `<div class="vector-quality-list">
-    <span><b>${escapeHtml(operationLabel(summary.operation))}</b> · aktif ${summary.active}/${summary.total} kontur${durationText}</span>
+    <span><b>${escapeHtml(patternOperationDisplayLabel(pattern))}</b> · aktif ${summary.active}/${summary.total} kontur${durationText}</span>
     <span>Kapalı ${summary.closed} · açık ${summary.open} · küçük ${summary.tiny}</span>
-    <span>Gizlenen ${summary.hiddenAuto} · elle silinen ${summary.removedManual} · birleşen ${summary.stitched}</span>
+    <span>Gizlenen ${summary.hiddenAuto} · elle silinen ${summary.removedManual} · birleşen ${summary.stitched}${summary.junctionAnchors ? ` · korunan bağlantı ${summary.junctionAnchors}` : ""}</span>
     ${warningText}
   </div>`;
 }
@@ -3567,6 +4655,13 @@ function operationLabel(operation) {
   );
 }
 
+function patternOperationDisplayLabel(pattern) {
+  if (isCadLineArtPattern(pattern) && pattern.regionClassificationMode === "exterior-cut") {
+    return "Karma · dış kesim / iç kazıma";
+  }
+  return operationLabel(patternOperation(pattern));
+}
+
 function setPatternOperationDefaults(pattern, operation) {
   if (!pattern) return;
   const nextOperation = normalizeOperation(operation, pattern.kind === "raster" ? "engrave_fill" : "engrave_line");
@@ -3587,6 +4682,26 @@ function setPatternOperationDefaults(pattern, operation) {
   }
 }
 
+function setCadLineArtDefaults(pattern) {
+  if (!pattern) return;
+  pattern.cadLineArt = true;
+  pattern.regionClassificationMode = pattern.regionClassificationMode || "exterior-cut";
+  pattern.cutRegionSeeds = clonePlain(pattern.cutRegionSeeds || []);
+  pattern.cutPower = clamp(Math.round(Number(pattern.cutPower ?? mm("cutPower", 1000))), 0, 1000);
+  pattern.cutFeed = Math.max(1, Number(pattern.cutFeed ?? mm("cutFeed", 500)));
+  pattern.engravePower = clamp(Math.round(Number(pattern.engravePower ?? mm("engravePower", 250))), 0, 1000);
+  pattern.engraveFeed = Math.max(1, Number(pattern.engraveFeed ?? mm("engraveFeed", 1800)));
+  pattern.power = pattern.engravePower;
+  pattern.feed = pattern.engraveFeed;
+  pattern.operation = "engrave_line";
+  pattern.vectorEngraveMode = "contour";
+}
+
+function setProfessionalPatternDefaults(pattern, professionalMode) {
+  if (professionalMode?.mixedOperations) setCadLineArtDefaults(pattern);
+  else setPatternOperationDefaults(pattern, professionalMode?.operation);
+}
+
 function applyPatternOperation(pattern, operation) {
   const nextOperation = normalizeOperation(operation, pattern?.kind === "raster" ? "engrave_fill" : "engrave_line");
   if (!pattern) return;
@@ -3597,8 +4712,136 @@ function applyPatternOperation(pattern, operation) {
   if (pattern.operation === nextOperation && !needsPathSync) return;
   pushUndo("Desen islemi");
   setPatternOperationDefaults(pattern, nextOperation);
+  if (pattern.cadLineArt) {
+    pattern.regionClassificationMode = "manual";
+    for (const vectorPath of pattern.vectorPaths || []) {
+      if (!vectorPath.removed) vectorPath.operationManual = true;
+    }
+  }
   draw();
   updateSelectionPanel();
+}
+
+function isCadLineArtPattern(pattern) {
+  return Boolean(pattern?.cadLineArt && vectorPatternHasPaths(pattern));
+}
+
+function cancelVectorRegionSelection(message = "") {
+  state.vectorRegionTool.active = false;
+  state.vectorRegionTool.pending = false;
+  state.vectorRegionTool.patternId = null;
+  canvas.style.cursor = "";
+  if (message) setStatus(message, "warn");
+}
+
+async function reclassifyCadLineArtPattern(pattern, options = {}) {
+  if (!isCadLineArtPattern(pattern)) return null;
+  if (options.resetManual) {
+    for (const vectorPath of pattern.vectorPaths || []) delete vectorPath.operationManual;
+  }
+  const data = await api("/api/classify-vector-regions", {
+    vectorPaths: pattern.vectorPaths || [],
+    sourceWidth: pattern.sourceWidth || pattern.width,
+    sourceHeight: pattern.sourceHeight || pattern.height,
+    seeds: pattern.cutRegionSeeds || [],
+    includeExterior: true,
+  });
+  const classification = data.classification || {};
+  const exteriorIds = new Set(classification.exteriorPathIds || []);
+  const markedIds = new Set(classification.markedPathIds || []);
+  for (const vectorPath of pattern.vectorPaths || []) {
+    if (vectorPath.removed) continue;
+    const pathId = String(vectorPath.id || "");
+    if (markedIds.has(pathId)) {
+      vectorPath.operation = "cut";
+      vectorPath.regionOperation = "marked";
+      continue;
+    }
+    if (vectorPath.operationManual) {
+      vectorPath.regionOperation = "manual";
+      continue;
+    }
+    vectorPath.operation = exteriorIds.has(pathId) ? "cut" : "engrave_line";
+    vectorPath.regionOperation = exteriorIds.has(pathId) ? "exterior" : "inner";
+  }
+  setCadLineArtDefaults(pattern);
+  pattern.regionClassificationMode = "exterior-cut";
+  pattern.regionClassification = classification;
+  pattern.vectorStats = {
+    ...(pattern.vectorStats || {}),
+    regionCutPaths: (classification.cutPathIds || []).length,
+    regionEngravePaths: Math.max(0, Number(classification.stats?.activePaths || 0) - (classification.cutPathIds || []).length),
+    markedCutRegions: (classification.regions || []).filter((item) => item.resolved).length,
+  };
+  if (options.render !== false) {
+    draw();
+    updateSelectionPanel();
+    updateJobAnalysisNow();
+  }
+  return classification;
+}
+
+function beginVectorRegionSelection(pattern) {
+  if (!isCadLineArtPattern(pattern)) return;
+  state.vectorRegionTool.active = true;
+  state.vectorRegionTool.pending = false;
+  state.vectorRegionTool.patternId = pattern.id;
+  canvas.style.cursor = "crosshair";
+  setStatus("Kesime alınacak kapalı alanın içine tıklayın. Esc ile iptal edebilirsiniz.", "info");
+}
+
+function cadContourRemovalStatus(classification) {
+  const cutCount = classification?.cutPathIds?.length || 0;
+  return cutCount > 0
+    ? `Dış çerçeve silindi; ${cutCount} büyük yeni dış kontur kesime geçti. Küçük ayrıntılar kazımada kaldı.`
+    : "Dış çerçeve silindi; kesime uygun büyük bir yeni dış kontur bulunamadı. Küçük ayrıntılar kazımada kaldı.";
+}
+
+async function markVectorCutRegionAtWorld(worldPoint) {
+  const tool = state.vectorRegionTool;
+  const pattern = patternById(tool.patternId);
+  if (!tool.active || tool.pending || !isCadLineArtPattern(pattern)) return;
+  if (!pointInPolygon(worldPoint, patternCorners(pattern))) {
+    setStatus("Alan işareti seçili desenin içinde olmalı.", "warn");
+    return;
+  }
+  const [sourceX, sourceY] = patternSourcePointFromWorld(pattern, worldPoint);
+  const seed = { x: Number(sourceX), y: Number(sourceY) };
+  const duplicate = (pattern.cutRegionSeeds || []).some(
+    (item) => Math.hypot(Number(item.x) - seed.x, Number(item.y) - seed.y) <= 2
+  );
+  if (duplicate) {
+    cancelVectorRegionSelection("Bu alan daha önce işaretlendi.");
+    return;
+  }
+  pushUndo("Kesim alanı işaretle");
+  pattern.cutRegionSeeds = [...(pattern.cutRegionSeeds || []), seed];
+  tool.active = false;
+  tool.pending = true;
+  canvas.style.cursor = "wait";
+  try {
+    const classification = await reclassifyCadLineArtPattern(pattern);
+    const regions = classification?.regions || [];
+    const selectedRegion = regions[regions.length - 1];
+    const pathCount = selectedRegion?.pathIds?.length || 0;
+    if (!selectedRegion?.resolved || pathCount === 0) {
+      pattern.cutRegionSeeds = pattern.cutRegionSeeds.slice(0, -1);
+      draw();
+      updateSelectionPanel();
+      setStatus("Bu noktada kesim sınırı oluşturan kapalı bir alan bulunamadı.", "warn");
+    } else {
+      setStatus(`Alan işaretlendi; sınırındaki ${pathCount} kontur kesime alındı.`, "ok");
+    }
+  } catch (error) {
+    pattern.cutRegionSeeds = pattern.cutRegionSeeds.slice(0, -1);
+    draw();
+    updateSelectionPanel();
+    setStatus(error.message || "Alan sınıflandırılamadı.", "danger");
+  } finally {
+    state.vectorRegionTool.pending = false;
+    state.vectorRegionTool.patternId = null;
+    canvas.style.cursor = "";
+  }
 }
 
 function applyPlacementOperation(placement, operation) {
@@ -3624,7 +4867,7 @@ function updatePartsList(analysis = state.currentAnalysis || computeJobAnalysis(
       const inside = active.filter((item) => item.inside).length;
       const outside = active.length - inside;
       const physicalFits = itemFitsActiveArea(part, analysis.bed, analysis.margin, Boolean(refs.allowRotate?.checked));
-      const level = !physicalFits || outside ? "danger" : inside ? "ok" : "";
+      const level = !physicalFits || outside ? "warn" : inside ? "ok" : "";
       const quantity = partQuantity(part);
       return `<div class="item part-item ${level}" data-part-id="${escapeHtml(part.id)}">
         <div>
@@ -3656,7 +4899,7 @@ function updatePartsList(analysis = state.currentAnalysis || computeJobAnalysis(
 
 function updateSummary(extra = "", analysis = state.currentAnalysis || computeJobAnalysis()) {
   const b = analysis.bed;
-  const bounds = jobBounds();
+  const bounds = productionJobBounds(analysis);
   const boundsLines = bounds
     ? [
         `İş alanı: ${boundsSize(bounds).width.toFixed(2)} x ${boundsSize(bounds).height.toFixed(2)} mm`,
@@ -3682,6 +4925,16 @@ function updateSummary(extra = "", analysis = state.currentAnalysis || computeJo
 }
 
 function select(type, id, extra = {}) {
+  const previousKey = state.selected ? `${state.selected.type}:${state.selected.id}` : "";
+  const nextKey = type && id ? `${type}:${id}` : "";
+  if (state.vectorRegionTool.active && id !== state.vectorRegionTool.patternId) {
+    cancelVectorRegionSelection();
+  }
+  if (previousKey !== nextKey) {
+    textFontApplyToken += 1;
+    activeTextFontPreview = null;
+    if (textFontMenuIsOpen()) closeTextFontMenu();
+  }
   state.selected = type && id ? { type, id, ...extra } : null;
   if (!state.selected) {
     state.selectedItems = [];
@@ -3692,6 +4945,7 @@ function select(type, id, extra = {}) {
   } else {
     state.selectedItems = [];
   }
+  if (type === "pattern" || type === "vectorPath") syncTextControlsFromPattern(patternById(id));
   updateSelectionPanel();
   draw();
 }
@@ -3701,7 +4955,17 @@ function selectPatternItems(patternIds, activeId = null) {
   const active = activeId && state.selectedItems.some((item) => item.id === activeId)
     ? activeId
     : state.selectedItems[0]?.id;
+  if (state.vectorRegionTool.active && active !== state.vectorRegionTool.patternId) {
+    cancelVectorRegionSelection();
+  }
+  const previousId = state.selected?.id || "";
+  if (previousId !== (active || "")) {
+    textFontApplyToken += 1;
+    activeTextFontPreview = null;
+    if (textFontMenuIsOpen()) closeTextFontMenu();
+  }
   state.selected = active ? { type: "pattern", id: active } : null;
+  if (active) syncTextControlsFromPattern(patternById(active));
   updateSelectionPanel();
   draw();
 }
@@ -3834,19 +5098,50 @@ function bindPlacementPanel(placement) {
   });
 }
 
+function patternPanelKindText(pattern) {
+  if (pattern?.kind === "vector") return "Foto vektör";
+  if (pattern?.kind === "svg") return "Temiz SVG vektör";
+  return "Raster kazıma";
+}
+
+function patternPanelGeometrySummary(pattern) {
+  const multiSelectionText = state.selectedItems.length > 1 ? ` · ${state.selectedItems.length} secili` : "";
+  return `${patternPanelKindText(pattern)} · ${patternOperationDisplayLabel(pattern)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm${multiSelectionText}`;
+}
+
+function syncPatternPanelGeometry(pattern) {
+  if (!pattern || state.selected?.id !== pattern.id) return false;
+  const values = {
+    x: Number(pattern.x).toFixed(2),
+    y: Number(pattern.y).toFixed(2),
+    width: Number(pattern.width).toFixed(2),
+    height: Number(pattern.height).toFixed(2),
+    rotation: Number(pattern.rotation).toFixed(1),
+  };
+  let found = false;
+  for (const [key, value] of Object.entries(values)) {
+    const input = refs.selectionPanel.querySelector(`[data-pattern="${key}"]`);
+    if (!input) continue;
+    found = true;
+    if (document.activeElement !== input) input.value = value;
+  }
+  const summary = refs.selectionPanel.querySelector("[data-pattern-geometry-summary]");
+  if (summary) {
+    summary.textContent = patternPanelGeometrySummary(pattern);
+    found = true;
+  }
+  return found;
+}
+
 function renderPatternPanel(pattern) {
   if (!pattern) {
     select(null, null);
     return;
   }
-  const kindText =
-    pattern.kind === "vector"
-        ? "Foto vektör"
-        : pattern.kind === "svg"
-          ? "Temiz SVG vektör"
-          : "Raster kazıma";
+  const kindText = patternPanelKindText(pattern);
   const operation = patternOperation(pattern);
   const hasVectorPaths = vectorPatternHasPaths(pattern);
+  const cadLineArt = isCadLineArtPattern(pattern);
   const canFillVectorEngrave = vectorCanFillEngrave(pattern);
   const filledVectorEngrave = operation === "engrave_fill" && vectorPatternFilledPreview(pattern);
   const operationText =
@@ -3857,7 +5152,7 @@ function renderPatternPanel(pattern) {
         : operation === "ignore"
           ? "Yok say: bu nesne G-code çıktısına dahil edilmez."
           : "Kazıma çizgi: mavi çizgi kazıma yolu olarak üretir.";
-  const operationControl = `<div class="operation-card">
+  const operationControl = cadLineArt ? "" : `<div class="operation-card">
         <div>
           <strong>İşlem</strong>
           <span>${operationText}</span>
@@ -3912,6 +5207,7 @@ function renderPatternPanel(pattern) {
       ? `<div class="svg-clean-info">
           <strong>${pattern.kind === "svg" ? "SVG konturları hazır" : "Foto vektör hazır"}</strong>
           <span>Aktif kontur: ${activeVectorCount} / ${(pattern.vectorPaths || []).length}</span>
+          <span>Nokta: ${Number(vectorStats.pointsKept || vectorPatternPointCount(pattern)).toLocaleString("tr-TR")}${vectorStats.detailPreservation ? " · İnce detay koruma açık" : ""}</span>
           <span>Korunan kontur: ${lockedVectorCount}</span>
           <span>Oynatilabilir kontur: ${deformableVectorCount}</span>
           <span>Kaynak: ${Number(pattern.sourceWidth || 0).toFixed(0)} x ${Number(pattern.sourceHeight || 0).toFixed(0)} px</span>
@@ -3933,12 +5229,50 @@ function renderPatternPanel(pattern) {
             .join("")}
         </div>`
       : "";
+  const pathCounts = patternPathOperationCounts(pattern);
+  const regionStats = pattern.regionClassification?.stats || {};
+  const markedRegionCount = (pattern.regionClassification?.regions || []).filter((item) => item.resolved).length;
+  const dominantFrameId = pattern.regionClassification?.dominantExteriorPathId;
+  const cadFrameStateText = regionStats.dominantExteriorRemoved || regionStats.exteriorPromotionSuppressed
+    ? `Dış çerçeve kaldırıldı. ${Number(regionStats.structuralExteriorPaths || 0)} büyük yeni dış kontur kesimde; kuş, ayak, çiçek gibi küçük ayrıntılar kazımada.`
+    : dominantFrameId
+      ? "Tasarımı saran baskın dış çerçeve kesimde; içerideki ayrıntılar kazımada."
+      : "Baskın bir dış çerçeve bulunamadı. Tüm motifler kazımada; kesilecek kapalı alanları siz işaretleyebilirsiniz.";
+  const cadRegionControl = cadLineArt
+    ? `<div class="operation-card cad-region-card">
+        <div>
+          <strong>CAD dış / iç sınıflandırması</strong>
+          <span>${cadFrameStateText}</span>
+        </div>
+        <div class="cad-region-counts">
+          <span><b>${pathCounts.cut}</b> kesim konturu</span>
+          <span><b>${pathCounts.engrave_line}</b> kazıma konturu</span>
+          <span><b>${markedRegionCount}</b> işaretli alan</span>
+          <span><b>${Number(regionStats.regionCount || 0)}</b> algılanan alan</span>
+        </div>
+        <div class="button-grid">
+          ${dominantFrameId && !(regionStats.dominantExteriorRemoved || regionStats.exteriorPromotionSuppressed) ? `<button id="panelRemoveCadOuterFrame" class="danger">Dış Çerçeveyi Kaldır</button>` : ""}
+          <button id="panelSelectCadCutRegion">Alanı Kesime Al</button>
+          <button id="panelReclassifyCadRegions">Dış / İç Yeniden Sınıflandır</button>
+          <button id="panelClearCadCutRegions" ${pattern.cutRegionSeeds?.length ? "" : "disabled"}>Alan İşaretlerini Temizle</button>
+          <button data-operation="ignore">Deseni Yok Say</button>
+        </div>
+      </div>`
+    : "";
+  const processControls = cadLineArt
+    ? `<label>Kesim gücü S <input data-pattern="cutPower" type="number" min="0" max="1000" step="10" value="${Number(pattern.cutPower ?? mm("cutPower", 1000))}" /></label>
+       <label>Kesim hızı F <input data-pattern="cutFeed" type="number" min="1" step="50" value="${Number(pattern.cutFeed ?? mm("cutFeed", 500))}" /></label>
+       <label>Kazıma gücü S <input data-pattern="engravePower" type="number" min="0" max="1000" step="10" value="${Number(pattern.engravePower ?? mm("engravePower", 250))}" /></label>
+       <label>Kazıma hızı F <input data-pattern="engraveFeed" type="number" min="1" step="50" value="${Number(pattern.engraveFeed ?? mm("engraveFeed", 1800))}" /></label>`
+    : `<label>${operation === "cut" ? "Kesim gücü S" : "Kazıma gücü S"} <input data-pattern="power" type="number" min="0" max="1000" step="10" value="${pattern.power}" /></label>
+       <label>${operation === "cut" ? "Kesim hızı F" : "Kazıma hızı F"} <input data-pattern="feed" type="number" min="1" step="50" value="${pattern.feed}" /></label>`;
   refs.selectionPanel.innerHTML = `
-    <div class="property-title"><strong>${escapeHtml(pattern.name || "Desen")}</strong><span>${kindText} · ${operationLabel(operation)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm${multiSelectionText}</span></div>
+    <div class="property-title"><strong>${escapeHtml(pattern.name || "Desen")}</strong><span data-pattern-geometry-summary>${kindText} · ${patternOperationDisplayLabel(pattern)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm${multiSelectionText}</span></div>
     ${svgInfo}
     ${vectorInfo}
     ${vectorQualityCard}
     ${debugInfo}
+    ${cadRegionControl}
     ${operationControl}
     ${vectorModeControl}
     <div class="form-grid">
@@ -3948,8 +5282,7 @@ function renderPatternPanel(pattern) {
       <label>Yükseklik <input data-pattern="height" type="number" min="1" step="0.01" value="${pattern.height.toFixed(2)}" /></label>
       <label>Açı <input data-pattern="rotation" type="number" step="0.1" value="${pattern.rotation.toFixed(1)}" /></label>
       <label>Ek iç pay <input data-pattern="clipMargin" type="number" min="0" step="0.1" value="${Number(pattern.clipMargin || 0).toFixed(1)}" /></label>
-      <label>${operation === "cut" ? "Kesim gücü S" : "Kazıma gücü S"} <input data-pattern="power" type="number" min="0" max="1000" step="10" value="${pattern.power}" /></label>
-      <label>${operation === "cut" ? "Kesim hızı F" : "Kazıma hızı F"} <input data-pattern="feed" type="number" min="1" step="50" value="${pattern.feed}" /></label>
+      ${processControls}
       ${
         rasterControls ||
         (filledVectorEngrave
@@ -4103,6 +5436,19 @@ function renderVectorPathPanel(pattern, vectorPath) {
         <button id="panelResetVectorPathScale">100 / 100</button>
       </div>
     </div>
+    <div class="operation-card vector-repair-card">
+      <div>
+        <strong>Yerel kontur düzeltme</strong>
+        <span>Kısa çıkıntıyı tek tıklamayla düzleştirin veya bozuk bölümü fareyle yeniden çizin. Yeniden çizmede yeşil nokta, kontura tam yapışan başlangıç/bitiş yerini gösterir.</span>
+      </div>
+      <div class="form-grid">
+        <label>Düzleştirme yarıçapı mm <input id="vectorPathRepairRadius" type="number" min="0.1" step="0.1" value="${Number(state.vectorRepairTool.radius || 1).toFixed(1)}" /></label>
+      </div>
+      <div class="button-grid">
+        <button id="panelRepairVectorPath">Çıkıntıyı Düzleştir</button>
+        <button id="panelRedrawVectorPath">Konturu Yeniden Çiz</button>
+      </div>
+    </div>
     <div class="button-grid">
       <button id="panelCopyVectorPath">Konturu Kopyala</button>
       <button id="panelDeleteVectorPath" class="danger">Konturu Sil</button>
@@ -4120,6 +5466,8 @@ function renderVectorPathPanel(pattern, vectorPath) {
       pushUndo("Kontur islemi");
       vectorPath.operation = nextOperation;
       vectorPath.removed = false;
+      vectorPath.operationManual = true;
+      vectorPath.regionOperation = "manual";
       draw();
       updateSelectionPanel();
     });
@@ -4147,6 +5495,41 @@ function renderVectorPathPanel(pattern, vectorPath) {
     updateSelectionPanel();
     updateJobAnalysisNow();
     setStatus("Seçili konturun mikro köprüleri temizlendi.", "ok");
+  });
+  document.getElementById("panelRepairVectorPath")?.addEventListener("click", () => {
+    const radius = Math.max(0.1, Number(document.getElementById("vectorPathRepairRadius")?.value) || 1);
+    cancelVectorRegionSelection();
+    state.materialArea.drawing = false;
+    state.materialArea.previewPoint = null;
+    state.vectorRepairTool.active = true;
+    state.vectorRepairTool.mode = "straighten";
+    state.vectorRepairTool.drawing = false;
+    state.vectorRepairTool.patternId = pattern.id;
+    state.vectorRepairTool.pathId = vectorPath.id;
+    state.vectorRepairTool.radius = radius;
+    state.vectorRepairTool.startAnchor = null;
+    state.vectorRepairTool.draftWorldPoints = [];
+    state.vectorRepairTool.pointerId = null;
+    canvas.style.cursor = "none";
+    draw();
+    setStatus(`Yerel düzeltme aktif: hatalı çıkıntının üzerine tıklayın (${radius.toFixed(1)} mm).`);
+  });
+  document.getElementById("panelRedrawVectorPath")?.addEventListener("click", () => {
+    cancelVectorRegionSelection();
+    state.materialArea.drawing = false;
+    state.materialArea.previewPoint = null;
+    state.vectorRepairTool.active = true;
+    state.vectorRepairTool.mode = "redraw";
+    state.vectorRepairTool.drawing = false;
+    state.vectorRepairTool.patternId = pattern.id;
+    state.vectorRepairTool.pathId = vectorPath.id;
+    state.vectorRepairTool.startIndex = null;
+    state.vectorRepairTool.startAnchor = null;
+    state.vectorRepairTool.draftWorldPoints = [];
+    state.vectorRepairTool.pointerId = null;
+    canvas.style.cursor = "none";
+    draw();
+    setStatus("Konturu yeniden çiz: mevcut çizginin üzerinden başlayın, fareyi basılı tutarak yeni eğriyi çizin ve yine konturun üzerinde bırakın.");
   });
   document.getElementById("panelVectorPathLocked")?.addEventListener("change", (event) => {
     pushUndo("Kontur kilidi");
@@ -4210,10 +5593,19 @@ function renderVectorPathPanel(pattern, vectorPath) {
     if (scaleY) scaleY.value = "100";
   });
   document.getElementById("panelCopyVectorPath").addEventListener("click", copySelectedVectorPath);
-  document.getElementById("panelDeleteVectorPath").addEventListener("click", () => {
+  document.getElementById("panelDeleteVectorPath").addEventListener("click", async () => {
     pushUndo("Kontur sil");
     vectorPath.removed = true;
+    if (isCadLineArtPattern(pattern) && pattern.regionClassificationMode === "exterior-cut") {
+      try {
+        const classification = await reclassifyCadLineArtPattern(pattern, { render: false });
+        setStatus(cadContourRemovalStatus(classification), "ok");
+      } catch (error) {
+        setStatus(error.message || "Dış ve iç konturlar yeniden sınıflandırılamadı.", "danger");
+      }
+    }
     select("pattern", pattern.id);
+    updateJobAnalysisNow();
   });
   document.getElementById("panelSelectVectorPattern").addEventListener("click", () => {
     select("pattern", pattern.id);
@@ -4226,18 +5618,41 @@ function bindPatternPanel(pattern) {
     input.addEventListener("input", () => {
       const key = input.dataset.pattern;
       const value = Number(input.value) || 0;
+      const geometryEdit = ["x", "y", "width", "height", "rotation"].includes(key);
+      if (geometryEdit) {
+        beginCanvasInteraction("pattern-panel-geometry", {
+          pattern,
+          preserveLocked: key === "width" || key === "height",
+        });
+      }
       if (key === "width" || key === "height") {
-        updatePatternGeometry(pattern, { [key]: value });
+        updatePatternGeometry(pattern, { [key]: value }, { preserveLocked: false });
       } else {
         pattern[key] = value;
       }
-      if (key === "power") pattern[key] = clamp(Math.round(pattern[key]), 0, 1000);
-      if (key === "powerMin") pattern[key] = clamp(Math.round(pattern[key]), 0, 1000);
+      if (["power", "powerMin", "cutPower", "engravePower"].includes(key)) {
+        pattern[key] = clamp(Math.round(pattern[key]), 0, 1000);
+      }
+      if (["feed", "cutFeed", "engraveFeed"].includes(key)) pattern[key] = Math.max(1, pattern[key]);
+      if (key === "engravePower") pattern.power = pattern.engravePower;
+      if (key === "engraveFeed") pattern.feed = pattern.engraveFeed;
       if (key === "gamma") pattern[key] = Math.max(0.2, Math.min(4, pattern[key]));
       if (key === "lineStep") pattern[key] = Math.max(0.05, pattern[key]);
       if (key === "threshold") pattern[key] = clamp(Math.round(pattern[key]), 0, 255);
       if (key === "clipMargin") pattern[key] = Math.max(0, pattern[key]);
-      draw();
+      requestCanvasDraw();
+      if (geometryEdit) scheduleCanvasInteractionEnd(220);
+    });
+    input.addEventListener("change", () => {
+      const geometryEdit = ["x", "y", "width", "height", "rotation"].includes(input.dataset.pattern);
+      if (!geometryEdit) return;
+      if (canvasInteraction?.kind === "pattern-panel-geometry" && canvasInteraction.patternId === pattern.id) {
+        finishCanvasInteraction();
+      } else {
+        flushCanvasDraw();
+        updateJobAnalysisNow();
+      }
+      if (!syncPatternPanelGeometry(pattern)) updateSelectionPanel();
     });
   });
   refs.selectionPanel.querySelectorAll("[data-pattern-text]").forEach((input) => {
@@ -4259,6 +5674,50 @@ function bindPatternPanel(pattern) {
   });
   refs.selectionPanel.querySelectorAll("[data-operation]").forEach((button) => {
     button.addEventListener("click", () => applyPatternOperation(pattern, button.dataset.operation));
+  });
+  document.getElementById("panelSelectCadCutRegion")?.addEventListener("click", () => {
+    beginVectorRegionSelection(pattern);
+    draw();
+  });
+  document.getElementById("panelRemoveCadOuterFrame")?.addEventListener("click", async () => {
+    const frameId = pattern.regionClassification?.dominantExteriorPathId;
+    const framePath = (pattern.vectorPaths || []).find((item) => String(item.id || "") === String(frameId || ""));
+    if (!framePath || framePath.removed) {
+      setStatus("Kaldırılacak baskın dış çerçeve bulunamadı.", "warn");
+      return;
+    }
+    pushUndo("Dış çerçeveyi kaldır");
+    framePath.removed = true;
+    try {
+      const classification = await reclassifyCadLineArtPattern(pattern);
+      setStatus(cadContourRemovalStatus(classification), "ok");
+    } catch (error) {
+      framePath.removed = false;
+      setStatus(error.message || "Dış çerçeve kaldırılamadı.", "danger");
+      draw();
+      updateSelectionPanel();
+    }
+  });
+  document.getElementById("panelReclassifyCadRegions")?.addEventListener("click", async () => {
+    pushUndo("Dış iç sınıflandır");
+    try {
+      const classification = await reclassifyCadLineArtPattern(pattern, { resetManual: true });
+      const cutCount = classification?.cutPathIds?.length || 0;
+      setStatus(`Dış ve iç konturlar yenilendi; ${cutCount} kontur kesim olarak ayarlandı.`, "ok");
+    } catch (error) {
+      setStatus(error.message || "Dış ve iç konturlar sınıflandırılamadı.", "danger");
+    }
+  });
+  document.getElementById("panelClearCadCutRegions")?.addEventListener("click", async () => {
+    if (!pattern.cutRegionSeeds?.length) return;
+    pushUndo("Kesim alanlarını temizle");
+    pattern.cutRegionSeeds = [];
+    try {
+      await reclassifyCadLineArtPattern(pattern);
+      setStatus("İşaretli alanlar temizlendi; yalnız dış sınırlar kesimde kaldı.", "ok");
+    } catch (error) {
+      setStatus(error.message || "Alan işaretleri temizlenemedi.", "danger");
+    }
   });
   refs.selectionPanel.querySelectorAll("[data-vector-engrave-mode]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -4286,15 +5745,25 @@ function bindPatternPanel(pattern) {
   document.getElementById("panelRevectorize")?.addEventListener("click", revectorizeSelected);
   document.getElementById("panelSmoothVector")?.addEventListener("click", () => smoothSelectedVector(pattern));
   document.getElementById("panelSaveVectorSvg")?.addEventListener("click", saveSelectedVectorSvg);
-  document.getElementById("panelRestoreVectorPaths")?.addEventListener("click", () => {
+  document.getElementById("panelRestoreVectorPaths")?.addEventListener("click", async () => {
     pushUndo("Konturlari geri yukle");
     if (pattern.originalVectorPaths?.length) {
       pattern.vectorPaths = cloneVectorPaths(pattern.originalVectorPaths);
     } else {
       for (const vectorPath of pattern.vectorPaths || []) vectorPath.removed = false;
     }
-    draw();
-    updateSelectionPanel();
+    if (isCadLineArtPattern(pattern)) {
+      try {
+        await reclassifyCadLineArtPattern(pattern);
+      } catch (error) {
+        setStatus(error.message || "Konturlar geri yüklendi ancak yeniden sınıflandırılamadı.", "warn");
+        draw();
+        updateSelectionPanel();
+      }
+    } else {
+      draw();
+      updateSelectionPanel();
+    }
   });
   document.getElementById("panelDeletePattern").addEventListener("click", () => {
     pushUndo("Desen sil");
@@ -4518,19 +5987,36 @@ function cutSuitabilityIssuesForPattern(pattern, kerf = Math.min(1, Math.max(0, 
     });
   }
 
-  const bridgeCandidates = closedCutPaths.length <= 180 ? closedCutPaths : [];
+  const bridgeContourLimit = 180;
+  const bridgeDistanceBudget = 1500000;
+  const bridgePointCount = closedCutPaths.reduce((total, item) => total + item.points.length, 0);
+  const bridgePairs = [];
+  let bridgeDistanceCost = 0;
+  let bridgeSkipReason = closedCutPaths.length > bridgeContourLimit ? "contours" : "";
+  if (!bridgeSkipReason) {
+    pairScan:
+    for (let i = 0; i < closedCutPaths.length; i += 1) {
+      for (let j = i + 1; j < closedCutPaths.length; j += 1) {
+        const first = closedCutPaths[i];
+        const second = closedCutPaths[j];
+        if (boundsDistance(first.bounds, second.bounds) > bridgeLimit) continue;
+        bridgeDistanceCost += first.points.length * second.points.length * 2;
+        if (bridgeDistanceCost > bridgeDistanceBudget) {
+          bridgeSkipReason = "points";
+          bridgePairs.length = 0;
+          break pairScan;
+        }
+        bridgePairs.push([first, second]);
+      }
+    }
+  }
   let narrowBridgeCount = 0;
   let narrowestBridge = Infinity;
-  for (let i = 0; i < bridgeCandidates.length; i += 1) {
-    for (let j = i + 1; j < bridgeCandidates.length; j += 1) {
-      const first = bridgeCandidates[i];
-      const second = bridgeCandidates[j];
-      if (boundsDistance(first.bounds, second.bounds) > bridgeLimit) continue;
-      const distance = polylineMinimumDistance(first.points, second.points, true, true, bridgeLimit);
-      if (distance <= bridgeLimit) {
-        narrowBridgeCount += 1;
-        narrowestBridge = Math.min(narrowestBridge, distance);
-      }
+  for (const [first, second] of bridgePairs) {
+    const distance = polylineMinimumDistance(first.points, second.points, true, true, bridgeLimit);
+    if (distance <= bridgeLimit) {
+      narrowBridgeCount += 1;
+      narrowestBridge = Math.min(narrowestBridge, distance);
     }
   }
   if (narrowBridgeCount) {
@@ -4542,11 +6028,14 @@ function cutSuitabilityIssuesForPattern(pattern, kerf = Math.min(1, Math.max(0, 
       target: "cut-suitability",
       patternId: pattern.id,
     });
-  } else if (closedCutPaths.length > 180) {
+  } else if (bridgeSkipReason) {
+    const reason = bridgeSkipReason === "contours"
+      ? `${closedCutPaths.length} kapalı kesim konturu`
+      : `${closedCutPaths.length} konturda ${bridgePointCount.toLocaleString("tr-TR")} nokta`;
     issues.push({
       level: "info",
       title: "Köprü denetimi atlandı",
-      body: `${pattern.name || "Desen"} içinde ${closedCutPaths.length} kapalı kesim konturu var. Yakınlık denetimi performans için atlandı; gerekirse deseni parçalara ayırıp kontrol edin.`,
+      body: `${pattern.name || "Desen"} içinde ${reason} var. Yakınlık denetimi arayüzü kilitlememek için atlandı; gerekirse deseni parçalara ayırıp kontrol edin.`,
       action: "Deseni seç",
       target: "cut-suitability",
       patternId: pattern.id,
@@ -4615,15 +6104,23 @@ function computeJobAnalysis() {
 
   const activePlacements = placements.filter((item) => item.active);
   const activePatterns = patterns.filter((item) => item.active && item.pathCount > 0);
+  const productionPlacements = activePlacements.filter((item) => item.inside && item.physicalFits);
+  const productionPlacementIds = new Set(productionPlacements.map((item) => item.placement.id));
+  const productionPatterns = activePatterns.filter(
+    (item) => item.inside && (!item.pattern.parentId || productionPlacementIds.has(item.pattern.parentId))
+  );
   for (const item of patterns) {
-    item.boundaryIssue = item.active ? patternBoundaryIssue(item.pattern, activePlacements) : null;
+    item.production = productionPatterns.includes(item);
+    item.boundaryIssue = item.production ? patternBoundaryIssue(item.pattern, productionPlacements) : null;
   }
-  const patternBoundaryIssues = activePatterns.map((item) => item.boundaryIssue).filter(Boolean);
-  const cutSuitabilityIssues = activePatterns.flatMap((item) => item.cutSuitabilityIssues || []);
-  const outsidePlacements = activePlacements.filter((item) => !item.inside);
-  const outsidePatterns = activePatterns.filter((item) => !item.inside);
-  const oversizedParts = state.parts.filter((part) => !itemFitsActiveArea(part, b, margin, allowRotate));
-  const placedInside = activePlacements.filter((item) => item.inside).length;
+  const patternBoundaryIssues = productionPatterns.map((item) => item.boundaryIssue).filter(Boolean);
+  const cutSuitabilityIssues = productionPatterns.flatMap((item) => item.cutSuitabilityIssues || []);
+  const outsidePlacements = activePlacements.filter((item) => !item.inside || !item.physicalFits);
+  const outsidePatterns = activePatterns.filter((item) => !productionPatterns.includes(item));
+  const oversizedParts = state.parts.filter((part) =>
+    activePlacements.some((item) => item.part?.id === part.id && !item.physicalFits)
+  );
+  const placedInside = productionPlacements.length;
   const requestedPlacements = state.parts.reduce((total, part) => total + partQuantity(part), 0);
   const quantityMismatches = state.parts
     .map((part) => ({
@@ -4637,13 +6134,13 @@ function computeJobAnalysis() {
   let engraveFillCount = 0;
   let ignoredCount = placements.filter((item) => !item.active).length;
 
-  for (const item of activePlacements) {
+  for (const item of productionPlacements) {
     const pathCount = item.part?.paths?.length || 0;
     if (item.operation === "cut") cutPathCount += pathCount;
     else if (item.operation === "engrave_fill") engraveFillCount += pathCount;
     else engraveLineCount += pathCount;
   }
-  for (const item of activePatterns) {
+  for (const item of productionPatterns) {
     cutPathCount += item.pathCounts.cut;
     engraveLineCount += item.pathCounts.engrave_line;
     engraveFillCount += item.pathCounts.engrave_fill;
@@ -4658,21 +6155,12 @@ function computeJobAnalysis() {
       action: "Tabla ölçüsünü düzelt",
     });
   }
-  if (oversizedParts.length) {
-    const first = oversizedParts[0];
-    warnings.push({
-      level: "critical",
-      title: `${oversizedParts.length} parça fiziksel olarak sığmıyor`,
-      body: `${first.name} ${first.width.toFixed(1)} × ${first.height.toFixed(1)} mm, aktif alan ${Math.max(0, activeWidth).toFixed(1)} × ${Math.max(0, activeHeight).toFixed(1)} mm.`,
-      action: "Tabla ölçüsünü büyüt",
-    });
-  }
   const outsideCount = outsidePlacements.length + outsidePatterns.length;
   if (outsideCount) {
     warnings.push({
-      level: "critical",
-      title: `${outsideCount} nesne tabla dışında`,
-      body: "Aktif alan dışında kalan nesneler varken G-code oluşturulamaz.",
+      level: "warning",
+      title: `${outsideCount} nesne üretim alanı dışında`,
+      body: "Bu nesnelerin tamamı G-code dışında bırakılacak; yalnız tablaya tamamen sığan nesneler üretilecek.",
       action: "Dıştakileri göster",
       target: "outside",
     });
@@ -4754,10 +6242,13 @@ function computeJobAnalysis() {
     quantity,
     placements,
     patterns,
+    productionPlacements,
+    productionPatterns,
     requestedPlacements,
     placedInside,
     outsidePlacements,
     outsidePatterns,
+    excludedOutsideCount: outsideCount,
     patternBoundaryIssues,
     cutSuitabilityIssues,
     oversizedParts,
@@ -4792,8 +6283,8 @@ function layoutStatusBody(status, analysis) {
   if (status === "güncel") return "Parçalar mevcut tabla ve boşluk ayarlarına göre yerleştirildi.";
   if (status === "manuel") return "Bazı parçalar elle taşındı. Otomatik yerleşim tekrar çalışırsa bu konumlar değişebilir.";
   if (status === "ayarlar_değişti") return "Tabla ölçüsü, boşluk veya DXF adedi değişti. Mevcut yerleşim eski ayarlara göre.";
-  if (status === "dışarıda") return `${analysis.outsidePlacements.length + analysis.outsidePatterns.length} nesne aktif tabla alanının dışında. G-code oluşturulamaz.`;
-  if (status === "sığmıyor") return `${analysis.oversizedParts[0]?.name || "Parça"} aktif tabla alanından büyük.`;
+  if (status === "dışarıda") return `${analysis.outsidePlacements.length + analysis.outsidePatterns.length} nesne üretim dışında bırakılacak; içeridekilerle G-code oluşturulabilir.`;
+  if (status === "sığmıyor") return `${analysis.oversizedParts[0]?.name || "Parça"} aktif tabla alanından büyük ve G-code'a dahil edilmeyecek.`;
   return "Parçaları tabla üzerine yerleştirmek için Otomatik Yerleştir’e basın.";
 }
 
@@ -4808,8 +6299,8 @@ function renderJobSummary(analysis) {
   const outside = analysis.outsidePlacements.length + analysis.outsidePatterns.length;
   const cells = [
     ["DXF parça", state.parts.length, state.parts.length ? "ok" : ""],
-    ["Yerleşen", `${analysis.placedInside} / ${analysis.requestedPlacements || analysis.placements.length}`, outside ? "danger" : "ok"],
-    ["Dışta kalan", outside, outside ? "danger" : "ok"],
+    ["Yerleşen", `${analysis.placedInside} / ${analysis.requestedPlacements || analysis.placements.length}`, outside ? "warn" : "ok"],
+    ["Dışta kalan", outside, outside ? "warn" : "ok"],
     ["Desen", state.patterns.length, state.patterns.length ? "ok" : ""],
     ["Kesim yolu", analysis.cutPathCount, analysis.cutPathCount ? "ok" : ""],
     ["Kazıma yolu", analysis.engraveLineCount + analysis.engraveFillCount, analysis.engraveLineCount + analysis.engraveFillCount ? "ok" : ""],
@@ -4835,7 +6326,7 @@ function renderJobSummary(analysis) {
 
 function renderLayoutStatus(analysis) {
   if (!refs.layoutStatus) return;
-  const level = analysis.layoutStatus === "sığmıyor" || analysis.layoutStatus === "dışarıda" ? "danger" : analysis.layoutStatus === "güncel" ? "ok" : "warn";
+  const level = analysis.layoutStatus === "güncel" ? "ok" : "warn";
   refs.layoutStatus.className = `state-card ${level}`;
   refs.layoutStatus.innerHTML = `<strong>${layoutStatusText(analysis.layoutStatus)}</strong><span>${layoutStatusBody(analysis.layoutStatus, analysis)}</span>`;
   refs.layoutBanner?.classList.toggle("hidden", !state.layout.dirty);
@@ -4874,14 +6365,14 @@ function renderPatternsList(analysis) {
     return;
   }
   refs.patternsList.innerHTML = analysis.patterns
-    .map(({ pattern, operation, inside, boundaryIssue, cutSuitabilityIssues }) => {
+    .map(({ pattern, operation, inside, production, boundaryIssue, cutSuitabilityIssues }) => {
       const cutIssue = cutSuitabilityIssues?.[0] || null;
-      const level = operation === "ignore" ? "" : !inside ? "danger" : boundaryIssue ? severityClass(boundaryIssue.level) : cutIssue ? "warn" : "ok";
+      const level = operation === "ignore" ? "" : !production ? "warn" : boundaryIssue ? severityClass(boundaryIssue.level) : cutIssue ? "warn" : "ok";
       const stateText =
         operation === "ignore"
           ? "Yok say"
-          : !inside
-            ? "Dışta"
+          : !production
+            ? "Üretim dışı"
             : boundaryIssue?.level === "warning"
               ? "Kırpılacak"
               : boundaryIssue
@@ -4893,8 +6384,8 @@ function renderPatternsList(analysis) {
       return `<button type="button" class="item ${level}" data-pattern-id="${escapeHtml(pattern.id)}">
         <div>
           <strong>${escapeHtml(pattern.name || "Desen")}</strong>
-          <small>${operationLabel(operation)} · ${pattern.width.toFixed(1)} × ${pattern.height.toFixed(1)} mm</small>
-          <small>${clip}${boundaryIssue ? ` · ${escapeHtml(boundaryIssue.title)}` : cutIssue ? ` · ${escapeHtml(cutIssue.title)}` : inside ? "" : " · Tabla dışında"}</small>
+          <small>${patternOperationDisplayLabel(pattern)} · ${pattern.width.toFixed(1)} × ${pattern.height.toFixed(1)} mm</small>
+          <small>${clip}${boundaryIssue ? ` · ${escapeHtml(boundaryIssue.title)}` : cutIssue ? ` · ${escapeHtml(cutIssue.title)}` : production ? "" : inside ? " · Bağlı parça üretim dışı" : " · Tabla dışında"}</small>
         </div>
         <span>${stateText}</span>
       </button>`;
@@ -4924,7 +6415,11 @@ function renderPreflight(analysis) {
     ${
       issueList
         ? `<div class="warning-item critical"><div class="warning-title">G-code oluşturulamaz<span>${analysis.criticalCount} kritik</span></div><ul>${issueList}</ul><button id="showFirstPreflightIssue">İlk sorunu göster</button></div>`
-        : `<div class="warning-item info"><div class="warning-title">Kontrol tamam<span>${analysis.warningCount} dikkat</span></div><span>Kırmızı yollar kesim, mavi yollar çizgi kazıma, taramalı alanlar dolgu kazıma olarak üretilecek.</span></div>`
+        : `<div class="warning-item info"><div class="warning-title">Kontrol tamam<span>${analysis.warningCount} dikkat</span></div><span>${
+            analysis.excludedOutsideCount
+              ? `Tabla dışındaki ${analysis.excludedOutsideCount} nesne dahil edilmeyecek; içerideki yollar üretilecek.`
+              : "Kırmızı yollar kesim, mavi yollar çizgi kazıma, taramalı alanlar dolgu kazıma olarak üretilecek."
+          }</span></div>`
     }
   `;
   document.getElementById("showFirstPreflightIssue")?.addEventListener("click", () => focusWarning(analysis.warnings.find((item) => item.level === "critical")));
@@ -4937,7 +6432,7 @@ function renderStatusBars(analysis) {
   setChip(
     refs.layoutChip,
     layoutStatusText(analysis.layoutStatus),
-    analysis.layoutStatus === "güncel" ? "ok" : analysis.layoutStatus === "dışarıda" || analysis.layoutStatus === "sığmıyor" ? "danger" : "warn"
+    analysis.layoutStatus === "güncel" ? "ok" : "warn"
   );
   setChip(refs.warningChip, `Uyarı: ${totalWarnings}`, analysis.criticalCount ? "danger" : analysis.warningCount ? "warn" : "ok");
   if (refs.bottomStatus) {
@@ -5179,7 +6674,7 @@ function parkOutsideItems() {
   acceptCurrentLayoutSettings();
   state.layout.manual = true;
   draw();
-  setStatus(`${items.length} parça park alanına alındı. Dışta parça varken G-code oluşturulamaz.`);
+  setStatus(`${items.length} parça park alanına alındı. Bu parçalar G-code'a dahil edilmeyecek.`, "warn");
 }
 
 function rectOverlaps(a, b, gap) {
@@ -5196,100 +6691,12 @@ function appendPartsToLayout(parts) {
   return optimizedAppendPartsToLayout(parts);
 }
 
-function packRectWidth(rect) {
-  return Math.max(0, rect.maxX - rect.minX);
-}
-
-function packRectHeight(rect) {
-  return Math.max(0, rect.maxY - rect.minY);
-}
-
-function packRectArea(rect) {
-  return packRectWidth(rect) * packRectHeight(rect);
-}
-
-function packRectContains(outer, inner) {
-  return (
-    outer.minX <= inner.minX + 0.001 &&
-    outer.minY <= inner.minY + 0.001 &&
-    outer.maxX >= inner.maxX - 0.001 &&
-    outer.maxY >= inner.maxY - 0.001
-  );
-}
-
-function packingUsableRect(b, margin) {
-  const rect = { minX: margin, minY: margin, maxX: b.width - margin, maxY: b.height - margin };
-  return packRectWidth(rect) > 0.001 && packRectHeight(rect) > 0.001 ? rect : null;
-}
-
-function packingExpandedRect(rect, amount) {
-  return {
-    minX: rect.minX - amount,
-    minY: rect.minY - amount,
-    maxX: rect.maxX + amount,
-    maxY: rect.maxY + amount,
-  };
-}
-
-function prunePackingFreeRects(rects) {
-  const filtered = rects.filter((rect) => packRectWidth(rect) > 0.001 && packRectHeight(rect) > 0.001);
-  const result = [];
-  for (let index = 0; index < filtered.length; index += 1) {
-    let contained = false;
-    for (let other = 0; other < filtered.length; other += 1) {
-      if (index !== other && packRectContains(filtered[other], filtered[index])) {
-        contained = true;
-        break;
-      }
-    }
-    if (!contained) result.push(filtered[index]);
-  }
-  return result;
-}
-
-function splitPackingFreeRects(freeRects, usedRect) {
-  const next = [];
-  for (const free of freeRects) {
-    if (!rectOverlaps(free, usedRect, 0)) {
-      next.push(free);
-      continue;
-    }
-    if (usedRect.minX > free.minX + 0.001) next.push({ minX: free.minX, minY: free.minY, maxX: usedRect.minX, maxY: free.maxY });
-    if (usedRect.maxX < free.maxX - 0.001) next.push({ minX: usedRect.maxX, minY: free.minY, maxX: free.maxX, maxY: free.maxY });
-    if (usedRect.minY > free.minY + 0.001) next.push({ minX: free.minX, minY: free.minY, maxX: free.maxX, maxY: usedRect.minY });
-    if (usedRect.maxY < free.maxY - 0.001) next.push({ minX: free.minX, minY: usedRect.maxY, maxX: free.maxX, maxY: free.maxY });
-  }
-  return prunePackingFreeRects(next);
-}
-
 function packingItemOptions(item, allowRotate) {
-  const part = item.part;
-  const options = [{ rotation: 0, width: part.width, height: part.height }];
-  if (!item.fixedRotation && allowRotate && Math.abs(part.width - part.height) > 0.001) options.push({ rotation: 90, width: part.height, height: part.width });
-  return options;
+  return LaserPacking.itemOptions(item, allowRotate);
 }
 
 function comparePackingScore(a, b) {
-  for (let index = 0; index < a.length; index += 1) {
-    if (Math.abs(a[index] - b[index]) > 0.001) return a[index] - b[index];
-  }
-  return 0;
-}
-
-function bestPackingPosition(item, freeRects, allowRotate) {
-  let best = null;
-  for (const option of packingItemOptions(item, allowRotate)) {
-    for (const free of freeRects) {
-      if (option.width > packRectWidth(free) + 0.001 || option.height > packRectHeight(free) + 0.001) continue;
-      const rect = { minX: free.minX, minY: free.minY, maxX: free.minX + option.width, maxY: free.minY + option.height };
-      const waste = packRectArea(free) - option.width * option.height;
-      const shortSide = Math.min(packRectWidth(free) - option.width, packRectHeight(free) - option.height);
-      const longSide = Math.max(packRectWidth(free) - option.width, packRectHeight(free) - option.height);
-      const score = [waste, shortSide, longSide, rect.minY, rect.minX];
-      if (!best || comparePackingScore(score, best.score) < 0) best = { ...option, rect, score };
-    }
-  }
-  return best;
+  return LaserPacking.compareScores(a, b);
 }
 
 function materialAreaScanStep(gap) {
@@ -5319,6 +6726,7 @@ function findMaterialAreaSlot(item, occupiedRects, b, margin, gap, allowRotate) 
   const maxX = Math.min(b.width, areaBounds.maxX);
   const maxY = Math.min(b.height, areaBounds.maxY);
   const step = materialAreaScanStep(gap);
+  const occupiedBounds = LaserPacking.rectsBounds(occupiedRects);
   let best = null;
   for (const option of packingItemOptions(item, allowRotate)) {
     const xMax = maxX - option.width;
@@ -5331,7 +6739,7 @@ function findMaterialAreaSlot(item, occupiedRects, b, margin, gap, allowRotate) 
         const rect = { minX: x, minY: y, maxX: x + option.width, maxY: y + option.height };
         if (!rectFitsActiveArea(rect, b, margin)) continue;
         if (!occupiedRects.every((used) => !rectOverlaps(rect, used, gap))) continue;
-        const score = [rect.minY, rect.minX, option.width * option.height, option.rotation];
+        const score = LaserPacking.scorePlacementBounds(rect, occupiedBounds, option, false);
         if (!best || comparePackingScore(score, best.score) < 0) best = { ...option, rect, score };
       }
     }
@@ -5363,12 +6771,7 @@ function packLayoutItemsInMaterialArea(items, occupiedRects = []) {
 }
 
 function sortedPackingItems(items) {
-  return [...items].sort((a, bItem) => {
-    const aArea = a.part.width * a.part.height;
-    const bArea = bItem.part.width * bItem.part.height;
-    if (Math.abs(bArea - aArea) > 0.001) return bArea - aArea;
-    return Math.max(bItem.part.width, bItem.part.height) - Math.max(a.part.width, a.part.height);
-  });
+  return LaserPacking.sortItems(items, "area");
 }
 
 function placePackingOverflowItems(items, startY, b, margin, gap, allowRotate) {
@@ -5403,23 +6806,10 @@ function packLayoutItems(items, occupiedRects = []) {
   const margin = Math.max(0, mm("margin", 1));
   const gap = Math.max(0, mm("gap", 3));
   const allowRotate = refs.allowRotate.checked;
-  let freeRects = [];
-  const usable = packingUsableRect(b, margin);
-  if (usable) freeRects = [usable];
-  for (const rect of occupiedRects) {
-    freeRects = splitPackingFreeRects(freeRects, packingExpandedRect(rect, gap));
-  }
-  const packed = [];
-  const overflowItems = [];
-  for (const item of sortedPackingItems(items)) {
-    const best = bestPackingPosition(item, freeRects, allowRotate);
-    if (!best) {
-      overflowItems.push(item);
-      continue;
-    }
-    packed.push({ item, x: best.rect.minX, y: best.rect.minY, rotation: best.rotation, rect: best.rect, overflow: false });
-    freeRects = splitPackingFreeRects(freeRects, packingExpandedRect(best.rect, gap));
-  }
+  const usableRect = { minX: margin, minY: margin, maxX: b.width - margin, maxY: b.height - margin };
+  const result = LaserPacking.packRectangles({ items, usableRect, occupiedRects, gap, allowRotate });
+  const packed = result.packed;
+  const overflowItems = result.overflowItems;
   const startY = Math.max(b.height + gap, margin, ...occupiedRects.map((rect) => rect.maxY + gap), ...packed.map((item) => item.rect.maxY + gap));
   const overflow = placePackingOverflowItems(overflowItems, startY, b, margin, gap, allowRotate);
   return { packed: [...packed, ...overflow], overflowCount: overflow.length };
@@ -5427,6 +6817,7 @@ function packLayoutItems(items, occupiedRects = []) {
 
 function buildReusableLayoutItems() {
   const queues = new Map();
+  const placementsWithPatterns = new Set(state.patterns.map((pattern) => pattern.parentId).filter(Boolean));
   for (const placement of state.placements) {
     if (!queues.has(placement.partId)) queues.set(placement.partId, []);
     queues.get(placement.partId).push(placement);
@@ -5436,7 +6827,8 @@ function buildReusableLayoutItems() {
     const quantity = partQuantity(part);
     for (let index = 0; index < quantity; index += 1) {
       const placement = queues.get(part.id)?.shift() || null;
-      items.push({ part, placement });
+      const fixedRotation = Boolean(placement && placementsWithPatterns.has(placement.id));
+      items.push({ part, placement, fixedRotation, rotation: fixedRotation ? placement.rotation : 0 });
     }
   }
   return items;
@@ -5577,7 +6969,14 @@ async function addDxfs() {
       setStatus("DXF seçilmedi.");
       return;
     }
-    for (const part of data.parts) part.quantity = defaultPartQuantity();
+    const quantity = await requestDxfQuantity(data.parts);
+    if (quantity === null) {
+      setStatus("DXF ekleme iptal edildi.");
+      return;
+    }
+    if (refs.quantity) refs.quantity.value = String(quantity);
+    saveUiSettings();
+    for (const part of data.parts) part.quantity = quantity;
     const hadPlacements = state.placements.length > 0;
     pushUndo("DXF ekle");
     pruneUnusedParts();
@@ -5594,7 +6993,6 @@ async function addDxfs() {
       setStatus(warning || (outside ? `${fitted}/${created.length} yeni parca tablaya sigdi.` : `${created.length} yeni parca eklendi.`));
     } else {
       autoLayout(false);
-      setStatus(`${data.parts.length} DXF eklendi.`);
     }
   } catch (error) {
     setStatus(error.message);
@@ -5780,10 +7178,10 @@ async function vectorizePhoto(options = {}) {
         debugPreviews: vector.debugPreviews || [],
       });
       pattern = replacePattern;
-      setPatternOperationDefaults(pattern, professionalMode.operation);
+      setProfessionalPatternDefaults(pattern, professionalMode);
     } else {
       pattern = createVectorPatternForPlacement(id, vector, target);
-      setPatternOperationDefaults(pattern, professionalMode.operation);
+      setProfessionalPatternDefaults(pattern, professionalMode);
       state.patterns.push(pattern);
     }
     pattern.vectorPreset = professionalMode.id;
@@ -5792,8 +7190,9 @@ async function vectorizePhoto(options = {}) {
     renderVectorQualityBox(pattern);
     const stats = vector.stats || {};
     const timeText = stats.timings?.total ? `, süre: ${Number(stats.timings.total).toFixed(2)} sn` : "";
+    const detailText = stats.detailPreservation ? ", temiz çizgi ayrıntıları korundu" : "";
     setStatus(
-      `Vektör hazır (${professionalMode.label}). Aktif: ${stats.pathsKept ?? pattern.vectorPaths.length}/${stats.pathsTotal ?? pattern.vectorPaths.length}, bulunan: ${stats.contoursFound ?? "-"}, otomatik gizlenen: ${Number(stats.removedBorder || 0) + Number(stats.removedShortPost || 0)}, birleşen: ${stats.stitchedGap ?? 0}${timeText}.`
+      `Vektör hazır (${professionalMode.label}). Aktif: ${stats.pathsKept ?? pattern.vectorPaths.length}/${stats.pathsTotal ?? pattern.vectorPaths.length}, bulunan: ${stats.contoursFound ?? "-"}, otomatik gizlenen: ${Number(stats.removedBorder || 0) + Number(stats.removedShortPost || 0)}, birleşen: ${stats.stitchedGap ?? 0}${detailText}${timeText}.`
     );
   } catch (error) {
     setStatus(error.message);
@@ -5902,6 +7301,10 @@ function createVectorPatternForPlacement(id, vector, placement) {
     vectorSettings: vector.settings || getVectorSettings(),
     vectorStats: vector.stats || null,
     debugPreviews: vector.debugPreviews || [],
+    cadLineArt: Boolean(vector.cadLineArt),
+    regionClassificationMode: vector.regionClassificationMode || null,
+    cutRegionSeeds: clonePlain(vector.cutRegionSeeds || []),
+    regionClassification: vector.regionClassification ? clonePlain(vector.regionClassification) : null,
   };
 }
 
@@ -5961,6 +7364,7 @@ function activateRibbonTab(name) {
   document.querySelectorAll(".ribbon-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.tab === name);
   });
+  scheduleCanvasResize();
 }
 
 function openVectorPanel() {
@@ -5969,9 +7373,9 @@ function openVectorPanel() {
   document.getElementById("vectorizePhotoBtn")?.focus();
 }
 
-function textCanvasFont(fontPx, font) {
-  const style = refs.textStyle?.value || "normal";
-  const weight = refs.textWeight?.value || "400";
+function textCanvasFont(fontPx, font, settings = {}) {
+  const style = settings.style || refs.textStyle?.value || "normal";
+  const weight = settings.weight || refs.textWeight?.value || "400";
   const family = font.family || "Arial, sans-serif";
   return `${style} ${weight} ${fontPx}px ${family}`;
 }
@@ -6026,14 +7430,14 @@ function trimTextCanvas(source) {
   return output;
 }
 
-async function renderTextFontMask(text, font, heightMm, trackingMm) {
+async function renderTextFontMask(text, font, heightMm, trackingMm, settings = {}) {
   const lines = String(text).split(/\r?\n/);
   let pxPerMm = 12;
   let fontPx = heightMm * pxPerMm;
   const measureCanvas = document.createElement("canvas");
   const measure = measureCanvas.getContext("2d");
   measure.textBaseline = "alphabetic";
-  measure.font = textCanvasFont(fontPx, font);
+  measure.font = textCanvasFont(fontPx, font, settings);
   await document.fonts?.load?.(measure.font);
   const maxLineWidthPx = Math.max(1, ...lines.map((line) => measureTrackedText(measure, line, trackingMm * pxPerMm)));
   const widthMmEstimate = maxLineWidthPx / pxPerMm;
@@ -6042,7 +7446,7 @@ async function renderTextFontMask(text, font, heightMm, trackingMm) {
   if (Math.max(widthMmEstimate, totalHeightMmEstimate) * pxPerMm > maxDimension) {
     pxPerMm = Math.max(3, maxDimension / Math.max(widthMmEstimate, totalHeightMmEstimate));
     fontPx = heightMm * pxPerMm;
-    measure.font = textCanvasFont(fontPx, font);
+    measure.font = textCanvasFont(fontPx, font, settings);
     await document.fonts?.load?.(measure.font);
   }
   const trackingPx = trackingMm * pxPerMm;
@@ -6056,7 +7460,7 @@ async function renderTextFontMask(text, font, heightMm, trackingMm) {
   rawCtx.clearRect(0, 0, raw.width, raw.height);
   rawCtx.fillStyle = "#000";
   rawCtx.textBaseline = "alphabetic";
-  rawCtx.font = textCanvasFont(fontPx, font);
+  rawCtx.font = textCanvasFont(fontPx, font, settings);
   lines.forEach((line, index) => {
     drawTrackedText(rawCtx, line, padding, padding + fontPx + index * lineHeight, trackingPx);
   });
@@ -6072,7 +7476,7 @@ async function renderTextFontMask(text, font, heightMm, trackingMm) {
 
 async function buildOutlineTextGeometry(text, options) {
   const font = options.font;
-  const raster = await renderTextFontMask(text, font, options.height, options.tracking);
+  const raster = await renderTextFontMask(text, font, options.height, options.tracking, options);
   if (!raster) return null;
   const data = await api("/api/vectorize-image", {
     dataUrl: raster.dataUrl,
@@ -6114,16 +7518,117 @@ async function buildOutlineTextGeometry(text, options) {
     kind: "text",
     textSettings: {
       mode: "outline",
+      text,
       font: font.name || font.label,
+      fontValue: options.fontValue || textFontValue(font),
       family: font.family,
       height: options.height,
       tracking: options.tracking,
-      weight: refs.textWeight?.value || "400",
-      style: refs.textStyle?.value || "normal",
+      weight: options.weight || refs.textWeight?.value || "400",
+      style: options.style || refs.textStyle?.value || "normal",
       operation,
     },
     vectorStats: vector.stats || null,
   };
+}
+
+async function buildEditableTextGeometry(text, font, options = {}) {
+  const requestedOperation = options.operation || "engrave_line";
+  const height = Math.max(2, Number(options.height) || 20);
+  const tracking = Number(options.tracking) || 0;
+  const weight = String(options.weight || "400");
+  const style = options.style || "normal";
+  const fontValue = options.fontValue || textFontValue(font);
+  if (font.kind === "single") {
+    const geometry = window.LaserGeometry?.buildText(text, { height, tracking });
+    if (geometry?.vectorPaths) geometry.vectorPaths.forEach((path) => { path.operation = "engrave_line"; });
+    if (geometry) {
+      geometry.textSettings = {
+        mode: "single-line",
+        text,
+        font: font.name || font.label,
+        fontValue,
+        family: font.family || "",
+        height,
+        tracking,
+        weight,
+        style,
+        operation: "engrave_line",
+      };
+    }
+    return { geometry, operation: "engrave_line" };
+  }
+  await installCustomFonts();
+  const geometry = await buildOutlineTextGeometry(text, {
+    font,
+    fontValue,
+    height,
+    tracking,
+    weight,
+    style,
+    operation: requestedOperation,
+    name: options.name || `Metin ${font.name || font.label}`,
+  });
+  return { geometry, operation: requestedOperation };
+}
+
+async function applyFontToSelectedText(pattern, value) {
+  const patternId = pattern?.id;
+  const text = editableTextValue(pattern);
+  if (!patternId || !text) {
+    clearTextFontPreview();
+    return;
+  }
+  const token = ++textFontApplyToken;
+  const font = textFontDefinitionByValue(value);
+  const settings = pattern.textSettings || {};
+  setStatus(`${font.name || font.label} hazırlanıyor...`);
+  try {
+    const { geometry, operation } = await buildEditableTextGeometry(text, font, {
+      fontValue: value,
+      height: Number(settings.height) || Number(refs.textHeight?.value) || 20,
+      tracking: Number.isFinite(Number(settings.tracking)) ? Number(settings.tracking) : Number(refs.textTracking?.value) || 0,
+      weight: settings.weight || refs.textWeight?.value || "400",
+      style: settings.style || refs.textStyle?.value || "normal",
+      operation: settings.operation || patternOperation(pattern),
+      name: pattern.name,
+    });
+    if (token !== textFontApplyToken || editableTextPattern()?.id !== patternId) return;
+    if (!geometry?.vectorPaths?.length) throw new Error("Bu font seçili metin için vektör üretemedi.");
+    const current = patternById(patternId);
+    if (!current) return;
+    const centerX = current.x + current.width / 2;
+    const centerY = current.y + current.height / 2;
+    pushUndo("Metin fontunu degistir");
+    current.sourceWidth = geometry.sourceWidth;
+    current.sourceHeight = geometry.sourceHeight;
+    current.originalWidth = geometry.sourceWidth;
+    current.originalHeight = geometry.sourceHeight;
+    current.width = geometry.sourceWidth;
+    current.height = geometry.sourceHeight;
+    current.x = centerX - current.width / 2;
+    current.y = centerY - current.height / 2;
+    current.vectorPaths = cloneVectorPaths(geometry.vectorPaths);
+    current.originalVectorPaths = cloneVectorPaths(geometry.vectorPaths);
+    current.operation = operation;
+    current.vectorEngraveMode = operation === "engrave_fill" ? "fill" : "contour";
+    current.generated = true;
+    current.generatedKind = "text";
+    current.textSettings = geometry.textSettings;
+    current.vectorStats = geometry.vectorStats || null;
+    state.images.delete(patternId);
+    activeTextFontPreview = null;
+    syncTextControlsFromPattern(current);
+    updateSelectionPanel();
+    updateJobAnalysisNow();
+    draw();
+    setStatus(`Seçili metin ${font.name || font.label} fontuyla güncellendi.`, "ok");
+  } catch (error) {
+    if (token !== textFontApplyToken) return;
+    activeTextFontPreview = null;
+    draw();
+    setStatus(error.message || "Metin fontu değiştirilemedi.", "danger");
+  }
 }
 
 async function addTextPattern() {
@@ -6142,27 +7647,20 @@ async function addTextPattern() {
   const tracking = Number(refs.textTracking?.value) || 0;
   const selectedFont = selectedTextFontDefinition();
   const requestedOperation = refs.textOperation?.value || "engrave_line";
-  let geometry;
-  let operation = requestedOperation;
-  if (selectedFont.kind === "single") {
-    operation = "engrave_line";
-    if (requestedOperation !== "engrave_line") {
-      setStatus("Tek çizgi font sadece yakma çizgi olarak üretilir; kesim veya dolgu için kontur font seç.", "warn");
-    }
-    geometry = geometryLib.buildText(text, { height, tracking });
-    if (geometry?.vectorPaths) geometry.vectorPaths.forEach((path) => { path.operation = "engrave_line"; });
-    if (geometry) geometry.textSettings = { mode: "single-line", font: selectedFont.label, height, tracking, operation };
-  } else {
+  if (selectedFont.kind === "single" && requestedOperation !== "engrave_line") {
+    setStatus("Tek çizgi font sadece yakma çizgi olarak üretilir; kesim veya dolgu için kontur font seç.", "warn");
+  } else if (selectedFont.kind !== "single") {
     setStatus("Font konturu vektöre çevriliyor...");
-    await installCustomFonts();
-    geometry = await buildOutlineTextGeometry(text, {
-      font: selectedFont,
-      height,
-      tracking,
-      operation,
-      name: `Metin ${selectedFont.name || selectedFont.label}`,
-    });
   }
+  const { geometry, operation } = await buildEditableTextGeometry(text, selectedFont, {
+    fontValue: refs.textFont?.value || "laser-single",
+    height,
+    tracking,
+    weight: refs.textWeight?.value || "400",
+    style: refs.textStyle?.value || "normal",
+    operation: requestedOperation,
+    name: `Metin ${selectedFont.name || selectedFont.label}`,
+  });
   if (!geometry) {
     setStatus("Bu metinden çizgi üretilemedi.");
     return;
@@ -6223,6 +7721,8 @@ function clonePatternPayload(pattern) {
     vectorSettings: pattern.vectorSettings ? { ...pattern.vectorSettings } : pattern.vectorSettings,
     vectorStats: pattern.vectorStats ? { ...pattern.vectorStats } : pattern.vectorStats,
     cleanStats: pattern.cleanStats ? { ...pattern.cleanStats } : pattern.cleanStats,
+    cutRegionSeeds: clonePlain(pattern.cutRegionSeeds || []),
+    regionClassification: pattern.regionClassification ? clonePlain(pattern.regionClassification) : pattern.regionClassification,
   };
 }
 
@@ -6800,7 +8300,12 @@ function moveSelected(dx, dy) {
 function resizeSelected(factor) {
   const pattern = selectedPattern();
   if (!pattern) return;
-  pushUndo("Olcekle");
+  beginCanvasInteraction("pattern-scale", {
+    pattern,
+    undoLabel: "Olcekle",
+    preserveLocked: vectorPatternNeedsResizePreserve(pattern),
+    updatePanel: true,
+  });
   const cx = pattern.x + pattern.width / 2;
   const cy = pattern.y + pattern.height / 2;
   const width = Math.max(1, pattern.width * factor);
@@ -6810,9 +8315,22 @@ function resizeSelected(factor) {
     height,
     x: cx - width / 2,
     y: cy - height / 2,
+  }, { preserveLocked: false });
+  requestCanvasDraw();
+  scheduleCanvasInteractionEnd(360);
+}
+
+function rotateSelectedContinuous(delta) {
+  const pattern = selectedPattern();
+  if (!pattern) return;
+  beginCanvasInteraction("pattern-rotate", {
+    pattern,
+    undoLabel: "Dondur",
+    updatePanel: true,
   });
-  draw();
-  updateSelectionPanel();
+  pattern.rotation = (pattern.rotation + delta + 360) % 360;
+  requestCanvasDraw();
+  scheduleCanvasInteractionEnd(360);
 }
 
 function deleteSelected() {
@@ -6834,6 +8352,15 @@ function deleteSelected() {
     if (selected) {
       selected.vectorPath.removed = true;
       select("pattern", selected.pattern.id);
+      if (isCadLineArtPattern(selected.pattern) && selected.pattern.regionClassificationMode === "exterior-cut") {
+        void reclassifyCadLineArtPattern(selected.pattern)
+          .then((classification) => {
+            setStatus(cadContourRemovalStatus(classification), "ok");
+          })
+          .catch((error) => {
+            setStatus(error.message || "Dış ve iç konturlar yeniden sınıflandırılamadı.", "danger");
+          });
+      }
       return;
     }
   } else if (state.selected.type === "placement") {
@@ -6879,10 +8406,31 @@ function hitPatternHandle(screenPoint) {
   return null;
 }
 
+function hitTestBounds(worldPoint) {
+  for (let index = state.patterns.length - 1; index >= 0; index -= 1) {
+    const pattern = state.patterns[index];
+    if (pointInPolygon(worldPoint, patternCorners(pattern))) return { type: "pattern", id: pattern.id };
+  }
+  for (let index = state.placements.length - 1; index >= 0; index -= 1) {
+    const placement = state.placements[index];
+    const size = placementSize(placement);
+    if (
+      worldPoint.x >= placement.x &&
+      worldPoint.x <= placement.x + size.width &&
+      worldPoint.y >= placement.y &&
+      worldPoint.y <= placement.y + size.height
+    ) {
+      return { type: "placement", id: placement.id };
+    }
+  }
+  return null;
+}
+
 function hitTest(worldPoint) {
   const vectorHitDistance = Math.max(2 / Math.max(0.001, state.view.scale), 0.3);
   for (let i = state.patterns.length - 1; i >= 0; i -= 1) {
     const pattern = state.patterns[i];
+    if (!pointInPolygon(worldPoint, patternCorners(pattern))) continue;
     if (vectorPatternHasPaths(pattern)) {
       const vectorPaths = pattern.vectorPaths || [];
       for (let j = vectorPaths.length - 1; j >= 0; j -= 1) {
@@ -6894,7 +8442,7 @@ function hitTest(worldPoint) {
         }
       }
     }
-    if (pointInPolygon(worldPoint, patternCorners(pattern))) return { type: "pattern", id: pattern.id };
+    return { type: "pattern", id: pattern.id };
   }
   for (let i = state.placements.length - 1; i >= 0; i -= 1) {
     const placement = state.placements[i];
@@ -6914,6 +8462,20 @@ function hitTest(worldPoint) {
 function onPointerDown(event) {
   const screen = canvasPoint(event);
   const world = screenToWorld(screen);
+  if (state.vectorRepairTool.active && event.button === 0 && !state.spaceDown) {
+    if (state.vectorRepairTool.mode === "redraw") {
+      if (beginVectorPathRedraw(world, event.pointerId)) canvas.setPointerCapture(event.pointerId);
+    } else {
+      repairVectorPathAtWorld(world);
+    }
+    event.preventDefault();
+    return;
+  }
+  if (state.vectorRegionTool.active && event.button === 0 && !state.spaceDown) {
+    void markVectorCutRegionAtWorld(world);
+    event.preventDefault();
+    return;
+  }
   if (state.materialArea.drawing && event.button === 0 && !state.spaceDown) {
     addMaterialAreaPoint(world);
     canvas.setPointerCapture(event.pointerId);
@@ -6921,6 +8483,7 @@ function onPointerDown(event) {
     return;
   }
   if (event.button === 1 || state.spaceDown) {
+    beginCanvasInteraction("pointer-pan");
     state.drag = {
       mode: "pan",
       startScreen: screen,
@@ -6935,6 +8498,7 @@ function onPointerDown(event) {
     const pattern = selectedPattern();
     const center = { x: pattern.x + pattern.width / 2, y: pattern.y + pattern.height / 2 };
     pushUndo(handle.type === "rotate" ? "Dondur" : "Olcekle");
+    beginCanvasInteraction("pointer-pattern-transform", { pattern });
     state.drag = {
       mode: handle.type,
       id: pattern.id,
@@ -6952,6 +8516,7 @@ function onPointerDown(event) {
   const hit = hitTest(world);
   if (!hit) {
     select(null, null);
+    beginCanvasInteraction("pointer-pan");
     state.drag = {
       mode: "pan",
       startScreen: screen,
@@ -6982,6 +8547,9 @@ function onPointerDown(event) {
   }
   const selectedObject = hit.type === "pattern" ? patternById(hit.id) : placementById(hit.id);
   pushUndo(hit.type === "pattern" ? "Desen tasi" : "Parca tasi");
+  if (hit.type === "pattern") {
+    beginCanvasInteraction("pointer-pattern-move", { pattern: movingPatternGroup ? null : selectedObject });
+  }
   state.drag = {
     mode: movingPatternGroup ? "moveSelection" : hit.type === "pattern" ? "movePattern" : "movePlacement",
     id: hit.id,
@@ -7004,10 +8572,23 @@ function onPointerMove(event) {
   const screen = canvasPoint(event);
   const world = screenToWorld(screen);
   state.cursor = world;
+  if (state.vectorRepairTool.active) {
+    if (state.vectorRepairTool.mode === "redraw" && state.vectorRepairTool.drawing) {
+      appendVectorPathRedraw(world);
+    }
+    canvas.style.cursor = "none";
+    requestCanvasDraw();
+    return;
+  }
+  if (state.vectorRegionTool.active) {
+    canvas.style.cursor = "crosshair";
+    requestCanvasDraw();
+    return;
+  }
   if (state.materialArea.drawing) {
     state.materialArea.previewPoint = axisConstrainedMaterialAreaPoint(world);
     canvas.style.cursor = "none";
-    draw();
+    requestCanvasDraw();
     return;
   }
   if (!state.drag) {
@@ -7022,14 +8603,14 @@ function onPointerMove(event) {
             : handle
               ? "nwse-resize"
               : "";
-    canvas.style.cursor = handleCursor || (hitTest(world) ? "move" : "grab");
+    canvas.style.cursor = handleCursor || (hitTestBounds(world) ? "move" : "grab");
     computeView();
     return;
   }
   if (state.drag.mode === "pan") {
     state.view.panX = state.drag.startPanX + (screen.x - state.drag.startScreen.x);
     state.view.panY = state.drag.startPanY + (screen.y - state.drag.startScreen.y);
-    draw();
+    requestCanvasDraw();
     return;
   }
   const dx = world.x - state.drag.startWorld.x;
@@ -7069,7 +8650,7 @@ function onPointerMove(event) {
       height,
       x: state.drag.center.x - width / 2,
       y: state.drag.center.y - height / 2,
-    });
+    }, { preserveLocked: false });
   }
   if (state.drag.mode === "resizeX") {
     const pattern = patternById(state.drag.id);
@@ -7082,7 +8663,7 @@ function onPointerMove(event) {
       height: state.drag.startPattern.height,
       x: state.drag.center.x - width / 2,
       y: state.drag.center.y - state.drag.startPattern.height / 2,
-    });
+    }, { preserveLocked: false });
   }
   if (state.drag.mode === "resizeY") {
     const pattern = patternById(state.drag.id);
@@ -7095,26 +8676,54 @@ function onPointerMove(event) {
       height,
       x: state.drag.center.x - state.drag.startPattern.width / 2,
       y: state.drag.center.y - height / 2,
-    });
+    }, { preserveLocked: false });
   }
   if (state.drag.mode === "rotate") {
     const pattern = patternById(state.drag.id);
     const angle = Math.atan2(world.y - state.drag.center.y, world.x - state.drag.center.x);
     pattern.rotation = (state.drag.startPattern.rotation + ((angle - state.drag.startAngle) * 180) / Math.PI + 360) % 360;
   }
-  draw();
-  updateSelectionPanel();
+  requestCanvasDraw();
 }
 
 function onPointerUp(event) {
-  const hadDrag = Boolean(state.drag);
-  if (state.drag?.mode === "movePlacement") {
+  if (state.vectorRepairTool.active && state.vectorRepairTool.mode === "redraw" && state.vectorRepairTool.drawing) {
+    const world = screenToWorld(canvasPoint(event));
+    if (event.type === "pointercancel") {
+      cancelVectorRepairTool("Konturu yeniden çizme iptal edildi.");
+      draw();
+    } else {
+      finishVectorPathRedraw(world);
+    }
+    canvas.releasePointerCapture?.(event.pointerId);
+    event.preventDefault();
+    return;
+  }
+  const completedDrag = state.drag;
+  const hadDrag = Boolean(completedDrag);
+  if (completedDrag?.mode === "movePlacement") {
     markManualLayout();
-    draw();
+  }
+  if (["resize", "resizeX", "resizeY"].includes(completedDrag?.mode)) {
+    const pattern = patternById(completedDrag.id);
+    if (pattern && vectorPatternNeedsResizePreserve(pattern)) {
+      preserveLockedVectorPaths(completedDrag.startPattern, pattern);
+    }
   }
   state.drag = null;
+  if (canvasInteraction?.kind?.startsWith("pointer-")) {
+    finishCanvasInteraction({ redraw: false, updateUi: false });
+  }
   canvas.releasePointerCapture?.(event.pointerId);
-  if (hadDrag) updateJobAnalysisNow();
+  if (hadDrag) {
+    flushCanvasDraw();
+    if (["movePattern", "moveSelection", "resize", "resizeX", "resizeY", "rotate"].includes(completedDrag.mode)) {
+      if (!syncPatternPanelGeometry(selectedPattern())) updateSelectionPanel();
+    } else if (completedDrag.mode === "movePlacement") {
+      updateSelectionPanel();
+    }
+    if (completedDrag.mode !== "pan") updateJobAnalysisNow();
+  }
 }
 
 function onWheel(event) {
@@ -7129,10 +8738,7 @@ function onWheel(event) {
     return;
   }
   if (pattern && pointInPolygon(world, patternCorners(pattern)) && event.shiftKey) {
-    pushUndo("Dondur");
-    pattern.rotation = (pattern.rotation + direction * 5 + 360) % 360;
-    draw();
-    updateSelectionPanel();
+    rotateSelectedContinuous(direction * 5);
     return;
   }
   zoomView(direction > 0 ? 1.12 : 1 / 1.12, screen);
@@ -7281,18 +8887,34 @@ async function generateGcode() {
   }
   try {
     setStatus("G-code oluşturuluyor...");
+    const productionPlacementIds = new Set(analysis.productionPlacements.map((item) => item.placement.id));
+    const productionPatternIds = new Set(analysis.productionPatterns.map((item) => item.pattern.id));
     const payload = {
-      parts: state.parts.map((part) => ({ id: part.id, path: part.path })),
-      placements: state.placements.map((placement) => ({ ...placement, operation: placementOperation(placement) })),
-      patterns: state.patterns.map((pattern) => ({ ...pattern, operation: patternOperation(pattern) })),
+      parts: state.parts.map((part) => clonePartPayload(part)),
+      placements: state.placements.map((placement) => ({
+        ...placement,
+        operation: productionPlacementIds.has(placement.id) ? placementOperation(placement) : "ignore",
+      })),
+      patterns: state.patterns.map((pattern) => ({
+        ...pattern,
+        operation: productionPatternIds.has(pattern.id) ? patternOperation(pattern) : "ignore",
+      })),
       settings: getSettings(),
       outputPath: refs.outputPath.value,
     };
     const data = await api("/api/generate", payload);
     const result = data.result;
-    setStatus("G-code hazır.");
+    result.excludedObjectCount = analysis.excludedOutsideCount + Number(result.excludedObjectCount || 0);
+    setStatus(
+      result.excludedObjectCount
+        ? `G-code hazır. Üretim alanı dışındaki ${result.excludedObjectCount} nesne dahil edilmedi.`
+        : "G-code hazır.",
+      result.excludedObjectCount ? "warn" : "ok"
+    );
     updateSummary(
-      `\nKesim alanı: ${result.cutWidth.toFixed(2)} x ${result.cutHeight.toFixed(2)} mm\nSatır: ${result.lineCount}`
+      `\nKesim alanı: ${result.cutWidth.toFixed(2)} x ${result.cutHeight.toFixed(2)} mm\nSatır: ${result.lineCount}${
+        result.excludedObjectCount ? `\nÜretim dışı: ${result.excludedObjectCount} nesne` : ""
+      }`
     );
     ensureMachinePreviewForCurrentOutput(false);
     openProduceFlow(result);
@@ -7321,6 +8943,19 @@ function isTypingTarget(target) {
 }
 
 function onKeyDown(event) {
+  if (event.defaultPrevented || dxfQuantityDialogOpen()) return;
+  if (state.vectorRepairTool.active && !isTypingTarget(event.target) && event.key === "Escape") {
+    cancelVectorRepairTool("Yerel kontur düzeltme iptal edildi.");
+    draw();
+    event.preventDefault();
+    return;
+  }
+  if (state.vectorRegionTool.active && !isTypingTarget(event.target) && event.key === "Escape") {
+    cancelVectorRegionSelection("Alan seçimi iptal edildi.");
+    draw();
+    event.preventDefault();
+    return;
+  }
   if (state.materialArea.drawing && !isTypingTarget(event.target)) {
     if (event.key === "Enter") {
       finishMaterialAreaDrawing();
@@ -7464,9 +9099,7 @@ function bindControls() {
   document.getElementById("vectorAutoPresetBtn")?.addEventListener("click", applyAutoVectorPreset);
   refs.applyVectorModeBtn?.addEventListener("click", () => applyVectorProfessionalMode(true));
   refs.vecProfessionalMode?.addEventListener("change", () => {
-    syncVectorProfessionalModeUi();
-    saveUiSettings();
-    renderVectorQualityBox();
+    applyVectorProfessionalMode(false);
   });
   document.getElementById("saveVectorSvgBtn").addEventListener("click", saveSelectedVectorSvg);
   document.getElementById("autoLayoutBtn").addEventListener("click", autoLayout);
@@ -7493,11 +9126,41 @@ function bindControls() {
   document.getElementById("sendGcodeToMachineBtn")?.addEventListener("click", sendGcodeToMachine);
   document.getElementById("machinePreviewBtn")?.addEventListener("click", () => loadMachinePreview(true));
   document.querySelectorAll("[data-flow-close]").forEach((el) => el.addEventListener("click", closeProduceFlow));
+  refs.dxfQuantityForm?.addEventListener("submit", submitDxfQuantityDialog);
+  refs.dxfQuantityCancelBtn?.addEventListener("click", () => closeDxfQuantityDialog(null));
+  refs.dxfQuantityInput?.addEventListener("input", () => refs.dxfQuantityInput.setCustomValidity(""));
+  document.querySelectorAll("[data-dxf-quantity-close]").forEach((el) => {
+    el.addEventListener("click", () => closeDxfQuantityDialog(null));
+  });
   document.getElementById("addTextBtn")?.addEventListener("click", addTextPattern);
   refs.textFont?.addEventListener("change", () => {
+    updateTextFontSelectionUi();
     updateTextFontHint();
     saveUiSettings();
   });
+  refs.textFontButton?.addEventListener("click", () => {
+    if (textFontMenuIsOpen()) closeTextFontMenu({ restoreFocus: true });
+    else openTextFontMenu();
+  });
+  refs.textFontSearch?.addEventListener("input", () => filterTextFontOptions(refs.textFontSearch.value));
+  refs.textFontSearch?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      focusTextFontOption(null, event.key === "ArrowDown" ? 1 : -1);
+    }
+  });
+  refs.textFontMenu?.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    closeTextFontMenu({ restoreFocus: true });
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!textFontMenuIsOpen()) return;
+    if (refs.textFontMenu?.contains(event.target) || refs.textFontPicker?.contains(event.target)) return;
+    closeTextFontMenu();
+  });
+  document.addEventListener("scroll", positionTextFontMenu, true);
+  window.addEventListener("resize", positionTextFontMenu);
   refs.textWeight?.addEventListener("change", updateTextFontHint);
   refs.textStyle?.addEventListener("change", updateTextFontHint);
   refs.textOperation?.addEventListener("change", () => {
@@ -7519,7 +9182,18 @@ function bindControls() {
   document.getElementById("flowFrameBtn")?.addEventListener("click", () => frameMachineJob());
   document.getElementById("flowSendBtn")?.addEventListener("click", () => sendGcodeToMachine());
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && produceFlowOpen()) closeProduceFlow();
+    if (event.key !== "Escape") return;
+    if (textFontMenuIsOpen()) {
+      closeTextFontMenu({ restoreFocus: true });
+      event.preventDefault();
+      return;
+    }
+    if (dxfQuantityDialogOpen()) {
+      closeDxfQuantityDialog(null);
+      event.preventDefault();
+      return;
+    }
+    if (produceFlowOpen()) closeProduceFlow();
   });
   document.getElementById("machinePreviewClearBtn")?.addEventListener("click", clearMachinePreview);
   document.querySelectorAll("[data-machine-override]").forEach((button) => {
@@ -7644,6 +9318,10 @@ syncLaserButtons();
 startClientLifecycleTracking();
 bindControls();
 resizeCanvas();
+if (window.ResizeObserver) {
+  canvasResizeObserver = new ResizeObserver(scheduleCanvasResize);
+  canvasResizeObserver.observe(canvas);
+}
 updateSelectionPanel();
 updateSummary();
 renderMachinePanel();

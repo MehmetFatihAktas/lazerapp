@@ -486,13 +486,16 @@ def write_gcode(output_path: Path,
                 pre_cut_lines: list[str] | None = None,
                 air_assist_command: str | None = None) -> None:
     power = validate_power(power)
+    laser_cmd = str(laser_cmd or "").strip().upper()
+    if laser_cmd not in {"M3", "M4"}:
+        raise DxfToGcodeError("Laser command must be M3 or M4")
     air_assist_command = normalize_air_assist_command(air_assist_command)
     if passes < 1:
         raise DxfToGcodeError("Pass count must be at least 1")
     lines: list[str] = []
     if comments:
         lines.append("G90 (use absolute coordinates)")
-    lines.extend(["G21", "G90", "G94", f"{laser_cmd.upper()} S0", "S0"])
+    lines.extend(["G21", "G90", "G94", f"{laser_cmd} S0", "S0"])
     if rapid_feed is not None:
         lines.append(f"G0 F{fmt(rapid_feed)}")
     if air_assist_command:

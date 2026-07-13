@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260707-ribbon" />
+    <link rel="stylesheet" href="/static/style.css?v=20260712-cad-region-v6" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -64,7 +64,15 @@
           <div class="ribbon-group">
             <div class="rib-row">
               <label class="rib-field wide">Metin<input id="textInput" type="text" placeholder="TESBİH" /></label>
-              <label class="rib-field wide">Font<select id="textFont"></select></label>
+              <label class="rib-field wide">Font
+                <span id="textFontPicker" class="font-picker">
+                  <button id="textFontButton" class="font-picker-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="textFontMenu">
+                    <span id="textFontButtonLabel">Laser tek çizgi</span>
+                    <span class="font-picker-chevron" aria-hidden="true"></span>
+                  </button>
+                  <select id="textFont" class="font-native-select" tabindex="-1" aria-hidden="true" hidden></select>
+                </span>
+              </label>
               <label class="rib-field">Yük.<span class="unit-input"><input id="textHeight" type="number" value="20" min="2" step="1" /><b>mm</b></span></label>
               <label class="rib-field">Aralık<span class="unit-input"><input id="textTracking" type="number" value="0" min="-2" step="0.2" /><b>mm</b></span></label>
               <label class="rib-field">Ağırlık<select id="textWeight"><option value="400">Normal</option><option value="600">Kalın</option><option value="700">Bold</option><option value="900">Siyah</option></select></label>
@@ -144,7 +152,7 @@
           <div class="ribbon-group">
             <div class="rib-row">
               <label class="rib-field">Parça arası<span class="unit-input"><input id="gap" type="number" value="3" min="0" step="0.1" /><b>mm</b></span></label>
-              <label class="rib-field">Yeni DXF adedi<input id="quantity" type="number" value="1" min="1" step="1" /></label>
+              <label class="rib-field">Adet varsayılanı<input id="quantity" type="number" value="1" min="1" max="999" step="1" /></label>
             </div>
             <label class="checkline"><input id="allowRotate" type="checkbox" checked /> 90° döndürmeye izin ver</label>
             <div id="layoutStatusBox" class="state-card"></div>
@@ -212,7 +220,7 @@
 
         <!-- ---- VEKTOR ---- -->
         <div class="ribbon-panel" data-tab="vektor" id="vectorPanel">
-          <div class="ribbon-group">
+          <div class="ribbon-group vector-base-group">
             <div class="rib-row">
               <label class="rib-field">Mod<select id="vecMode">
                 <option value="auto" selected>Otomatik</option>
@@ -229,31 +237,34 @@
               <label class="rib-field">Eşik<input id="vecThreshold" type="number" value="140" min="0" max="255" step="1" /></label>
               <label class="rib-field">Kontrast<input id="vecContrast" type="number" value="1" min="0.2" max="4" step="0.1" /></label>
             </div>
-            <label class="checkline"><input id="vecInvert" type="checkbox" checked /> Koyu alanları vektör yap</label>
-            <label class="checkline"><input id="vecBackgroundNormalize" type="checkbox" checked /> Işık/gölge düzelt</label>
-            <label class="checkline"><input id="vecRemoveBorder" type="checkbox" checked /> Fotoğraf çerçevesini temizle</label>
+            <div class="vector-check-row">
+              <label class="checkline"><input id="vecInvert" type="checkbox" checked /> Koyu alanları vektör yap</label>
+              <label class="checkline"><input id="vecBackgroundNormalize" type="checkbox" checked /> Işık/gölge düzelt</label>
+              <label class="checkline"><input id="vecRemoveBorder" type="checkbox" checked /> Fotoğraf çerçevesini temizle</label>
+            </div>
             <span class="ribbon-group-title">Vektör Ayarı</span>
           </div>
           <div class="ribbon-sep"></div>
           <div class="ribbon-group vector-pro-group">
             <div class="rib-row">
               <label class="rib-field wide">Profesyonel mod<select id="vecProfessionalMode">
-                <option value="cut-stencil" selected>Kesim şablonu</option>
+                <option value="cad-line-art" selected>CAD tek çizgi · dış kesim</option>
+                <option value="cut-stencil">Kesim şablonu</option>
                 <option value="line-engrave">Çizgi kazıma</option>
                 <option value="filled-ornament">Dolgu motif</option>
                 <option value="photo-engrave">Foto gravür hazırlık</option>
               </select></label>
-            </div>
-            <div class="rib-btn-row">
               <button id="applyVectorModeBtn">Modu Uygula</button>
             </div>
-            <div id="vectorModeHint" class="inline-note">Kesim şablonu: koyu motifleri temiz kapalı kesim konturlarına çevirir.</div>
-            <div id="vectorQualityBox" class="inline-note vector-quality-box">Kalite raporu: vektör üretildikten sonra görünür.</div>
+            <div class="vector-pro-notes">
+              <div id="vectorModeHint" class="inline-note">CAD tek çizgi: dış çerçeveyi keser; çerçeve silinirse büyük yeni dış konturları kesime, küçük ayrıntıları kazımaya ayırır.</div>
+              <div id="vectorQualityBox" class="inline-note vector-quality-box">Kalite raporu: vektör üretildikten sonra görünür.</div>
+            </div>
             <span class="ribbon-group-title">Profesyonel Hazırlık</span>
           </div>
           <div class="ribbon-sep"></div>
-          <div class="ribbon-group">
-            <div class="rib-btn-row col">
+          <div class="ribbon-group vector-action-group">
+            <div class="rib-btn-row vector-action-grid">
               <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>
               <button id="revectorizeBtn">Seçili Vektörü Yeniden İşle</button>
               <button id="vectorAutoPresetBtn">Otomatik ayar</button>
@@ -262,7 +273,7 @@
             <span class="ribbon-group-title">Eylemler</span>
           </div>
           <div class="ribbon-sep"></div>
-          <div class="ribbon-group">
+          <div class="ribbon-group vector-advanced-group">
             <details class="advanced-settings">
               <summary>Gelişmiş ayarlar</summary>
               <div class="form-grid">
@@ -454,6 +465,23 @@
         </div>
       </div>
 
+      <!-- DXF adet penceresi -->
+      <section id="dxfQuantityModal" class="flow-modal dxf-quantity-modal hidden" role="dialog" aria-modal="true" aria-labelledby="dxfQuantityTitle">
+        <div class="flow-backdrop" data-dxf-quantity-close></div>
+        <form id="dxfQuantityForm" class="flow-card dxf-quantity-card">
+          <h3 id="dxfQuantityTitle">DXF Adedi</h3>
+          <p id="dxfQuantitySummary" class="dxf-quantity-summary"></p>
+          <label class="dxf-quantity-field">
+            <span>Her DXF'ten eklenecek adet</span>
+            <input id="dxfQuantityInput" type="number" value="1" min="1" max="999" step="1" inputmode="numeric" autocomplete="off" required />
+          </label>
+          <div class="flow-actions dxf-quantity-actions">
+            <button id="dxfQuantityCancelBtn" type="button">Vazgeç</button>
+            <button type="submit" class="primary">Ekle</button>
+          </div>
+        </form>
+      </section>
+
       <!-- Uretim akisi penceresi -->
       <section id="produceFlowModal" class="flow-modal hidden" role="dialog" aria-label="Üretim akışı">
         <div class="flow-backdrop" data-flow-close></div>
@@ -499,8 +527,18 @@
           <div id="machineTabBody" class="machine-tab-body"></div>
         </div>
       </section>
+
+      <div id="textFontMenu" class="font-menu hidden" role="listbox" aria-label="Yazı tipi seçimi">
+        <div class="font-menu-search">
+          <input id="textFontSearch" type="search" placeholder="Font ara" autocomplete="off" aria-label="Font ara" />
+        </div>
+        <div id="textFontOptions" class="font-menu-options"></div>
+        <div id="textFontEmpty" class="font-menu-empty hidden">Eşleşen font yok</div>
+      </div>
     </div>
     <script src="/static/geometry.js?v=20260707-ribbon"></script>
-    <script src="/static/app.js?v=20260707-ribbon"></script>
+    <script src="/static/packing.js?v=20260710-compact-pack"></script>
+    <script src="/static/vector_edit.js?v=20260713-fine-detail-v1"></script>
+    <script src="/static/app.js?v=20260713-fine-detail-v1"></script>
   </body>
 </html>

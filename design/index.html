@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Lazer İş Editörü — Tasarım Sistemi</title>
+<style>
+  :root{--bg:#0f141a;--panel:#151c24;--line:#2a3644;--ink:#e6edf3;--muted:#8b98a9;--accent:#f59e0b}
+  body{margin:0;padding:28px;background:var(--bg);color:var(--ink);
+    font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+  h1{font-size:20px;margin:0 0 4px}
+  p.sub{color:var(--muted);margin:0 0 24px}
+  h2{font-size:12px;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);
+    margin:26px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  a.card{display:block;padding:14px;border:1px solid var(--line);border-radius:10px;
+    background:var(--panel);color:var(--ink);text-decoration:none}
+  a.card:hover{border-color:var(--accent)}
+  a.card b{display:block;font-size:14px}
+  a.card span{font-size:12px;color:var(--muted)}
+  .wide{grid-column:1/-1}
+</style>
+</head>
+<body>
+<h1>Lazer İş Editörü — Tasarım Sistemi</h1>
+<p class="sub">Koyu atölye teması · lazer-amber vurgu · kesim/kazıma anlam renkleri korunur · sayısal okumalar mono</p>
+
+<h2>Temeller</h2>
+<div class="grid">
+  <a class="card" href="tokens/renkler.html"><b>Renk paleti</b><span>Zemin/panel katmanları, vurgu, anlam renkleri</span></a>
+  <a class="card" href="tokens/tipografi.html"><b>Tipografi</b><span>Başlık, bölüm etiketi, gövde, mono okuma</span></a>
+</div>
+
+<h2>Bileşenler</h2>
+<div class="grid">
+  <a class="card" href="components/butonlar.html"><b>Butonlar</b><span>Birincil (amber), ikincil, yıkıcı, küçük, aktif</span></a>
+  <a class="card" href="components/girisler.html"><b>Form girişleri</b><span>Birimli sayı alanı, select, onay satırı</span></a>
+  <a class="card" href="components/chipler.html"><b>Durum çipleri</b><span>Kilitli / tamam / uyarı / hata</span></a>
+  <a class="card" href="components/segmentli.html"><b>Segmentli kontrol</b><span>M4/M3, vektör modu seçici</span></a>
+  <a class="card" href="components/panel.html"><b>Panel bölümü</b><span>Katlanır ayar grubu kalıbı</span></a>
+  <a class="card" href="components/parca-listesi.html"><b>Parça listesi</b><span>DXF/desen kartı, işlem rozeti, seçim hali</span></a>
+  <a class="card" href="components/uyarilar.html"><b>Uyarılar</b><span>Hata / uyarı / onay notları</span></a>
+</div>
+
+<h2>Tuval</h2>
+<div class="grid">
+  <a class="card" href="canvas/arac-cubugu.html"><b>Araç çubuğu</b><span>Araçlar + mono koordinat okuması</span></a>
+  <a class="card" href="canvas/lejant.html"><b>Tuval ve lejant</b><span>Açık tabla / koyu dış alan, yol renkleri</span></a>
+</div>
+
+<h2>Ekranlar</h2>
+<div class="grid">
+  <a class="card wide" href="screens/editor.html"><b>Editör — tam ekran (1440px)</b><span>Üst bar + sol paneller + tuval + sağ panel + durum çubuğu</span></a>
+  <a class="card wide" href="screens/vektor-studyo.html"><b>Foto→Vektör stüdyosu</b><span>Kaynak/sonuç karşılaştırma + işlem aşamaları şeridi + mod önerisi</span></a>
+</div>
+</body>
+</html>
