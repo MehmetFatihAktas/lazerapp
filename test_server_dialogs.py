@@ -110,6 +110,44 @@ def test_local_vector_crop_uses_top_left_normalized_coordinates():
         assert not cropped_path.exists()
 
 
+def test_gcode_info_contains_stable_file_identity_and_safety():
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "job.nc"
+        path.write_bytes(
+            "(Çalışma)\nG21\nG90\nG94\nM4 S0\n(cut paths begin)\nS500\nG1 X10 F600\n(cut paths end)\nM5 S0\n".encode("cp1254")
+        )
+        first = server.gcode_file_info(path)
+        second = server.gcode_file_info(path)
+
+        assert first["fileHash"] == second["fileHash"]
+        assert len(first["fileHash"]) == 64
+        assert first["fileSize"] == path.stat().st_size
+        assert first["laserLength"] == 10.0
+        assert first["processCutLength"] == 10.0
+        assert first["finalLaserOff"] is True
+
+
+def test_atomic_write_replaces_complete_project_file():
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "project.laserjob.json"
+        server.atomic_write_text(path, '{"version":1}')
+        server.atomic_write_text(path, '{"version":2,"complete":true}')
+        assert path.read_text(encoding="utf-8") == '{"version":2,"complete":true}'
+        assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+def test_diagnostics_excludes_project_and_gcode_content():
+    diagnostics = server.diagnostics_snapshot()
+    assert diagnostics["app"]["version"] == server.APP_VERSION
+    assert diagnostics["capabilities"]["serial"] is True
+    assert diagnostics["capabilities"]["camera"] is False
+    assert diagnostics["privacy"] == {
+        "projectGeometryIncluded": False,
+        "projectPathsIncluded": False,
+        "gcodeIncluded": False,
+    }
+
+
 def main():
     tests = [
         test_dialog_lock_rejects_instead_of_queueing,
@@ -118,6 +156,9 @@ def main():
         test_embedded_image_is_rejected_for_non_raster_pattern,
         test_transparent_raster_pixels_are_white_in_gcode_pipeline,
         test_local_vector_crop_uses_top_left_normalized_coordinates,
+        test_gcode_info_contains_stable_file_identity_and_safety,
+        test_atomic_write_replaces_complete_project_file,
+        test_diagnostics_excludes_project_and_gcode_content,
     ]
     for test in tests:
         test()

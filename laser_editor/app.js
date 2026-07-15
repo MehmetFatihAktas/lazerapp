@@ -1,8 +1,89 @@
+const ProjectState = window.LaserProjectState;
+if (!ProjectState) throw new Error("Proje durumu modülü yüklenemedi.");
+const BoxMaker = window.LaserBoxMaker;
+if (!BoxMaker) throw new Error("Kutu üretici modülü yüklenemedi.");
+const AssetLibrary = window.LaserAssetLibrary;
+if (!AssetLibrary) throw new Error("Tasarım kütüphanesi modülü yüklenemedi.");
+const ProductionState = window.LaserProductionState;
+if (!ProductionState) throw new Error("Üretim durumu modülü yüklenemedi.");
+const CalibrationGrid = window.LaserCalibrationGrid;
+if (!CalibrationGrid) throw new Error("Kalibrasyon modülü yüklenemedi.");
+const SelectionLayout = window.LaserSelectionLayout;
+if (!SelectionLayout) throw new Error("Hizalama modülü yüklenemedi.");
+
 const canvas = document.getElementById("editorCanvas");
 const ctx = canvas.getContext("2d");
 
 const refs = {
   status: document.getElementById("jobStatus"),
+  projectTitle: document.getElementById("projectTitle"),
+  projectDirtyMark: document.getElementById("projectDirtyMark"),
+  projectHub: document.getElementById("projectHub"),
+  recentProjectsList: document.getElementById("recentProjectsList"),
+  recentProjectsEmpty: document.getElementById("recentProjectsEmpty"),
+  recoverySection: document.getElementById("recoverySection"),
+  recoverySummary: document.getElementById("recoverySummary"),
+  projectInfoModal: document.getElementById("projectInfoModal"),
+  projectInfoContent: document.getElementById("projectInfoContent"),
+  preferencesModal: document.getElementById("preferencesModal"),
+  preferencesForm: document.getElementById("preferencesForm"),
+  prefAutosaveEnabled: document.getElementById("prefAutosaveEnabled"),
+  prefAutosaveDelay: document.getElementById("prefAutosaveDelay"),
+  prefMaxRecent: document.getElementById("prefMaxRecent"),
+  prefConfirmClear: document.getElementById("prefConfirmClear"),
+  prefTheme: document.getElementById("prefTheme"),
+  prefUserMode: document.getElementById("prefUserMode"),
+  prefShowGrid: document.getElementById("prefShowGrid"),
+  prefShowTravel: document.getElementById("prefShowTravel"),
+  prefPrepareStrategy: document.getElementById("prefPrepareStrategy"),
+  prefReopenLastProject: document.getElementById("prefReopenLastProject"),
+  helpModal: document.getElementById("helpModal"),
+  capabilityList: document.getElementById("capabilityList"),
+  diagnosticsSummary: document.getElementById("diagnosticsSummary"),
+  boxMakerModal: document.getElementById("boxMakerModal"),
+  boxMakerForm: document.getElementById("boxMakerForm"),
+  boxMakerPreview: document.getElementById("boxMakerPreview"),
+  boxMakerStats: document.getElementById("boxMakerStats"),
+  boxMakerValidation: document.getElementById("boxMakerValidation"),
+  boxWidth: document.getElementById("boxWidth"),
+  boxDepth: document.getElementById("boxDepth"),
+  boxHeight: document.getElementById("boxHeight"),
+  boxThickness: document.getElementById("boxThickness"),
+  boxFingerWidth: document.getElementById("boxFingerWidth"),
+  boxFit: document.getElementById("boxFit"),
+  calibrationModal: document.getElementById("calibrationModal"),
+  calibrationForm: document.getElementById("calibrationForm"),
+  calibrationColumns: document.getElementById("calibrationColumns"),
+  calibrationRows: document.getElementById("calibrationRows"),
+  calibrationTile: document.getElementById("calibrationTile"),
+  calibrationGap: document.getElementById("calibrationGap"),
+  calibrationMinPower: document.getElementById("calibrationMinPower"),
+  calibrationMaxPower: document.getElementById("calibrationMaxPower"),
+  calibrationMinFeed: document.getElementById("calibrationMinFeed"),
+  calibrationMaxFeed: document.getElementById("calibrationMaxFeed"),
+  calibrationOperation: document.getElementById("calibrationOperation"),
+  calibrationSummary: document.getElementById("calibrationSummary"),
+  libraryModal: document.getElementById("libraryModal"),
+  libraryList: document.getElementById("libraryList"),
+  libraryEmpty: document.getElementById("libraryEmpty"),
+  librarySearch: document.getElementById("librarySearch"),
+  notificationsModal: document.getElementById("notificationsModal"),
+  notificationsList: document.getElementById("notificationsList"),
+  notificationsEmpty: document.getElementById("notificationsEmpty"),
+  notificationBadge: document.getElementById("notificationBadge"),
+  productionHistoryModal: document.getElementById("productionHistoryModal"),
+  productionHistoryList: document.getElementById("productionHistoryList"),
+  productionHistoryEmpty: document.getElementById("productionHistoryEmpty"),
+  productionPreviewTab: document.getElementById("productionPreviewTab"),
+  productionPreviewCanvas: document.getElementById("productionPreviewCanvas"),
+  productionPreviewPath: document.getElementById("productionPreviewPath"),
+  productionPreviewProgress: document.getElementById("productionPreviewProgress"),
+  productionPreviewProgressText: document.getElementById("productionPreviewProgressText"),
+  productionOperationList: document.getElementById("productionOperationList"),
+  productionPreviewSafety: document.getElementById("productionPreviewSafety"),
+  productionPreviewPlay: document.getElementById("productionPreviewPlayBtn"),
+  productionPreviewSpeed: document.getElementById("productionPreviewSpeed"),
+  productionPreviewPosition: document.getElementById("productionPreviewPosition"),
   laserModeHint: document.getElementById("laserModeHint"),
   unitChip: document.getElementById("unitChip"),
   bedChip: document.getElementById("bedChip"),
@@ -77,6 +158,7 @@ const refs = {
   lineStep: document.getElementById("lineStep"),
   threshold: document.getElementById("threshold"),
   nudgeStep: document.getElementById("nudgeStep"),
+  selectionArrange: document.getElementById("selectionArrange"),
   vecThreshold: document.getElementById("vecThreshold"),
   vecMode: document.getElementById("vecMode"),
   vecThresholdMode: document.getElementById("vecThresholdMode"),
@@ -279,6 +361,8 @@ const state = {
     pointerId: null,
   },
   currentAnalysis: null,
+  lastGeneratedRevision: null,
+  lastGeneratedPath: "",
   machine: {
     available: false,
     connected: false,
@@ -295,6 +379,48 @@ const state = {
   },
   clientId: "",
   clientPingTimer: null,
+  project: ProjectState.createSession({ name: "Adsız iş" }),
+  preferences: ProjectState.normalizePreferences(),
+  recentProjects: [],
+  recovery: {
+    store: ProjectState.createRecoveryStore(),
+    key: "active-project",
+    snapshot: null,
+    saveTimer: null,
+    saving: false,
+  },
+  boxMaker: {
+    closed: false,
+    result: null,
+  },
+  library: {
+    store: AssetLibrary.createStore(),
+    assets: [],
+    loading: false,
+  },
+  activity: {
+    store: ProductionState.createLocalStore(),
+    notifications: [],
+    notificationFilter: "all",
+    history: [],
+    activeHistoryId: "",
+    lastMachineAlarm: "",
+    lastMachineFinishedAt: null,
+  },
+  productionPreview: {
+    open: false,
+    layers: { cut: true, engrave: true, travel: false },
+    progress: null,
+    playing: false,
+    playbackTimer: null,
+    playbackStartedAt: 0,
+    playbackStartProgress: 0,
+  },
+  support: {
+    capabilities: null,
+    diagnostics: null,
+    errors: [],
+  },
 };
 
 const SETTINGS_KEY = "laser-editor-settings-v3";
@@ -674,6 +800,7 @@ function pushUndo(label = "islem") {
   undoStack.push(createUndoSnapshot(label));
   redoStack.length = 0;
   while (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  markProjectDirty(label);
 }
 
 function restoreUndoSnapshot(snapshot) {
@@ -726,6 +853,7 @@ function undoLast() {
   redoStack.push(createUndoSnapshot(snapshot.label || "işlem"));
   while (redoStack.length > UNDO_LIMIT) redoStack.shift();
   restoreUndoSnapshot(snapshot);
+  markProjectDirty(`Geri al: ${snapshot.label || "işlem"}`);
   setStatus(`Geri alındı: ${snapshot.label || "işlem"}.`, "ok");
 }
 
@@ -739,6 +867,7 @@ function redoLast() {
   undoStack.push(createUndoSnapshot(snapshot.label || "işlem"));
   while (undoStack.length > UNDO_LIMIT) undoStack.shift();
   restoreUndoSnapshot(snapshot);
+  markProjectDirty(`Yinele: ${snapshot.label || "işlem"}`);
   setStatus(`Yinelendi: ${snapshot.label || "işlem"}.`, "ok");
 }
 
@@ -1137,6 +1266,665 @@ function setStatus(text, level = "info") {
           : "info";
   refs.status.textContent = text;
   refs.status.className = `job-status ${normalized}`;
+  if ((normalized === "warn" || normalized === "danger") && state?.activity) {
+    addActivityNotification({ text, level: normalized, source: "Uygulama" });
+  }
+}
+
+function loadActivityState() {
+  state.activity.notifications = state.activity.store.loadNotifications();
+  state.activity.history = state.activity.store.loadHistory();
+  renderNotificationCenter();
+  renderProductionHistory();
+}
+
+function saveNotifications() {
+  state.activity.store.saveNotifications(state.activity.notifications);
+  renderNotificationCenter();
+}
+
+function saveProductionHistory() {
+  state.activity.store.saveHistory(state.activity.history);
+  renderProductionHistory();
+}
+
+function addActivityNotification(entry) {
+  state.activity.notifications = ProductionState.addNotification(state.activity.notifications, entry);
+  saveNotifications();
+}
+
+function installClientErrorBoundary() {
+  const record = (reason, source) => {
+    const message = String(reason?.message || reason || "Bilinmeyen uygulama hatası").slice(0, 600);
+    const entry = { message, source, at: new Date().toISOString() };
+    state.support.errors = [entry, ...state.support.errors.filter((item) => item.message !== message)].slice(0, 25);
+    addActivityNotification({ text: message, detail: source, level: "danger", source: "Uygulama" });
+  };
+  window.addEventListener("error", (event) => record(event.error || event.message, "JavaScript error"));
+  window.addEventListener("unhandledrejection", (event) => record(event.reason, "Unhandled promise"));
+}
+
+function activityTime(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "-";
+  return new Intl.DateTimeFormat("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function renderNotificationCenter() {
+  const unread = ProductionState.unreadCount(state.activity.notifications);
+  if (refs.notificationBadge) {
+    refs.notificationBadge.textContent = unread > 99 ? "99+" : String(unread);
+    refs.notificationBadge.classList.toggle("hidden", unread === 0);
+  }
+  if (!refs.notificationsList) return;
+  const filter = state.activity.notificationFilter;
+  const items = state.activity.notifications.filter((item) => {
+    if (filter === "unread") return !item.read;
+    if (filter === "danger") return item.level === "danger";
+    return true;
+  });
+  refs.notificationsList.replaceChildren();
+  for (const item of items) {
+    const row = document.createElement("article");
+    row.className = `activity-row ${item.level}${item.read ? "" : " unread"}`;
+    const dot = document.createElement("i");
+    dot.className = "activity-dot";
+    const main = document.createElement("div");
+    main.className = "activity-main";
+    const title = document.createElement("strong");
+    title.textContent = item.text;
+    main.append(title);
+    if (item.detail) {
+      const detail = document.createElement("span");
+      detail.textContent = item.detail;
+      main.append(detail);
+    }
+    const meta = document.createElement("div");
+    meta.className = "activity-meta";
+    const source = document.createElement("span");
+    source.textContent = item.source;
+    const time = document.createElement("time");
+    time.dateTime = item.createdAt;
+    time.textContent = activityTime(item.createdAt);
+    meta.append(source, time);
+    if (item.code) {
+      const code = document.createElement("code");
+      code.textContent = item.code;
+      meta.append(code);
+    }
+    row.append(dot, main, meta);
+    refs.notificationsList.append(row);
+  }
+  refs.notificationsEmpty?.classList.toggle("hidden", items.length > 0);
+  document.querySelectorAll("[data-notification-filter]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.notificationFilter === filter);
+  });
+}
+
+function openNotifications() {
+  refs.notificationsModal?.classList.remove("hidden");
+  state.activity.notifications = ProductionState.markAllRead(state.activity.notifications);
+  saveNotifications();
+}
+
+function closeNotifications() {
+  refs.notificationsModal?.classList.add("hidden");
+}
+
+function historyStatusLabel(status) {
+  return ({
+    generated: "G-code hazır",
+    sent: "Gönderildi",
+    running: "Üretiliyor",
+    paused: "Duraklatıldı",
+    completed: "Tamamlandı",
+    cancelled: "İptal edildi",
+    failed: "Hata",
+  })[status] || status;
+}
+
+function historyStatusLevel(status) {
+  if (status === "failed" || status === "cancelled") return "danger";
+  if (status === "paused") return "warn";
+  if (status === "completed") return "ok";
+  return "info";
+}
+
+function renderProductionHistory() {
+  if (!refs.productionHistoryList) return;
+  refs.productionHistoryList.replaceChildren();
+  for (const item of state.activity.history) {
+    const row = document.createElement("article");
+    row.className = `activity-row production-history-row ${historyStatusLevel(item.status)}`;
+    const dot = document.createElement("i");
+    dot.className = "activity-dot";
+    const main = document.createElement("div");
+    main.className = "activity-main";
+    const title = document.createElement("strong");
+    title.textContent = `${item.projectName} · ${item.fileName}`;
+    const path = document.createElement("span");
+    path.textContent = item.path;
+    const metrics = document.createElement("div");
+    metrics.className = "history-metrics";
+    const bounds = item.bounds || {};
+    const metricValues = [
+      Number(bounds.width) > 0 ? `${Number(bounds.width).toFixed(1)} × ${Number(bounds.height).toFixed(1)} mm` : "",
+      item.estimatedSeconds ? `~${formatDuration(item.estimatedSeconds)}` : "",
+      item.cutLength ? `Kesim ${Number(item.cutLength).toFixed(0)} mm` : "",
+      item.engraveLength ? `Kazıma ${Number(item.engraveLength).toFixed(0)} mm` : "",
+    ].filter(Boolean);
+    for (const value of metricValues) {
+      const span = document.createElement("span");
+      span.textContent = value;
+      metrics.append(span);
+    }
+    main.append(title, path, metrics);
+    const meta = document.createElement("div");
+    meta.className = "activity-meta";
+    const status = document.createElement("span");
+    status.className = "history-status";
+    status.textContent = historyStatusLabel(item.status);
+    const time = document.createElement("time");
+    time.dateTime = item.updatedAt;
+    time.textContent = activityTime(item.updatedAt);
+    meta.append(status, time);
+    if (item.fileHash) {
+      const hash = document.createElement("code");
+      hash.title = item.fileHash;
+      hash.textContent = `SHA-256 ${item.fileHash.slice(0, 12)}…`;
+      meta.append(hash);
+    }
+    row.append(dot, main, meta);
+    refs.productionHistoryList.append(row);
+  }
+  refs.productionHistoryEmpty?.classList.toggle("hidden", state.activity.history.length > 0);
+}
+
+function openProductionHistory() {
+  refs.productionHistoryModal?.classList.remove("hidden");
+  renderProductionHistory();
+}
+
+function closeProductionHistory() {
+  refs.productionHistoryModal?.classList.add("hidden");
+}
+
+function recordProductionHistory(status, options = {}) {
+  const preview = state.machine.preview;
+  const path = refs.outputPath?.value?.trim() || "";
+  if (!path) return null;
+  const activeEntry = state.activity.history.find((item) => item.id === state.activity.activeHistoryId);
+  const currentId = options.id || (activeEntry?.path === path ? activeEntry.id : "");
+  state.activity.history = ProductionState.upsertHistory(state.activity.history, {
+    id: currentId || undefined,
+    path,
+    fileHash: preview?.fileHash || "",
+    projectId: state.project.id,
+    projectName: state.project.name,
+    status,
+    estimatedSeconds: preview?.estimatedSeconds || 0,
+    bounds: preview?.bounds || null,
+    cutLength: preview?.processCutLength || 0,
+    engraveLength: preview?.engraveLength || 0,
+    sentLines: options.sentLines || 0,
+    totalLines: options.totalLines || preview?.lineCount || 0,
+    message: options.message || "",
+  });
+  const match = state.activity.history.find((item) => item.path === path && (!preview?.fileHash || item.fileHash === preview.fileHash));
+  state.activity.activeHistoryId = match?.id || currentId;
+  saveProductionHistory();
+  return match || null;
+}
+
+function captureMachineActivity(previous, next) {
+  const previousWarnings = new Set(previous?.warnings || []);
+  for (const warning of next?.warnings || []) {
+    if (!previousWarnings.has(warning)) addActivityNotification({ text: warning, level: "warn", source: "Makine" });
+  }
+  const machineState = String(next?.lastStatus?.state || "");
+  if (/^alarm/i.test(machineState) && machineState !== state.activity.lastMachineAlarm) {
+    state.activity.lastMachineAlarm = machineState;
+    addActivityNotification({ text: `Makine ${machineState} durumunda`, level: "danger", source: "Makine", code: next?.lastStatus?.raw || "" });
+  } else if (!/^alarm/i.test(machineState)) {
+    state.activity.lastMachineAlarm = "";
+  }
+  const job = next?.job || {};
+  const previousJob = previous?.job || {};
+  if (job.running && !previousJob.running) recordProductionHistory("running", { sentLines: job.sent, totalLines: job.total, message: job.message });
+  if (job.paused && !previousJob.paused) recordProductionHistory("paused", { sentLines: job.sent, totalLines: job.total, message: job.message });
+  if (job.finishedAt && job.finishedAt !== state.activity.lastMachineFinishedAt) {
+    state.activity.lastMachineFinishedAt = job.finishedAt;
+    const failed = Number(job.errors || 0) > 0;
+    const cancelled = /iptal/i.test(String(job.message || ""));
+    const status = failed ? (cancelled ? "cancelled" : "failed") : "completed";
+    recordProductionHistory(status, { sentLines: job.sent, totalLines: job.total, message: job.message });
+    addActivityNotification({
+      text: failed ? `Üretim tamamlanamadı: ${job.message || "Makine hatası"}` : "Üretim tamamlandı.",
+      level: failed ? "danger" : "ok",
+      source: "Makine",
+      detail: refs.outputPath?.value || "",
+    });
+  }
+}
+
+function readLocalJson(key, fallback) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "null");
+    return parsed ?? fallback;
+  } catch (_error) {
+    localStorage.removeItem(key);
+    return fallback;
+  }
+}
+
+function writeLocalJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function projectHasContent() {
+  return Boolean(state.parts.length || state.placements.length || state.patterns.length || state.materialArea.points.length);
+}
+
+function ensureStateEntityIdentities() {
+  ProjectState.normalizeProjectEntities(state);
+}
+
+function projectCounts() {
+  return ProjectState.deriveCounts(state);
+}
+
+function loadProjectPreferences() {
+  state.preferences = ProjectState.normalizePreferences(
+    readLocalJson(ProjectState.STORAGE_KEYS.preferences, ProjectState.DEFAULT_PREFERENCES)
+  );
+  state.recentProjects = ProjectState.normalizeRecentProjects(
+    readLocalJson(ProjectState.STORAGE_KEYS.recentProjects, []),
+    state.preferences.maxRecentProjects
+  );
+}
+
+function saveProjectPreferences() {
+  state.preferences = ProjectState.normalizePreferences(state.preferences);
+  state.recentProjects = ProjectState.normalizeRecentProjects(state.recentProjects, state.preferences.maxRecentProjects);
+  writeLocalJson(ProjectState.STORAGE_KEYS.preferences, state.preferences);
+  writeLocalJson(ProjectState.STORAGE_KEYS.recentProjects, state.recentProjects);
+}
+
+function updateProjectChrome() {
+  if (refs.projectTitle) refs.projectTitle.textContent = state.project.name || "Adsız iş";
+  refs.projectDirtyMark?.classList.toggle("hidden", !state.project.dirty);
+  document.title = `${state.project.dirty ? "*" : ""}${state.project.name || "Adsız iş"} - Lazer İş Editörü`;
+  renderProjectInfo();
+}
+
+function markProjectDirty(action = "Değişiklik") {
+  if (undoRestoring) return;
+  state.project = ProjectState.markDirty(state.project, action);
+  updateProjectChrome();
+  scheduleProjectAutosave();
+}
+
+function recoveryMetadata(snapshot) {
+  const session = snapshot?.session || {};
+  const counts = ProjectState.deriveCounts(snapshot?.project || {});
+  return {
+    projectId: session.id || "",
+    name: session.name || snapshot?.project?.name || "Adsız iş",
+    path: session.path || "",
+    autosavedAt: snapshot?.autosavedAt || session.lastAutosavedAt || null,
+    counts,
+  };
+}
+
+function updateRecoveryUi() {
+  const snapshot = state.recovery.snapshot;
+  refs.recoverySection?.classList.toggle("hidden", !snapshot);
+  if (!snapshot || !refs.recoverySummary) return;
+  const meta = recoveryMetadata(snapshot);
+  const time = meta.autosavedAt ? new Date(meta.autosavedAt).toLocaleString("tr-TR") : "bilinmiyor";
+  refs.recoverySummary.textContent = `${meta.name} · ${meta.counts.totalObjects} nesne · ${time}`;
+}
+
+async function saveProjectRecovery() {
+  if (!state.preferences.autosaveEnabled || !state.project.dirty || state.recovery.saving) return;
+  state.recovery.saving = true;
+  try {
+    ensureStateEntityIdentities();
+    const autosavedAt = new Date().toISOString();
+    state.project = ProjectState.markAutosaved(state.project, new Date(autosavedAt));
+    const snapshot = {
+      version: 1,
+      autosavedAt,
+      session: clonePlain(state.project),
+      project: projectPayload({ autosave: true }),
+    };
+    await state.recovery.store.save(state.recovery.key, snapshot);
+    state.recovery.snapshot = snapshot;
+    writeLocalJson(ProjectState.STORAGE_KEYS.recoveryMeta, recoveryMetadata(snapshot));
+    updateRecoveryUi();
+    updateProjectChrome();
+  } catch (error) {
+    console.warn("Otomatik kurtarma yazılamadı:", error);
+  } finally {
+    state.recovery.saving = false;
+  }
+}
+
+function scheduleProjectAutosave() {
+  window.clearTimeout(state.recovery.saveTimer);
+  state.recovery.saveTimer = null;
+  if (!state.preferences.autosaveEnabled || !state.project.dirty) return;
+  state.recovery.saveTimer = window.setTimeout(() => {
+    state.recovery.saveTimer = null;
+    saveProjectRecovery();
+  }, state.preferences.autosaveDelayMs);
+}
+
+async function clearProjectRecovery() {
+  window.clearTimeout(state.recovery.saveTimer);
+  state.recovery.saveTimer = null;
+  try {
+    await state.recovery.store.remove(state.recovery.key);
+  } catch (error) {
+    console.warn("Kurtarma verisi silinemedi:", error);
+  }
+  state.recovery.snapshot = null;
+  localStorage.removeItem(ProjectState.STORAGE_KEYS.recoveryMeta);
+  updateRecoveryUi();
+}
+
+async function loadRecoveryCandidate() {
+  try {
+    const snapshot = await state.recovery.store.load(state.recovery.key);
+    if (snapshot?.project && snapshot?.session?.dirty) state.recovery.snapshot = snapshot;
+  } catch (error) {
+    console.warn("Kurtarma verisi okunamadı:", error);
+  }
+  updateRecoveryUi();
+  if (state.recovery.snapshot && !projectHasContent()) openProjectHub();
+}
+
+function addCurrentProjectToRecent(path = state.project.path) {
+  if (!path) return;
+  state.recentProjects = ProjectState.upsertRecentProject(
+    state.recentProjects,
+    {
+      ...state.project,
+      path,
+      counts: projectCounts(),
+    },
+    state.preferences.maxRecentProjects
+  );
+  saveProjectPreferences();
+  renderRecentProjects();
+}
+
+function formatRecentTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("tr-TR");
+}
+
+function renderRecentProjects() {
+  if (!refs.recentProjectsList) return;
+  refs.recentProjectsList.innerHTML = state.recentProjects.map((project) => {
+    const counts = project.counts;
+    const meta = [counts ? `${Number(counts.totalObjects || 0)} nesne` : "", formatRecentTime(project.openedAt)].filter(Boolean).join(" · ");
+    return `<button class="recent-project-card" data-recent-project="${escapeHtml(project.path)}">
+      <span class="recent-project-main">
+        <strong>${escapeHtml(project.name)}</strong>
+        <span class="recent-project-path">${escapeHtml(project.path)}</span>
+        <span class="recent-project-meta">${escapeHtml(meta)}</span>
+      </span>
+      <span class="recent-project-open">Aç</span>
+    </button>`;
+  }).join("");
+  refs.recentProjectsEmpty?.classList.toggle("hidden", state.recentProjects.length > 0);
+  refs.recentProjectsList.querySelectorAll("[data-recent-project]").forEach((button) => {
+    button.addEventListener("click", () => openProject({ path: button.dataset.recentProject }));
+  });
+}
+
+function openProjectHub() {
+  renderRecentProjects();
+  updateRecoveryUi();
+  refs.projectHub?.classList.remove("hidden");
+}
+
+function closeProjectHub() {
+  refs.projectHub?.classList.add("hidden");
+  scheduleCanvasResize();
+}
+
+function renderProjectInfo() {
+  if (!refs.projectInfoContent) return;
+  const counts = projectCounts();
+  const saved = state.project.lastSavedAt ? formatRecentTime(state.project.lastSavedAt) : "Henüz kaydedilmedi";
+  const autosaved = state.project.lastAutosavedAt ? formatRecentTime(state.project.lastAutosavedAt) : "Yok";
+  const rows = [
+    ["Ad", state.project.name || "Adsız iş"],
+    ["Dosya", state.project.path || "Henüz dosya seçilmedi"],
+    ["Durum", state.project.dirty ? "Kaydedilmemiş değişiklikler var" : "Kaydedildi"],
+    ["İçerik", `${counts.sourceFiles} kaynak · ${counts.placements} parça · ${counts.patterns} desen`],
+    ["Son kayıt", saved],
+    ["Otomatik kurtarma", autosaved],
+  ];
+  refs.projectInfoContent.innerHTML = rows.map(([label, value]) => `<div class="project-info-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+}
+
+function openProjectInfo() {
+  renderProjectInfo();
+  refs.projectInfoModal?.classList.remove("hidden");
+}
+
+function closeProjectInfo() {
+  refs.projectInfoModal?.classList.add("hidden");
+}
+
+function openPreferences() {
+  if (refs.prefAutosaveEnabled) refs.prefAutosaveEnabled.checked = state.preferences.autosaveEnabled;
+  if (refs.prefAutosaveDelay) refs.prefAutosaveDelay.value = String(state.preferences.autosaveDelayMs);
+  if (refs.prefMaxRecent) refs.prefMaxRecent.value = String(state.preferences.maxRecentProjects);
+  if (refs.prefConfirmClear) refs.prefConfirmClear.checked = state.preferences.confirmBeforeClear;
+  if (refs.prefTheme) refs.prefTheme.value = state.preferences.theme;
+  if (refs.prefUserMode) refs.prefUserMode.value = state.preferences.userMode;
+  if (refs.prefShowGrid) refs.prefShowGrid.checked = state.preferences.showGrid;
+  if (refs.prefShowTravel) refs.prefShowTravel.checked = state.preferences.showTravelInPreview;
+  if (refs.prefPrepareStrategy) refs.prefPrepareStrategy.value = state.preferences.prepareStrategy;
+  if (refs.prefReopenLastProject) refs.prefReopenLastProject.checked = state.preferences.reopenLastProject;
+  refs.preferencesModal?.classList.remove("hidden");
+}
+
+function closePreferences() {
+  refs.preferencesModal?.classList.add("hidden");
+}
+
+function applyPreferencesToUi(redraw = true) {
+  const theme = state.preferences.theme === "system"
+    ? (window.matchMedia?.("(prefers-color-scheme: dark)")?.matches ? "dark" : "light")
+    : state.preferences.theme;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.dataset.userMode = state.preferences.userMode;
+  state.productionPreview.layers.travel = Boolean(state.preferences.showTravelInPreview);
+  const travelLayer = document.querySelector('[data-preview-layer="travel"]');
+  if (travelLayer) travelLayer.checked = state.productionPreview.layers.travel;
+  if (redraw && canvas) draw();
+}
+
+function savePreferences(event) {
+  event?.preventDefault();
+  state.preferences = ProjectState.normalizePreferences({
+    autosaveEnabled: refs.prefAutosaveEnabled?.checked,
+    autosaveDelayMs: refs.prefAutosaveDelay?.value,
+    maxRecentProjects: refs.prefMaxRecent?.value,
+    confirmBeforeClear: refs.prefConfirmClear?.checked,
+    theme: refs.prefTheme?.value,
+    userMode: refs.prefUserMode?.value,
+    showGrid: refs.prefShowGrid?.checked,
+    showTravelInPreview: refs.prefShowTravel?.checked,
+    prepareStrategy: refs.prefPrepareStrategy?.value,
+    reopenLastProject: refs.prefReopenLastProject?.checked,
+  });
+  saveProjectPreferences();
+  renderRecentProjects();
+  closePreferences();
+  scheduleProjectAutosave();
+  applyPreferencesToUi();
+  setStatus("Tercihler kaydedildi.", "ok");
+}
+
+const CAPABILITY_LABELS = {
+  serial: "GRBL seri bağlantı",
+  frame: "Lazer kapalı çerçeve turu",
+  workOrigin: "İş sıfırı",
+  feedOverride: "Canlı hız override",
+  powerOverride: "Canlı güç override",
+  camera: "Kamera hizalama",
+  rotary: "Rotary eksen",
+  curvedSurface: "Eğri yüzey telafisi",
+  blade: "Bıçak aracı",
+  pen: "Kalem aracı",
+  networkPairing: "Yerel ağ eşleştirme",
+  safetySensors: "Kapı / alev sensörleri",
+};
+
+function renderSupportInfo() {
+  const capabilities = state.support.capabilities || {};
+  if (refs.capabilityList) {
+    refs.capabilityList.innerHTML = Object.entries(CAPABILITY_LABELS).map(([key, label]) => {
+      const supported = Boolean(capabilities[key]);
+      return `<div class="capability-row ${supported ? "supported" : "unsupported"}"><span>${escapeHtml(label)}</span><strong>${supported ? "Hazır" : "Desteklenmiyor"}</strong></div>`;
+    }).join("");
+  }
+  const diagnostics = state.support.diagnostics;
+  if (refs.diagnosticsSummary && diagnostics) {
+    const machine = diagnostics.machine || {};
+    refs.diagnosticsSummary.innerHTML = `
+      <div><span>Sürüm</span><strong>${escapeHtml(diagnostics.app?.version || "-")}</strong></div>
+      <div><span>Çalışma zamanı</span><strong>Python ${escapeHtml(diagnostics.runtime?.python || "-")}</strong></div>
+      <div><span>Makine</span><strong>${machine.connected ? `${escapeHtml(machine.port || "GRBL")} bağlı` : "Bağlı değil"}</strong></div>
+      <div><span>Gizlilik</span><strong>Proje ve G-code içeriği dahil değil</strong></div>`;
+  }
+}
+
+async function loadSupportInfo() {
+  try {
+    const [capabilityResponse, diagnosticsResponse] = await Promise.all([
+      fetch("/api/capabilities"),
+      fetch("/api/diagnostics"),
+    ]);
+    const capabilityData = await capabilityResponse.json();
+    const diagnosticsData = await diagnosticsResponse.json();
+    if (!capabilityResponse.ok || capabilityData.ok === false) throw new Error(capabilityData.error || "Kabiliyet bilgisi alınamadı.");
+    if (!diagnosticsResponse.ok || diagnosticsData.ok === false) throw new Error(diagnosticsData.error || "Tanılama bilgisi alınamadı.");
+    state.support.capabilities = capabilityData.capabilities || {};
+    state.support.diagnostics = diagnosticsData.diagnostics || null;
+    renderSupportInfo();
+  } catch (error) {
+    if (refs.diagnosticsSummary) refs.diagnosticsSummary.textContent = error.message || "Tanılama bilgisi alınamadı.";
+    setStatus(error.message || "Tanılama bilgisi alınamadı.", "warn");
+  }
+}
+
+function openHelp() {
+  closeProjectHub();
+  refs.helpModal?.classList.remove("hidden");
+  void loadSupportInfo();
+}
+
+function closeHelp() {
+  refs.helpModal?.classList.add("hidden");
+  scheduleCanvasResize();
+}
+
+async function downloadDiagnostics() {
+  if (!state.support.diagnostics) await loadSupportInfo();
+  if (!state.support.diagnostics) return;
+  const diagnostics = {
+    ...clonePlain(state.support.diagnostics),
+    client: {
+      objectCounts: projectCounts(),
+      notificationCount: state.activity.notifications.length,
+      historyCount: state.activity.history.length,
+      recentErrors: clonePlain(state.support.errors),
+    },
+  };
+  const blob = new Blob([JSON.stringify(diagnostics, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `laser-editor-diagnostics-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus("Tanılama özeti indirildi; proje geometrisi ve G-code içeriği eklenmedi.", "ok");
+}
+
+function resetEditorState() {
+  state.parts = [];
+  state.placements = [];
+  state.patterns = [];
+  state.images.clear();
+  imageAdjustmentBases.clear();
+  state.customFonts = [];
+  state.lastGeneratedRevision = null;
+  state.lastGeneratedPath = "";
+  state.selected = null;
+  state.selectedItems = [];
+  state.selectedVectorPaths = [];
+  state.vectorSelectionRegion = null;
+  state.materialArea = normalizeMaterialArea({});
+  state.layout = {
+    appliedSettings: layoutSettingsSnapshot(),
+    previousSettings: null,
+    dirty: false,
+    manual: false,
+    acceptedSmallBed: "",
+  };
+  if (refs.outputPath) refs.outputPath.value = "";
+  undoStack.length = 0;
+  redoStack.length = 0;
+  clearMachinePreview();
+  select(null, null);
+  updateUiFromAnalysis(computeJobAnalysis());
+  updateSelectionPanel();
+  draw();
+}
+
+async function newProject() {
+  if (state.project.dirty && state.preferences.confirmBeforeClear) {
+    const proceed = window.confirm("Geçerli projede kaydedilmemiş değişiklikler var. Yeni proje açılsın mı?");
+    if (!proceed) return;
+  }
+  resetEditorState();
+  state.project = ProjectState.createSession({ name: "Adsız iş" });
+  await clearProjectRecovery();
+  updateProjectChrome();
+  closeProjectHub();
+  setStatus("Yeni proje hazır.", "ok");
+}
+
+async function restoreRecoveryProject() {
+  const snapshot = state.recovery.snapshot;
+  if (!snapshot?.project) return;
+  restoreProject(snapshot.project, {
+    session: { ...snapshot.session, dirty: true, lastAutosavedAt: snapshot.autosavedAt },
+    recovery: true,
+  });
+  closeProjectHub();
+  setStatus("Otomatik kurtarma açıldı. Dosyaya kaydetmeyi unutmayın.", "warn");
+}
+
+async function discardRecoveryProject() {
+  if (!window.confirm("Kurtarılabilir çalışma kalıcı olarak silinsin mi?")) return;
+  await clearProjectRecovery();
+  setStatus("Kurtarma kaydı silindi.");
 }
 
 function loadUiSettings() {
@@ -2140,7 +2928,35 @@ function detachMachineHomeFromSidePanel() {
   tab.parentElement?.insertBefore(home, tab);
 }
 
-function setMachineTabOpen(open, updateHash = true) {
+function setWorkflowActive(mode) {
+  document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.workspaceMode === mode);
+  });
+}
+
+function setWorkspaceMode(mode) {
+  if (mode === "preview") {
+    setProductionPreviewTabOpen(true);
+    return;
+  }
+  if (mode === "device") {
+    setProductionPreviewTabOpen(false, false);
+    setMachineTabOpen(true, true, true);
+    return;
+  }
+  setProductionPreviewTabOpen(false, false);
+  setMachineTabOpen(false, true, false);
+  if (mode === "prepare") {
+    if (state.preferences.prepareStrategy === "auto" && projectHasContent() && state.layout.dirty) autoLayout();
+    activateRibbonTab("tabla");
+    setWorkflowActive("prepare");
+  } else {
+    activateRibbonTab("ekle");
+    setWorkflowActive("design");
+  }
+}
+
+function setMachineTabOpen(open, updateHash = true, syncWorkflow = true) {
   detachMachineHomeFromSidePanel();
   const tab = document.getElementById("machineTab");
   const content = document.getElementById("machinePanelContent");
@@ -2156,12 +2972,14 @@ function setMachineTabOpen(open, updateHash = true) {
     if (updateHash && location.hash !== "#machine") history.pushState(null, "", "#machine");
     refreshMachinePorts();
     ensureMachinePreviewForCurrentOutput(false);
+    if (syncWorkflow) setWorkflowActive("device");
   } else {
     home.appendChild(content);
     tab.classList.add("hidden");
     nav?.classList.remove("active");
     document.body.classList.remove("machine-tab-open");
     if (updateHash && location.hash === "#machine") history.pushState(null, "", `${location.pathname}${location.search}`);
+    if (syncWorkflow) setWorkflowActive("design");
   }
   renderMachinePanel();
 }
@@ -2172,6 +2990,7 @@ function syncMachineTabFromHash() {
 
 function applyMachineSnapshot(machine) {
   if (!machine) return;
+  const previousMachine = state.machine;
   state.machine = {
     ...state.machine,
     ...machine,
@@ -2179,6 +2998,7 @@ function applyMachineSnapshot(machine) {
     lastStatus: machine.lastStatus || {},
     log: machine.log || [],
   };
+  captureMachineActivity(previousMachine, state.machine);
   renderMachinePanel();
 }
 
@@ -2254,6 +3074,10 @@ function renderMachinePanel() {
   renderMachineOverrides(status);
   renderMachinePreviewInfo();
   drawMachinePreview();
+  if (state.productionPreview.open) {
+    renderProductionPreviewInfo();
+    drawProductionPreview();
+  }
   updateProduceFlowMachineState();
 }
 
@@ -2373,6 +3197,284 @@ function drawMachinePreview() {
   }
 }
 
+function productionOperationCategory(segment) {
+  if (Number(segment?.[4]) !== 1) return "travel";
+  const operation = String(segment?.[6] || "laser");
+  if (operation.startsWith("engrave")) return "engrave";
+  return "cut";
+}
+
+function productionOperationLabel(operation) {
+  return ({
+    cut: "Kesim",
+    engrave_line: "Çizgi kazıma",
+    engrave_fill: "Dolgu kazıma",
+    engrave_photo: "Foto kazıma",
+    laser: "Lazer yolu",
+    travel: "Boş hareket",
+  })[operation] || operation;
+}
+
+function productionStat(id, value) {
+  const element = document.getElementById(id);
+  if (element) element.textContent = value;
+}
+
+function renderProductionPreviewInfo() {
+  const preview = state.machine.preview;
+  const path = refs.outputPath?.value?.trim() || "";
+  if (refs.productionPreviewPath) refs.productionPreviewPath.textContent = path || "G-code seçilmedi";
+  if (!preview) {
+    for (const id of ["previewStatDimensions", "previewStatDuration", "previewStatCut", "previewStatEngrave", "previewStatGeneric", "previewStatTravel", "previewStatPowerFeed"]) productionStat(id, "-");
+    refs.productionOperationList?.replaceChildren();
+  } else {
+    const bounds = preview.bounds || {};
+    const power = preview.powerRange || {};
+    const feed = preview.feedRange || {};
+    productionStat("previewStatDimensions", `${Number(bounds.width || 0).toFixed(1)} × ${Number(bounds.height || 0).toFixed(1)} mm`);
+    productionStat("previewStatDuration", `~${formatDuration(preview.estimatedSeconds)}`);
+    productionStat("previewStatCut", `${Number(preview.processCutLength || 0).toFixed(0)} mm`);
+    productionStat("previewStatEngrave", `${Number(preview.engraveLength || 0).toFixed(0)} mm`);
+    productionStat("previewStatGeneric", `${Number(preview.genericLaserLength || 0).toFixed(0)} mm`);
+    productionStat("previewStatTravel", `${Number(preview.travelLength || 0).toFixed(0)} mm`);
+    productionStat("previewStatPowerFeed", `S${Number(power.min || 0).toFixed(0)}–${Number(power.max || 0).toFixed(0)} · F${Number(feed.min || 0).toFixed(0)}–${Number(feed.max || 0).toFixed(0)}`);
+    if (refs.productionOperationList) {
+      refs.productionOperationList.replaceChildren();
+      const entries = Object.entries(preview.operationLengths || {});
+      entries.push(["travel", Number(preview.travelLength || 0)]);
+      for (const [operation, length] of entries) {
+        if (Number(length) <= 0) continue;
+        const row = document.createElement("div");
+        const category = operation.startsWith("engrave") ? "engrave" : operation === "travel" ? "travel" : "cut";
+        row.className = `production-operation-row ${category}`;
+        const swatch = document.createElement("i");
+        const label = document.createElement("span");
+        label.textContent = productionOperationLabel(operation);
+        const value = document.createElement("strong");
+        value.textContent = `${Number(length).toFixed(0)} mm`;
+        row.append(swatch, label, value);
+        refs.productionOperationList.append(row);
+      }
+    }
+  }
+
+  if (refs.productionPreviewSafety) {
+    const analysis = computeJobAnalysis();
+    const generatedMatchesPath = state.lastGeneratedRevision !== null && state.lastGeneratedPath === path;
+    let level = "";
+    let message = "G-code sınırları, lazer kapanışı ve proje sürümü doğrulandı.";
+    if (!preview || !path) {
+      level = "warn";
+      message = "Önizlenecek G-code yok. Önce G-code oluşturun veya çıktı yolu seçin.";
+    } else if (Number(preview.laserLength || 0) <= 0) {
+      level = "danger";
+      message = "G-code içinde gücü açık bir lazer hareketi bulunamadı.";
+    } else if (
+      Number(preview.bounds?.minX || 0) < -1e-6 ||
+      Number(preview.bounds?.minY || 0) < -1e-6 ||
+      Number(preview.bounds?.maxX || 0) > bed().width + 1e-6 ||
+      Number(preview.bounds?.maxY || 0) > bed().height + 1e-6
+    ) {
+      level = "danger";
+      message = `G-code sınırı ${bed().width.toFixed(1)} × ${bed().height.toFixed(1)} mm tabla dışına taşıyor.`;
+    } else if (generatedMatchesPath && analysis.criticalCount) {
+      level = "danger";
+      message = analysis.warnings.find((item) => item.level === "critical")?.title || "Kritik üretim sorunu var.";
+    } else if (!generatedMatchesPath) {
+      level = "warn";
+      message = `Dış G-code yüklendi. Dosya kimliği: ${String(preview.fileHash || "yok").slice(0, 12)}${preview.fileHash ? "…" : ""}. Tasarımla eşleşmesini doğrulayın.`;
+    } else if (state.lastGeneratedRevision !== state.project.revision) {
+      level = "warn";
+      message = "Proje G-code oluşturulduktan sonra değişti. Üretmeden önce G-code'u yeniden oluşturun.";
+    } else if (Array.isArray(preview.safetyWarnings) && preview.safetyWarnings.length) {
+      level = "warn";
+      message = `${preview.safetyWarnings[0]}${preview.safetyWarnings.length > 1 ? ` (+${preview.safetyWarnings.length - 1} uyarı)` : ""}`;
+    } else if (analysis.warningCount) {
+      level = "warn";
+      message = `${analysis.warningCount} üretim uyarısı var. Ön Kontrol bölümünü inceleyin.`;
+    }
+    refs.productionPreviewSafety.className = `production-preview-safety${level ? ` ${level}` : ""}`;
+    refs.productionPreviewSafety.textContent = message;
+  }
+
+  const connected = Boolean(state.machine.connected);
+  const running = machineJobActive();
+  const hasPath = Boolean(path);
+  const frameButton = document.getElementById("previewFrameBtn");
+  const sendButton = document.getElementById("previewSendBtn");
+  if (frameButton) frameButton.disabled = !connected || running || !hasPath;
+  if (sendButton) sendButton.disabled = !connected || running || !hasPath;
+  if (refs.productionPreviewPlay) refs.productionPreviewPlay.disabled = !preview?.segments?.length;
+  if (refs.productionPreviewSpeed) refs.productionPreviewSpeed.disabled = !preview?.segments?.length;
+}
+
+function productionProgressSnapshot() {
+  const preview = state.machine.preview;
+  const segments = preview?.segments || [];
+  const progress = Math.max(0, Math.min(segments.length, Number(state.productionPreview.progress) || 0));
+  const segment = progress > 0 ? segments[progress - 1] : null;
+  const lineIndex = segment ? Math.max(0, Number(segment[5]) || 0) : -1;
+  let elapsed = 0;
+  if (lineIndex >= 0 && Array.isArray(preview.lineSeconds)) {
+    for (let index = 0; index <= lineIndex && index < preview.lineSeconds.length; index += 1) elapsed += Number(preview.lineSeconds[index]) || 0;
+  }
+  return {
+    progress,
+    x: segment ? Number(segment[2]) || 0 : 0,
+    y: segment ? Number(segment[3]) || 0 : 0,
+    elapsed,
+  };
+}
+
+function renderProductionPlaybackStatus() {
+  const snapshot = productionProgressSnapshot();
+  if (refs.productionPreviewPosition) {
+    refs.productionPreviewPosition.textContent = `X ${snapshot.x.toFixed(2)} · Y ${snapshot.y.toFixed(2)} · ${formatDuration(snapshot.elapsed)}`;
+  }
+  if (refs.productionPreviewPlay) refs.productionPreviewPlay.textContent = state.productionPreview.playing ? "Duraklat" : "Oynat";
+}
+
+function stopProductionPlayback() {
+  state.productionPreview.playing = false;
+  if (state.productionPreview.playbackTimer) window.clearInterval(state.productionPreview.playbackTimer);
+  state.productionPreview.playbackTimer = null;
+  renderProductionPlaybackStatus();
+}
+
+function startProductionPlayback() {
+  const preview = state.machine.preview;
+  const total = preview?.segments?.length || 0;
+  if (!total) return;
+  if (state.productionPreview.progress === null || state.productionPreview.progress >= total) state.productionPreview.progress = 0;
+  state.productionPreview.playing = true;
+  state.productionPreview.playbackStartedAt = performance.now();
+  state.productionPreview.playbackStartProgress = Number(state.productionPreview.progress) || 0;
+  if (state.productionPreview.playbackTimer) window.clearInterval(state.productionPreview.playbackTimer);
+  state.productionPreview.playbackTimer = window.setInterval(() => {
+    const duration = Math.max(0.1, Number(preview.estimatedSeconds || 0));
+    const speed = Math.max(0.1, Number(refs.productionPreviewSpeed?.value || 1));
+    const elapsed = (performance.now() - state.productionPreview.playbackStartedAt) / 1000 * speed;
+    const added = Math.max(1, Math.floor(elapsed / duration * total));
+    state.productionPreview.progress = Math.min(total, state.productionPreview.playbackStartProgress + added);
+    drawProductionPreview();
+    if (state.productionPreview.progress >= total) stopProductionPlayback();
+  }, 40);
+  renderProductionPlaybackStatus();
+}
+
+function toggleProductionPlayback() {
+  if (state.productionPreview.playing) stopProductionPlayback();
+  else startProductionPlayback();
+}
+
+function drawProductionPreview() {
+  const canvas = refs.productionPreviewCanvas;
+  if (!canvas || !state.productionPreview.open) return;
+  const cssWidth = Math.max(320, Math.round(canvas.clientWidth || 900));
+  const cssHeight = Math.max(320, Math.round(canvas.clientHeight || 600));
+  const ratio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  const pixelWidth = Math.round(cssWidth * ratio);
+  const pixelHeight = Math.round(cssHeight * ratio);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const previewContext = canvas.getContext("2d");
+  previewContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const palette = canvasPalette();
+  previewContext.clearRect(0, 0, cssWidth, cssHeight);
+  previewContext.fillStyle = palette.canvas;
+  previewContext.fillRect(0, 0, cssWidth, cssHeight);
+  const preview = state.machine.preview;
+  const segments = Array.isArray(preview?.segments) ? preview.segments : [];
+  if (!segments.length) {
+    previewContext.fillStyle = palette.ruler;
+    previewContext.font = "13px sans-serif";
+    previewContext.textAlign = "center";
+    previewContext.fillText("G-code önizlemesi hazır değil", cssWidth / 2, cssHeight / 2);
+    if (refs.productionPreviewProgress) {
+      refs.productionPreviewProgress.max = "0";
+      refs.productionPreviewProgress.value = "0";
+    }
+    if (refs.productionPreviewProgressText) refs.productionPreviewProgressText.textContent = "0 / 0";
+    renderProductionPlaybackStatus();
+    return;
+  }
+
+  const bounds = preview.bounds || { minX: 0, minY: 0, width: 1, height: 1 };
+  const padding = 28;
+  const spanX = Math.max(0.001, Number(bounds.width) || 1);
+  const spanY = Math.max(0.001, Number(bounds.height) || 1);
+  const scale = Math.min((cssWidth - padding * 2) / spanX, (cssHeight - padding * 2) / spanY);
+  const drawWidth = spanX * scale;
+  const drawHeight = spanY * scale;
+  const offsetX = (cssWidth - drawWidth) / 2 - Number(bounds.minX || 0) * scale;
+  const offsetY = (cssHeight - drawHeight) / 2 + (Number(bounds.minY || 0) + spanY) * scale;
+  const mapX = (x) => offsetX + Number(x) * scale;
+  const mapY = (y) => offsetY - Number(y) * scale;
+  const total = segments.length;
+  if (state.productionPreview.progress === null || state.productionPreview.progress > total) state.productionPreview.progress = total;
+  const progress = Math.max(0, Math.min(total, Number(state.productionPreview.progress) || 0));
+  if (refs.productionPreviewProgress) {
+    refs.productionPreviewProgress.max = String(total);
+    refs.productionPreviewProgress.value = String(progress);
+  }
+  if (refs.productionPreviewProgressText) refs.productionPreviewProgressText.textContent = `${progress.toLocaleString("tr-TR")} / ${total.toLocaleString("tr-TR")}`;
+  renderProductionPlaybackStatus();
+
+  previewContext.fillStyle = palette.bed;
+  previewContext.strokeStyle = palette.bedBorder;
+  previewContext.lineWidth = 1;
+  previewContext.fillRect((cssWidth - drawWidth) / 2, (cssHeight - drawHeight) / 2, drawWidth, drawHeight);
+  previewContext.strokeRect((cssWidth - drawWidth) / 2, (cssHeight - drawHeight) / 2, drawWidth, drawHeight);
+
+  const paths = new Map();
+  const ensurePath = (category, future) => {
+    const key = `${category}:${future ? "future" : "done"}`;
+    if (!paths.has(key)) paths.set(key, new Path2D());
+    return paths.get(key);
+  };
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    const category = productionOperationCategory(segment);
+    if (!state.productionPreview.layers[category]) continue;
+    const path = ensurePath(category, index >= progress);
+    path.moveTo(mapX(segment[0]), mapY(segment[1]));
+    path.lineTo(mapX(segment[2]), mapY(segment[3]));
+  }
+  const colors = { cut: palette.cut, engrave: palette.engraveLine, travel: palette.travel || "#A855F7" };
+  for (const category of ["travel", "engrave", "cut"]) {
+    for (const future of [true, false]) {
+      const path = paths.get(`${category}:${future ? "future" : "done"}`);
+      if (!path) continue;
+      previewContext.save();
+      previewContext.globalAlpha = future ? 0.17 : category === "travel" ? 0.55 : 0.95;
+      previewContext.strokeStyle = colors[category];
+      previewContext.lineWidth = category === "travel" ? 0.8 : 1.25;
+      if (category === "travel") previewContext.setLineDash([4, 4]);
+      previewContext.stroke(path);
+      previewContext.restore();
+    }
+  }
+}
+
+async function setProductionPreviewTabOpen(open, syncWorkflow = true) {
+  state.productionPreview.open = Boolean(open);
+  refs.productionPreviewTab?.classList.toggle("hidden", !open);
+  document.body.classList.toggle("production-preview-open", Boolean(open));
+  if (!open) {
+    stopProductionPlayback();
+    if (syncWorkflow) setWorkflowActive("design");
+    return;
+  }
+  setMachineTabOpen(false, false, false);
+  if (syncWorkflow) setWorkflowActive("preview");
+  const path = refs.outputPath?.value?.trim() || "";
+  if (path && (!state.machine.preview || state.machine.previewPath !== path)) await loadMachinePreview(false);
+  renderProductionPreviewInfo();
+  requestAnimationFrame(drawProductionPreview);
+}
+
 async function loadMachinePreview(showErrors = true) {
   const path = refs.outputPath?.value?.trim() || "";
   if (!path) {
@@ -2381,25 +3483,35 @@ async function loadMachinePreview(showErrors = true) {
     return;
   }
   try {
+    stopProductionPlayback();
     const data = await api("/api/machine/gcode-info", { path });
     state.machine.preview = data.info || null;
     state.machine.previewPath = path;
+    state.productionPreview.progress = null;
     renderMachinePreviewInfo();
     drawMachinePreview();
+    renderProductionPreviewInfo();
+    drawProductionPreview();
   } catch (error) {
     state.machine.preview = null;
     state.machine.previewPath = "";
     renderMachinePreviewInfo();
     drawMachinePreview();
+    renderProductionPreviewInfo();
+    drawProductionPreview();
     if (showErrors) setStatus(`Önizleme yüklenemedi: ${error.message}`, "danger");
   }
 }
 
 function clearMachinePreview() {
+  stopProductionPlayback();
   state.machine.preview = null;
   state.machine.previewPath = "";
+  state.productionPreview.progress = null;
   renderMachinePreviewInfo();
   drawMachinePreview();
+  renderProductionPreviewInfo();
+  drawProductionPreview();
 }
 
 function ensureMachinePreviewForCurrentOutput(showErrors = false) {
@@ -2552,9 +3664,9 @@ async function connectMachine() {
 
 async function autoConnectMachine() {
   await refreshMachinePorts();
-  const preferred = state.machine.preferredPort || refs.machinePort?.value || "";
+  const preferred = state.machine.preferredPort || "";
   if (!preferred) {
-    setStatus("Otomatik bağlanacak uygun USB seri port bulunamadı.");
+    setStatus("Otomatik bağlanacak uygun USB seri port bulunamadı. Bluetooth portları güvenlik için otomatik seçilmez.", "warn");
     return;
   }
   if (refs.machinePort) refs.machinePort.value = preferred;
@@ -2702,6 +3814,7 @@ async function sendGcodeToMachine() {
     // Onizleme + kalan sure gostergesi icin isi gondermeden dosyayi coz.
     if (state.machine.previewPath !== path) await loadMachinePreview(false);
     const data = await api("/api/machine/send-gcode", { path, confirmed: true });
+    recordProductionHistory("sent", { totalLines: data.machine?.job?.total || state.machine.preview?.lineCount || 0 });
     applyMachineSnapshot(data.machine);
     setStatus("G-code gönderimi başladı.");
   } catch (error) {
@@ -3651,7 +4764,8 @@ function computeView() {
     const cursor = state.cursor
       ? `X ${state.cursor.x.toFixed(1)} mm, Y ${state.cursor.y.toFixed(1)} mm`
       : "-";
-    refs.safetyReadout.textContent = `Grid: ${grid.toFixed(grid < 10 ? 1 : 0)} mm · Zoom: ${Math.round(state.view.zoom * 100)}% · İmleç: ${cursor}`;
+    const gridText = state.preferences.showGrid ? `${grid.toFixed(grid < 10 ? 1 : 0)} mm` : "kapalı";
+    refs.safetyReadout.textContent = `Grid: ${gridText} · Zoom: ${Math.round(state.view.zoom * 100)}% · İmleç: ${cursor}`;
   }
 }
 
@@ -3974,24 +5088,26 @@ function drawGrid() {
   ctx.fillStyle = palette.bed;
   ctx.fillRect(topLeft.x, topLeft.y, b.width * state.view.scale, b.height * state.view.scale);
 
-  ctx.lineWidth = 1;
-  for (let x = startX; x <= endX + 0.001; x += minorStep) {
-    const sx = crisp(worldToScreen({ x, y: 0 }).x);
-    const isMajor = Math.abs(x / majorStep - Math.round(x / majorStep)) < 0.001;
-    ctx.strokeStyle = isMajor ? palette.gridLarge : palette.gridSmall;
-    ctx.beginPath();
-    ctx.moveTo(sx, topLeft.y);
-    ctx.lineTo(sx, bottomLeft.y);
-    ctx.stroke();
-  }
-  for (let y = startY; y <= endY + 0.001; y += minorStep) {
-    const sy = crisp(worldToScreen({ x: 0, y }).y);
-    const isMajor = Math.abs(y / majorStep - Math.round(y / majorStep)) < 0.001;
-    ctx.strokeStyle = isMajor ? palette.gridLarge : palette.gridSmall;
-    ctx.beginPath();
-    ctx.moveTo(topLeft.x, sy);
-    ctx.lineTo(topRight.x, sy);
-    ctx.stroke();
+  if (state.preferences.showGrid) {
+    ctx.lineWidth = 1;
+    for (let x = startX; x <= endX + 0.001; x += minorStep) {
+      const sx = crisp(worldToScreen({ x, y: 0 }).x);
+      const isMajor = Math.abs(x / majorStep - Math.round(x / majorStep)) < 0.001;
+      ctx.strokeStyle = isMajor ? palette.gridLarge : palette.gridSmall;
+      ctx.beginPath();
+      ctx.moveTo(sx, topLeft.y);
+      ctx.lineTo(sx, bottomLeft.y);
+      ctx.stroke();
+    }
+    for (let y = startY; y <= endY + 0.001; y += minorStep) {
+      const sy = crisp(worldToScreen({ x: 0, y }).y);
+      const isMajor = Math.abs(y / majorStep - Math.round(y / majorStep)) < 0.001;
+      ctx.strokeStyle = isMajor ? palette.gridLarge : palette.gridSmall;
+      ctx.beginPath();
+      ctx.moveTo(topLeft.x, sy);
+      ctx.lineTo(topRight.x, sy);
+      ctx.stroke();
+    }
   }
 
   ctx.strokeStyle = palette.bedBorder;
@@ -6299,7 +7415,9 @@ function uniqueSelectionItems(items) {
   const seen = new Set();
   const result = [];
   for (const item of items || []) {
-    if (!item || item.type !== "pattern" || !patternById(item.id)) continue;
+    if (!item || !["pattern", "placement"].includes(item.type)) continue;
+    if (item.type === "pattern" && !patternById(item.id)) continue;
+    if (item.type === "placement" && !placementById(item.id)) continue;
     const key = selectionKey(item);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -6309,11 +7427,19 @@ function uniqueSelectionItems(items) {
 }
 
 function selectedPatternObjects() {
-  let items = uniqueSelectionItems(state.selectedItems);
+  let items = uniqueSelectionItems(state.selectedItems).filter((item) => item.type === "pattern");
   if (!items.length && (state.selected?.type === "pattern" || state.selected?.type === "vectorPath")) {
     items = uniqueSelectionItems([{ type: "pattern", id: state.selected.id }]);
   }
   return items.map((item) => patternById(item.id)).filter(Boolean);
+}
+
+function selectedPlacementObjects() {
+  let items = uniqueSelectionItems(state.selectedItems).filter((item) => item.type === "placement");
+  if (!items.length && state.selected?.type === "placement") {
+    items = uniqueSelectionItems([{ type: "placement", id: state.selected.id }]);
+  }
+  return items.map((item) => placementById(item.id)).filter(Boolean);
 }
 
 function selectedIs(type, id) {
@@ -6967,7 +8093,7 @@ function select(type, id, extra = {}) {
   setVectorPathPreview([]);
   if (!state.selected) {
     state.selectedItems = [];
-  } else if (type === "pattern") {
+  } else if (type === "pattern" || type === "placement") {
     state.selectedItems = [{ type, id }];
   } else if (type === "vectorPath" || type === "vectorObject") {
     state.selectedItems = [{ type: "pattern", id }];
@@ -7008,7 +8134,7 @@ function selectPatternItems(patternIds, activeId = null) {
 }
 
 function togglePatternSelection(patternId) {
-  const items = uniqueSelectionItems(state.selectedItems);
+  const items = uniqueSelectionItems(state.selectedItems).filter((item) => item.type === "pattern");
   const index = items.findIndex((item) => item.id === patternId);
   if (index >= 0) {
     items.splice(index, 1);
@@ -7021,6 +8147,37 @@ function togglePatternSelection(patternId) {
   }
   if (index < 0) items.push({ type: "pattern", id: patternId });
   selectPatternItems(items.map((item) => item.id), patternId);
+}
+
+function selectPlacementItems(placementIds, activeId = null) {
+  state.selectedVectorPaths = [];
+  state.vectorSelectionRegion = null;
+  rebuildVectorPathSelectionKeys();
+  setVectorPathPreview([]);
+  state.selectedItems = uniqueSelectionItems(placementIds.map((id) => ({ type: "placement", id })));
+  const active = activeId && state.selectedItems.some((item) => item.id === activeId)
+    ? activeId
+    : state.selectedItems[0]?.id;
+  state.selected = active ? { type: "placement", id: active } : null;
+  syncImageEditUi();
+  updateSelectionPanel();
+  draw();
+}
+
+function togglePlacementSelection(placementId) {
+  const items = uniqueSelectionItems(state.selectedItems).filter((item) => item.type === "placement");
+  const index = items.findIndex((item) => item.id === placementId);
+  if (index >= 0) {
+    items.splice(index, 1);
+    if (!items.length) {
+      select(null, null);
+      return;
+    }
+    selectPlacementItems(items.map((item) => item.id), items[items.length - 1]?.id);
+    return;
+  }
+  items.push({ type: "placement", id: placementId });
+  selectPlacementItems(items.map((item) => item.id), placementId);
 }
 
 function updateSelectionPanel() {
@@ -7062,8 +8219,10 @@ function renderPlacementPanel(placement) {
   const part = partById(placement.partId);
   const size = placementSize(placement);
   const operation = placementOperation(placement);
+  const selectedPlacementCount = selectedPlacementObjects().length;
+  const multiSelectionText = selectedPlacementCount > 1 ? ` · ${selectedPlacementCount} seçili` : "";
   refs.selectionPanel.innerHTML = `
-    <div class="property-title"><strong>${escapeHtml(part?.name || "Parça")}</strong><span>DXF Parça · ${operationLabel(operation)} · ${size.width.toFixed(2)} × ${size.height.toFixed(2)} mm</span></div>
+    <div class="property-title"><strong>${escapeHtml(part?.name || "Parça")}</strong><span>DXF Parça · ${operationLabel(operation)} · ${size.width.toFixed(2)} × ${size.height.toFixed(2)} mm${multiSelectionText}</span></div>
     <div class="form-grid">
       <label>X konumu (mm) <span class="unit-input"><input data-placement="x" type="number" step="0.01" value="${placement.x.toFixed(2)}" /><b>mm</b></span></label>
       <label>Y konumu (mm) <span class="unit-input"><input data-placement="y" type="number" step="0.01" value="${placement.y.toFixed(2)}" /><b>mm</b></span></label>
@@ -8843,7 +10002,10 @@ function renderPatternsList(analysis) {
     })
     .join("");
   refs.patternsList.querySelectorAll("[data-pattern-id]").forEach((button) => {
-    button.addEventListener("click", () => select("pattern", button.dataset.patternId));
+    button.addEventListener("click", (event) => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey) togglePatternSelection(button.dataset.patternId);
+      else select("pattern", button.dataset.patternId);
+    });
   });
 }
 
@@ -9316,6 +10478,12 @@ function applyPackedLayout(packed, reusable = false) {
       y: packedItem.y,
       rotation: packedItem.rotation,
     };
+    const sourcePart = packedItem.item.part;
+    ProjectState.ensureEntityIdentity(placement, "placement", {
+      source: sourcePart.sourceId || sourcePart.path || sourcePart.id,
+      forceInstance: !existing,
+    });
+    placement.partSourceId = sourcePart.sourceId || placement.partSourceId;
     if (existing) {
       const dx = placement.x - existing.x;
       const dy = placement.y - existing.y;
@@ -9358,6 +10526,9 @@ function applyPackedStandalonePatterns(packed) {
   for (const packedItem of packed) {
     const pattern = packedItem.item.pattern;
     if (!pattern) continue;
+    if (pattern.layoutCanRotate) {
+      pattern.rotation = ((Number(packedItem.rotation) || 0) % 360 + 360) % 360;
+    }
     const bounds = patternBounds(pattern);
     if (!bounds) continue;
     pattern.x += packedItem.x - bounds.minX;
@@ -9425,6 +10596,9 @@ async function addDxfs() {
       setStatus("DXF seçilmedi.");
       return;
     }
+    for (const part of data.parts) {
+      ProjectState.ensureEntityIdentity(part, "part", { source: part.path || part.name, forceInstance: true });
+    }
     const quantity = await requestDxfQuantity(data.parts);
     if (quantity === null) {
       setStatus("DXF ekleme iptal edildi.");
@@ -9473,6 +10647,10 @@ async function addImage() {
 
     const target = selectedPlacement() || state.placements[0] || null;
     const pattern = createPatternForPlacement(id, data.image, target);
+    ProjectState.ensureEntityIdentity(pattern, "pattern", {
+      source: data.image.originalPath || data.image.sourcePath || data.image.name,
+      forceInstance: true,
+    });
     state.patterns.push(pattern);
     select("pattern", id);
     if (data.image.kind === "svg") {
@@ -9557,6 +10735,10 @@ async function preparePhotoEngrave(options = {}) {
       select("pattern", replacePattern.id);
     } else {
       Object.assign(prepared, photoDefaults);
+      ProjectState.ensureEntityIdentity(prepared, "pattern", {
+        source: data.image.path || data.image.name,
+        forceInstance: true,
+      });
       state.patterns.push(prepared);
       select("pattern", prepared.id);
     }
@@ -9644,6 +10826,10 @@ async function vectorizePhoto(options = {}) {
     } else {
       pattern = createVectorPatternForPlacement(id, vector, target);
       setProfessionalPatternDefaults(pattern, professionalMode);
+      ProjectState.ensureEntityIdentity(pattern, "pattern", {
+        source: vector.sourcePath || vector.name,
+        forceInstance: true,
+      });
       state.patterns.push(pattern);
     }
     pattern.vectorPreset = professionalMode.id;
@@ -10105,17 +11291,12 @@ function createVectorPatternForPlacement(id, vector, placement) {
   return result;
 }
 
-function addGeneratedVector(geometry, options) {
-  options = options || {};
-  if (!geometry || !(geometry.vectorPaths || []).length) {
-    setStatus("Üretilecek geometri boş.");
-    return null;
-  }
+function createGeneratedVectorPattern(geometry, options = {}) {
+  if (!geometry || !(geometry.vectorPaths || []).length) return null;
   const name = options.name || "Nesne";
-  pushUndo(`${name} ekle`);
   const id = uid("pat");
   const vector = {
-    sourcePath: `generated:${geometry.kind || "shape"}`,
+    sourcePath: options.sourcePath || `generated:${geometry.kind || "shape"}`,
     name,
     sourceWidth: geometry.sourceWidth,
     sourceHeight: geometry.sourceHeight,
@@ -10139,11 +11320,562 @@ function addGeneratedVector(geometry, options) {
   pattern.generatedKind = geometry.kind;
   pattern.textSettings = options.textSettings || geometry.textSettings || null;
   pattern.vectorStats = geometry.vectorStats || pattern.vectorStats || null;
+  pattern.layoutCanRotate = Boolean(options.layoutCanRotate);
+  if (options.metadata) pattern.generatorMetadata = clonePlain(options.metadata);
+  ProjectState.ensureEntityIdentity(pattern, "pattern", {
+    source: options.sourceKey || `generated:${geometry.kind || "shape"}:${id}`,
+    forceSource: true,
+    forceInstance: true,
+  });
+  return pattern;
+}
+
+function addGeneratedVector(geometry, options) {
+  options = options || {};
+  const pattern = createGeneratedVectorPattern(geometry, options);
+  if (!pattern) {
+    setStatus("Üretilecek geometri boş.");
+    return null;
+  }
+  const name = options.name || "Nesne";
+  pushUndo(`${name} ekle`);
   state.patterns.push(pattern);
-  select("pattern", id);
+  select("pattern", pattern.id);
   updateUiFromAnalysis(computeJobAnalysis());
   setStatus(`${name} eklendi (${pattern.width.toFixed(1)} × ${pattern.height.toFixed(1)} mm).`);
   return pattern;
+}
+
+function layoutNewGeneratedPatterns(patterns) {
+  const newIds = new Set(patterns.map((pattern) => pattern.id));
+  const occupiedRects = [
+    ...state.placements.map(placementBounds),
+    ...state.patterns
+      .filter((pattern) => !newIds.has(pattern.id) && !pattern.parentId && patternOperation(pattern) !== "ignore")
+      .map(patternBounds)
+      .filter(Boolean),
+  ];
+  const items = patterns.map((pattern) => {
+    const bounds = patternBounds(pattern);
+    const size = boundsSize(bounds);
+    return {
+      pattern,
+      bounds,
+      fixedRotation: !pattern.layoutCanRotate,
+      rotation: Number(pattern.rotation) || 0,
+      part: { id: pattern.id, width: size.width, height: size.height },
+    };
+  });
+  const result = packLayoutItems(items, occupiedRects);
+  applyPackedStandalonePatterns(result.packed);
+  return result;
+}
+
+function addGeneratedVectorBatch(entries, options = {}) {
+  const patterns = (entries || [])
+    .map((entry, index) => createGeneratedVectorPattern(entry.geometry, {
+      ...entry,
+      sourceKey: entry.sourceKey || `${options.sourceKey || "generated:batch"}:${entry.role || index}`,
+    }))
+    .filter(Boolean);
+  if (!patterns.length) {
+    setStatus("Üretilecek geometri boş.", "warn");
+    return [];
+  }
+  pushUndo(options.undoLabel || `${options.name || "Nesneler"} ekle`);
+  state.patterns.push(...patterns);
+  const layout = layoutNewGeneratedPatterns(patterns);
+  acceptCurrentLayoutSettings();
+  state.layout.manual = false;
+  select("pattern", patterns[0].id);
+  updateUiFromAnalysis(computeJobAnalysis());
+  draw();
+  const fitted = patterns.length - Number(layout.overflowCount || 0);
+  setStatus(
+    layout.overflowCount
+      ? `${fitted}/${patterns.length} ${options.name || "nesne"} tablaya yerleşti; ${layout.overflowCount} parça dışarıda.`
+      : `${patterns.length} ${options.name || "nesne"} verimli yerleştirildi.`,
+    layout.overflowCount ? "warn" : "ok"
+  );
+  return patterns;
+}
+
+function boxMakerOptions() {
+  return {
+    width: refs.boxWidth?.value,
+    depth: refs.boxDepth?.value,
+    height: refs.boxHeight?.value,
+    thickness: refs.boxThickness?.value,
+    fingerWidth: refs.boxFingerWidth?.value,
+    fit: refs.boxFit?.value,
+    closed: state.boxMaker.closed,
+  };
+}
+
+function updateBoxMakerTypeButtons() {
+  document.querySelectorAll("[data-box-type]").forEach((button) => {
+    button.classList.toggle("active", (button.dataset.boxType === "closed") === state.boxMaker.closed);
+  });
+}
+
+function createSvgElement(name, attributes = {}) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+  return element;
+}
+
+function renderBoxMakerPreview() {
+  const result = BoxMaker.buildBox(boxMakerOptions());
+  state.boxMaker.result = result;
+  updateBoxMakerTypeButtons();
+  if (refs.boxMakerValidation) {
+    const messages = result.errors.length ? result.errors : result.warnings;
+    refs.boxMakerValidation.textContent = messages.join(" ") || "Ölçüler geçerli. Karşılıklı kenarlar aynı parmak bölünmesiyle üretilecek.";
+    refs.boxMakerValidation.classList.toggle("danger", result.errors.length > 0);
+    refs.boxMakerValidation.classList.toggle("warn", !result.errors.length && result.warnings.length > 0);
+  }
+  const addButton = document.getElementById("addBoxToJobBtn");
+  if (addButton) addButton.disabled = result.errors.length > 0;
+  if (refs.boxMakerStats) {
+    refs.boxMakerStats.textContent = result.panels.length
+      ? `${result.panels.length} parça · yaklaşık ${result.stats.totalCutLength.toFixed(0)} mm kesim`
+      : "Geçersiz ölçü";
+  }
+  if (!refs.boxMakerPreview) return;
+  refs.boxMakerPreview.replaceChildren();
+  if (!result.panels.length) return;
+  const layout = BoxMaker.layoutPanels(result.panels, {
+    targetWidth: Math.max(320, result.options.width * 2.2),
+    gap: Math.max(8, result.options.thickness * 3),
+  });
+  const padding = Math.max(12, result.options.thickness * 4);
+  refs.boxMakerPreview.setAttribute("viewBox", `${-padding} ${-padding} ${layout.width + padding * 2} ${layout.height + padding * 2}`);
+  for (const item of layout.items) {
+    const group = createSvgElement("g", { transform: `translate(${item.x} ${item.y})` });
+    const path = createSvgElement("path", {
+      d: BoxMaker.svgPath(item.panel.vectorPaths[0].points),
+      class: "box-preview-path",
+      "fill-rule": "evenodd",
+    });
+    const label = createSvgElement("text", {
+      x: item.panel.sourceWidth / 2,
+      y: Math.min(item.panel.sourceHeight - 4, 13),
+      "text-anchor": "middle",
+      class: "box-preview-label",
+    });
+    label.textContent = item.panel.name;
+    group.append(path, label);
+    refs.boxMakerPreview.append(group);
+  }
+}
+
+function openBoxMaker() {
+  closeProjectHub();
+  refs.boxMakerModal?.classList.remove("hidden");
+  renderBoxMakerPreview();
+}
+
+function closeBoxMaker() {
+  refs.boxMakerModal?.classList.add("hidden");
+  scheduleCanvasResize();
+}
+
+function addBoxToJob() {
+  const result = state.boxMaker.result || BoxMaker.buildBox(boxMakerOptions());
+  if (result.errors.length || !result.panels.length) {
+    setStatus(result.errors[0] || "Kutu parçaları üretilemedi.", "danger");
+    return;
+  }
+  const boxId = ProjectState.createId("box");
+  const dimensions = `${result.options.width}×${result.options.depth}×${result.options.height}`;
+  const patterns = addGeneratedVectorBatch(result.panels.map((panel) => ({
+    geometry: panel,
+    name: `${panel.name} · ${dimensions}`,
+    role: panel.role,
+    operation: "cut",
+    layoutCanRotate: true,
+    sourcePath: `generated:box:${boxId}:${panel.role}`,
+    sourceKey: `generated:box:${boxId}:${panel.role}`,
+    metadata: {
+      generator: "box-maker",
+      boxId,
+      role: panel.role,
+      dimensions: clonePlain(result.options),
+      edges: clonePlain(panel.edges),
+    },
+  })), {
+    name: "kutu parçası",
+    undoLabel: "Kutu parçalarını ekle",
+    sourceKey: `generated:box:${boxId}`,
+  });
+  if (!patterns.length) return;
+  closeBoxMaker();
+  activateRibbonTab("tabla");
+  fitView();
+}
+
+function calibrationOptions() {
+  return {
+    columns: refs.calibrationColumns?.value,
+    rows: refs.calibrationRows?.value,
+    tile: refs.calibrationTile?.value,
+    gap: refs.calibrationGap?.value,
+    minPower: refs.calibrationMinPower?.value,
+    maxPower: refs.calibrationMaxPower?.value,
+    minFeed: refs.calibrationMinFeed?.value,
+    maxFeed: refs.calibrationMaxFeed?.value,
+  };
+}
+
+function renderCalibrationSummary() {
+  const result = CalibrationGrid.build(calibrationOptions());
+  if (!refs.calibrationSummary) return result;
+  const operation = refs.calibrationOperation?.value === "engrave_line" ? "çizgi kazıma" : "kesim";
+  refs.calibrationSummary.classList.toggle("danger", result.errors.length > 0);
+  refs.calibrationSummary.textContent = result.errors.length
+    ? result.errors.join(" ")
+    : `${result.columns} × ${result.rows} = ${result.cells.length} ${operation} karesi · ${result.width.toFixed(1)} × ${result.height.toFixed(1)} mm · S${result.powers.join("/")} · F${result.feeds.join("/")}`;
+  const button = document.getElementById("addCalibrationBtn");
+  if (button) button.disabled = result.errors.length > 0;
+  return result;
+}
+
+function openCalibration() {
+  closeProjectHub();
+  refs.calibrationModal?.classList.remove("hidden");
+  renderCalibrationSummary();
+}
+
+function closeCalibration() {
+  refs.calibrationModal?.classList.add("hidden");
+  scheduleCanvasResize();
+}
+
+function setCalibrationPatternProcess(pattern, operation, power, feed) {
+  pattern.operation = operation;
+  pattern.power = power;
+  pattern.feed = feed;
+  if (operation === "cut") {
+    pattern.cutPower = power;
+    pattern.cutFeed = feed;
+  } else {
+    pattern.engravePower = power;
+    pattern.engraveFeed = feed;
+  }
+}
+
+function addCalibrationPlate(event) {
+  event?.preventDefault();
+  try {
+    return addCalibrationPlateUnsafe();
+  } catch (error) {
+    console.error("Kalibrasyon plakasi olusturulamadi.", error);
+    setStatus(error?.message || "Kalibrasyon plakasi olusturulamadi.", "danger");
+    return null;
+  }
+}
+
+function addCalibrationPlateUnsafe() {
+  const result = renderCalibrationSummary();
+  if (result.errors.length) {
+    setStatus(result.errors[0], "danger");
+    return;
+  }
+  const operation = refs.calibrationOperation?.value === "engrave_line" ? "engrave_line" : "cut";
+  const occupied = [
+    ...state.placements.map(placementBounds),
+    ...state.patterns.filter((pattern) => !pattern.parentId && patternOperation(pattern) !== "ignore").map(patternBounds).filter(Boolean),
+  ];
+  const groupId = ProjectState.createId("calibration");
+  const packing = packLayoutItems([{
+    part: { id: groupId, width: result.width, height: result.height },
+    fixedRotation: true,
+    rotation: 0,
+  }], occupied);
+  const packed = packing.packed[0];
+  if (!packed || packing.overflowCount) {
+    setStatus(`Kalibrasyon plakası için tablaya ${result.width.toFixed(1)} × ${result.height.toFixed(1)} mm boş alan gerekir.`, "danger");
+    return;
+  }
+  const geometryLib = window.LaserGeometry;
+  const patterns = [];
+  const originX = packed.x;
+  const originY = packed.y;
+  const commonMetadata = {
+    generator: "power-speed-calibration",
+    calibrationId: groupId,
+    operation,
+    columns: result.columns,
+    rows: result.rows,
+  };
+  for (const cell of result.cells) {
+    const geometry = geometryLib.buildShape("rect", { width: cell.width, height: cell.height, radius: 0.8, operation });
+    const pattern = createGeneratedVectorPattern(geometry, {
+      name: `Kalibrasyon S${cell.power} F${cell.feed}`,
+      operation,
+      sourceKey: `generated:calibration:${groupId}:cell:${cell.row}:${cell.column}`,
+      metadata: { ...commonMetadata, row: cell.row, column: cell.column, power: cell.power, feed: cell.feed },
+    });
+    pattern.x = originX + cell.x;
+    pattern.y = originY + cell.y;
+    setCalibrationPatternProcess(pattern, operation, cell.power, cell.feed);
+    patterns.push(pattern);
+  }
+  const labelPower = Math.min(180, Math.max(30, result.powers[0]));
+  const labelFeed = Math.max(1500, result.feeds.at(-1));
+  result.powers.forEach((power, column) => {
+    const geometry = geometryLib.buildText(`S${power}`, { height: 3, tracking: 0.15 });
+    const pattern = createGeneratedVectorPattern(geometry, {
+      name: `Güç etiketi S${power}`,
+      operation: "engrave_line",
+      sourceKey: `generated:calibration:${groupId}:power:${column}`,
+      metadata: { ...commonMetadata, label: "power", value: power },
+    });
+    pattern.x = originX + result.labelWidth + column * (result.tile + result.gap) + (result.tile - pattern.width) / 2;
+    pattern.y = originY + result.gridHeight + 2;
+    setCalibrationPatternProcess(pattern, "engrave_line", labelPower, labelFeed);
+    patterns.push(pattern);
+  });
+  result.feeds.forEach((feed, row) => {
+    const geometry = geometryLib.buildText(`F${feed}`, { height: 3, tracking: 0.15 });
+    const pattern = createGeneratedVectorPattern(geometry, {
+      name: `Hız etiketi F${feed}`,
+      operation: "engrave_line",
+      sourceKey: `generated:calibration:${groupId}:feed:${row}`,
+      metadata: { ...commonMetadata, label: "feed", value: feed },
+    });
+    pattern.x = originX + result.labelWidth - pattern.width - 2;
+    pattern.y = originY + row * (result.tile + result.gap) + (result.tile - pattern.height) / 2;
+    setCalibrationPatternProcess(pattern, "engrave_line", labelPower, labelFeed);
+    patterns.push(pattern);
+  });
+  pushUndo("Kalibrasyon plakası ekle");
+  state.patterns.push(...patterns);
+  acceptCurrentLayoutSettings();
+  state.layout.manual = false;
+  select("pattern", patterns[0].id);
+  updateUiFromAnalysis(computeJobAnalysis());
+  draw();
+  closeCalibration();
+  activateRibbonTab("tabla");
+  setStatus(`${result.cells.length} karelik güç/hız kalibrasyon plakası eklendi. Etiketler düşük güçte kazınacak.`, "ok");
+}
+
+function libraryPatternThumbnail(pattern) {
+  const source = state.images.get(pattern.id)?.src || "";
+  return String(source).startsWith("data:") ? source : "";
+}
+
+function selectedLibraryCandidates() {
+  const patterns = selectedPatternObjects();
+  if (patterns.length) return patterns.map((pattern) => ({ kind: "pattern", pattern }));
+  const placement = selectedPlacement();
+  const part = placement ? partById(placement.partId) : null;
+  return part ? [{ kind: "part", part }] : [];
+}
+
+async function saveSelectionToLibrary() {
+  const candidates = selectedLibraryCandidates();
+  if (!candidates.length) {
+    setStatus("Kütüphaneye kaydetmek için bir DXF parçası veya desen seçin.", "warn");
+    return;
+  }
+  try {
+    for (const candidate of candidates) {
+      if (candidate.kind === "pattern") {
+        const pattern = candidate.pattern;
+        await state.library.store.put({
+          name: pattern.name || "Desen",
+          kind: "pattern",
+          width: pattern.width,
+          height: pattern.height,
+          operation: patternOperation(pattern),
+          sourceId: pattern.sourceId,
+          tags: [pattern.generatedKind, pattern.vectorPreset, pattern.kind].filter(Boolean),
+          thumbnail: libraryPatternThumbnail(pattern),
+          payload: { pattern: clonePatternPayload(pattern) },
+        });
+      } else {
+        const part = candidate.part;
+        await state.library.store.put({
+          name: part.name || "DXF parçası",
+          kind: "part",
+          width: part.width,
+          height: part.height,
+          operation: "cut",
+          sourceId: part.sourceId,
+          tags: ["dxf", "kesim"],
+          payload: { part: clonePartPayload(part) },
+        });
+      }
+    }
+    await loadLibraryAssets();
+    setStatus(`${candidates.length} öğe tasarım kütüphanesine kaydedildi.`, "ok");
+  } catch (error) {
+    setStatus(error.message || "Kütüphane kaydı tamamlanamadı.", "danger");
+  }
+}
+
+function appendLibraryVectorPreview(container, asset) {
+  const pattern = asset.payload?.pattern;
+  const paths = (pattern?.vectorPaths || []).filter((path) => !path.removed && (path.points || []).length >= 2).slice(0, 400);
+  if (!paths.length) return false;
+  const width = Math.max(0.5, Number(pattern.sourceWidth) || Number(asset.width) || 1);
+  const height = Math.max(0.5, Number(pattern.sourceHeight) || Number(asset.height) || 1);
+  const svg = createSvgElement("svg", { viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "xMidYMid meet", "aria-hidden": "true" });
+  const group = createSvgElement("g");
+  for (const vectorPath of paths) {
+    const points = vectorPath.points || [];
+    const d = points.map((point, index) => `${index ? "L" : "M"}${Number(point[0]).toFixed(3)} ${Number(point[1]).toFixed(3)}`).join(" ") + (vectorPath.closed ? " Z" : "");
+    group.append(createSvgElement("path", { d }));
+  }
+  svg.append(group);
+  container.append(svg);
+  return true;
+}
+
+function libraryAssetMeta(asset) {
+  const type = asset.kind === "part" ? "DXF parçası" : "Desen";
+  const dimensions = asset.width && asset.height ? `${asset.width.toFixed(1)} × ${asset.height.toFixed(1)} mm` : "Ölçü yok";
+  return `${type} · ${dimensions}`;
+}
+
+function renderLibraryAssets() {
+  if (!refs.libraryList) return;
+  const assets = AssetLibrary.searchAssets(state.library.assets, refs.librarySearch?.value || "");
+  refs.libraryList.replaceChildren();
+  refs.libraryEmpty?.classList.toggle("hidden", assets.length > 0);
+  for (const asset of assets) {
+    const card = document.createElement("article");
+    card.className = "library-asset";
+    card.dataset.assetId = asset.id;
+    const preview = document.createElement("div");
+    preview.className = "library-preview";
+    if (asset.thumbnail?.startsWith("data:")) {
+      const image = document.createElement("img");
+      image.src = asset.thumbnail;
+      image.alt = "";
+      preview.append(image);
+    } else if (!appendLibraryVectorPreview(preview, asset)) {
+      const placeholder = document.createElement("span");
+      placeholder.className = "part-placeholder";
+      placeholder.textContent = asset.kind === "part" ? `${asset.width.toFixed(1)} × ${asset.height.toFixed(1)} mm` : "Vektör";
+      preview.append(placeholder);
+    }
+    const info = document.createElement("div");
+    info.className = "library-asset-info";
+    const name = document.createElement("strong");
+    name.textContent = asset.name;
+    const meta = document.createElement("span");
+    meta.textContent = libraryAssetMeta(asset);
+    info.append(name, meta);
+    const actions = document.createElement("div");
+    actions.className = "library-asset-actions";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "primary";
+    add.textContent = "İşe Ekle";
+    add.addEventListener("click", () => insertLibraryAsset(asset.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "library-delete";
+    remove.textContent = "Sil";
+    remove.title = "Kütüphane öğesini sil";
+    remove.addEventListener("click", () => deleteLibraryAsset(asset.id));
+    actions.append(add, remove);
+    card.append(preview, info, actions);
+    refs.libraryList.append(card);
+  }
+}
+
+async function loadLibraryAssets() {
+  if (state.library.loading) return;
+  state.library.loading = true;
+  try {
+    state.library.assets = await state.library.store.list();
+    renderLibraryAssets();
+  } finally {
+    state.library.loading = false;
+  }
+}
+
+async function openLibrary() {
+  closeProjectHub();
+  refs.libraryModal?.classList.remove("hidden");
+  if (refs.librarySearch) refs.librarySearch.value = "";
+  try {
+    await loadLibraryAssets();
+  } catch (error) {
+    setStatus(error.message || "Kütüphane açılamadı.", "danger");
+  }
+}
+
+function closeLibrary() {
+  refs.libraryModal?.classList.add("hidden");
+  scheduleCanvasResize();
+}
+
+async function insertLibraryAsset(assetId) {
+  const asset = state.library.assets.find((item) => item.id === assetId) || await state.library.store.get(assetId);
+  if (!asset) {
+    setStatus("Kütüphane öğesi bulunamadı.", "danger");
+    return;
+  }
+  const hasPartPayload = asset.kind === "part" && Boolean(asset.payload?.part);
+  const hasPatternPayload = Boolean(asset.payload?.pattern);
+  if (!hasPartPayload && !hasPatternPayload) {
+    setStatus("Kütüphane öğesinin geometrisi eksik.", "danger");
+    return;
+  }
+  pushUndo("Kütüphaneden ekle");
+  if (hasPartPayload) {
+    const part = clonePartPayload(asset.payload.part);
+    part.id = uid("part");
+    part.name = asset.name;
+    part.path = `library:${asset.id}`;
+    part.quantity = 1;
+    ProjectState.ensureEntityIdentity(part, "part", { source: `library:${asset.id}`, forceSource: true, forceInstance: true });
+    state.parts.push(part);
+    const placements = appendPartsToLayout([part]);
+    if (placements[0]) select("placement", placements[0].id);
+    else draw();
+  } else if (hasPatternPayload) {
+    const pattern = clonePatternPayload(asset.payload.pattern);
+    pattern.id = uid("pat");
+    pattern.name = asset.name;
+    pattern.parentId = null;
+    pattern.sourcePath = `library:${asset.id}`;
+    pattern.x = Math.max(0, (bed().width - Number(pattern.width || asset.width || 1)) / 2);
+    pattern.y = Math.max(0, (bed().height - Number(pattern.height || asset.height || 1)) / 2);
+    ProjectState.ensureEntityIdentity(pattern, "pattern", { source: `library:${asset.id}`, forceSource: true, forceInstance: true });
+    state.patterns.push(pattern);
+    if (asset.thumbnail?.startsWith("data:")) {
+      const image = new Image();
+      image.src = asset.thumbnail;
+      state.images.set(pattern.id, image);
+      imageAdjustmentBases.set(pattern.id, asset.thumbnail);
+      image.addEventListener("load", draw, { once: true });
+    }
+    layoutNewGeneratedPatterns([pattern]);
+    select("pattern", pattern.id);
+  }
+  acceptCurrentLayoutSettings();
+  closeLibrary();
+  updateUiFromAnalysis(computeJobAnalysis());
+  draw();
+  setStatus(`${asset.name} kütüphaneden işe eklendi.`, "ok");
+}
+
+async function deleteLibraryAsset(assetId) {
+  const asset = state.library.assets.find((item) => item.id === assetId);
+  if (!asset || !window.confirm(`${asset.name} kütüphaneden silinsin mi?`)) return;
+  try {
+    await state.library.store.remove(assetId);
+    await loadLibraryAssets();
+    setStatus("Kütüphane öğesi silindi.");
+  } catch (error) {
+    setStatus(error.message || "Kütüphane öğesi silinemedi.", "danger");
+  }
 }
 
 function initRibbon() {
@@ -10161,6 +11893,9 @@ function activateRibbonTab(name) {
   document.querySelectorAll(".ribbon-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.tab === name);
   });
+  if (!state.productionPreview.open && document.getElementById("machineTab")?.classList.contains("hidden")) {
+    setWorkflowActive(["tabla", "kesim", "cikti"].includes(name) ? "prepare" : "design");
+  }
   scheduleCanvasResize();
 }
 
@@ -10708,6 +12443,10 @@ function clonePatternCopy(pattern, suffix = "kopya", sourceImage = null) {
     id,
     name: `${pattern.name || "Desen"} ${suffix}`,
   };
+  ProjectState.ensureEntityIdentity(copy, "pattern", {
+    source: pattern.sourceId || pattern.sourcePath || pattern.id,
+    forceInstance: true,
+  });
   const image = sourceImage || state.images.get(pattern.id);
   if (image) state.images.set(id, image);
   const adjustmentBase = imageAdjustmentBases.get(pattern.id);
@@ -10777,6 +12516,10 @@ function standalonePatternFromVectorPath(pattern, vectorPath) {
     sourcePatternId: pattern.id,
     sourceVectorPathId: vectorPath.id,
   };
+  ProjectState.ensureEntityIdentity(copy, "pattern", {
+    source: pattern.sourceId || pattern.sourcePath || pattern.id,
+    forceInstance: true,
+  });
   return copy;
 }
 
@@ -10840,16 +12583,16 @@ function copySelectedPatterns() {
   setStatus(`${patterns.length} desen kopyalandi.`);
 }
 
-function copySelectedPlacement() {
-  const placement = state.selected?.type === "placement" ? placementById(state.selected.id) : null;
-  const part = placement ? partById(placement.partId) : null;
-  if (!placement || !part) {
+function copySelectedPlacements() {
+  const placements = selectedPlacementObjects();
+  if (!placements.length) {
     setStatus("Kopyalanacak DXF parcasi yok.");
     return false;
   }
-  const childPatterns = state.patterns.filter((pattern) => pattern.parentId === placement.id);
-  state.clipboard = [
-    {
+  state.clipboard = placements.map((placement) => {
+    const part = partById(placement.partId);
+    const childPatterns = state.patterns.filter((pattern) => pattern.parentId === placement.id);
+    return {
       type: "placement",
       placement: { ...placement },
       part: clonePartPayload(part),
@@ -10857,10 +12600,10 @@ function copySelectedPlacement() {
         pattern: clonePatternPayload(pattern),
         image: state.images.get(pattern.id) || null,
       })),
-    },
-  ];
+    };
+  });
   state.clipboardPasteCount = 0;
-  setStatus("1 DXF parcasi kopyalandi.");
+  setStatus(`${placements.length} DXF parcasi kopyalandi.`);
   return true;
 }
 
@@ -10869,8 +12612,8 @@ function copySelection() {
     copySelectedVectorPath();
     return;
   }
-  if (state.selected?.type === "placement") {
-    copySelectedPlacement();
+  if (state.selected?.type === "placement" || selectedPlacementObjects().length) {
+    copySelectedPlacements();
     return;
   }
   copySelectedPatterns();
@@ -10924,6 +12667,12 @@ function pastePlacementsFromClipboard() {
       x: item.placement.x + offset,
       y: item.placement.y + offset,
     };
+    const sourcePart = partById(placement.partId) || item.part;
+    ProjectState.ensureEntityIdentity(placement, "placement", {
+      source: sourcePart?.sourceId || sourcePart?.path || placement.partId,
+      forceInstance: true,
+    });
+    placement.partSourceId = sourcePart?.sourceId || placement.partSourceId;
     state.placements.push(placement);
     created.push(placement);
     const patternCopies = (item.patterns || []).map((payload) => {
@@ -10935,7 +12684,7 @@ function pastePlacementsFromClipboard() {
     });
     state.patterns.push(...patternCopies);
   }
-  if (created[0]) select("placement", created[0].id);
+  if (created[0]) selectPlacementItems(created.map((placement) => placement.id), created[0].id);
   else draw();
   setStatus(`${created.length} DXF parcasi yapistirildi.`);
 }
@@ -10950,6 +12699,15 @@ function pasteClipboard() {
     return;
   }
   pastePatternsFromClipboard();
+}
+
+function cutSelection() {
+  if (!state.selected) {
+    setStatus("Kesilecek secim yok.", "warn");
+    return;
+  }
+  copySelection();
+  deleteSelected();
 }
 
 function selectAllPatterns() {
@@ -11398,6 +13156,54 @@ function moveSelectedVectorPathsByWorldMm(dx, dy, label = "Konturları taşı") 
   return true;
 }
 
+function selectedArrangeEntries() {
+  const patterns = selectedPatternObjects();
+  if (patterns.length > 1) {
+    return patterns.map((object) => ({ type: "pattern", object, bounds: patternBounds(object) }));
+  }
+  const placements = selectedPlacementObjects();
+  if (placements.length > 1) {
+    return placements.map((object) => ({ type: "placement", object, bounds: placementBounds(object) }));
+  }
+  return [];
+}
+
+function translateArrangeEntry(entry, dx, dy) {
+  if (!dx && !dy) return;
+  entry.object.x += dx;
+  entry.object.y += dy;
+  if (entry.type !== "placement") return;
+  for (const pattern of state.patterns) {
+    if (pattern.parentId !== entry.object.id) continue;
+    pattern.x += dx;
+    pattern.y += dy;
+  }
+}
+
+function arrangeSelectedObjects(mode) {
+  const entries = selectedArrangeEntries();
+  if (entries.length < 2) {
+    setStatus("Hizalama icin ayni turden en az iki nesne secin.", "warn");
+    return false;
+  }
+  const transforms = SelectionLayout.calculate(
+    entries.map((entry, index) => ({ id: entry.object.id || index, bounds: entry.bounds })),
+    mode
+  );
+  if (transforms.length !== entries.length) return false;
+  pushUndo("Coklu secimi hizala");
+  for (const transform of transforms) {
+    const entry = entries[transform.index];
+    if (entry) translateArrangeEntry(entry, transform.dx, transform.dy);
+  }
+  if (entries[0].type === "placement") markManualLayout();
+  updateJobAnalysisNow();
+  updateSelectionPanel();
+  draw();
+  setStatus(`${entries.length} nesne hizalandi.`, "ok");
+  return true;
+}
+
 function moveSelected(dx, dy) {
   if (!dx && !dy) return;
   if (state.selected?.type === "vectorObject") {
@@ -11429,6 +13235,23 @@ function moveSelected(dx, dy) {
       pattern.x += dx;
       pattern.y += dy;
     }
+    draw();
+    updateSelectionPanel();
+    return;
+  }
+  const selectedPlacements = selectedPlacementObjects();
+  if (selectedPlacements.length) {
+    const placementIds = new Set(selectedPlacements.map((placement) => placement.id));
+    for (const placement of selectedPlacements) {
+      placement.x += dx;
+      placement.y += dy;
+    }
+    for (const pattern of state.patterns) {
+      if (!placementIds.has(pattern.parentId)) continue;
+      pattern.x += dx;
+      pattern.y += dy;
+    }
+    markManualLayout();
     draw();
     updateSelectionPanel();
     return;
@@ -11547,6 +13370,15 @@ function deleteSelectedVectorPaths() {
 
 function deleteSelected() {
   if (!state.selected) return;
+  const selectedPlacements = selectedPlacementObjects();
+  if (selectedPlacements.length > 1) {
+    pushUndo("Coklu DXF parcasi sil");
+    for (const placement of selectedPlacements) deletePlacementById(placement.id);
+    pruneUnusedParts();
+    select(null, null);
+    setStatus(`${selectedPlacements.length} DXF parcasi silindi. Ctrl+Z ile geri alinabilir.`, "ok");
+    return;
+  }
   const selectedPatterns = selectedPatternObjects();
   if (selectedPatterns.length > 1) {
     deleteWholePatterns(selectedPatterns, "Çoklu desen sil");
@@ -11926,13 +13758,18 @@ function onPointerDown(event) {
     event.preventDefault();
     return;
   }
-  if ((event.ctrlKey || event.metaKey || event.shiftKey) && hit.type === "pattern") {
-    togglePatternSelection(hit.id);
+  if ((event.ctrlKey || event.metaKey || event.shiftKey) && ["pattern", "placement"].includes(hit.type)) {
+    if (hit.type === "pattern") togglePatternSelection(hit.id);
+    else togglePlacementSelection(hit.id);
     return;
   }
   const movingPatternGroup = hit.type === "pattern" && selectedIs("pattern", hit.id) && selectedPatternObjects().length > 1;
+  const movingPlacementGroup = hit.type === "placement" && selectedIs("placement", hit.id) && selectedPlacementObjects().length > 1;
   if (movingPatternGroup) {
     state.selected = { type: "pattern", id: hit.id };
+    updateSelectionPanel();
+  } else if (movingPlacementGroup) {
+    state.selected = { type: "placement", id: hit.id };
     updateSelectionPanel();
   } else {
     select(hit.type, hit.id);
@@ -11943,17 +13780,22 @@ function onPointerDown(event) {
     beginCanvasInteraction("pointer-pattern-move", { pattern: movingPatternGroup ? null : selectedObject });
   }
   state.drag = {
-    mode: movingPatternGroup ? "moveSelection" : hit.type === "pattern" ? "movePattern" : "movePlacement",
+    mode: movingPatternGroup ? "moveSelection" : movingPlacementGroup ? "movePlacementSelection" : hit.type === "pattern" ? "movePattern" : "movePlacement",
     id: hit.id,
     startWorld: world,
     startObject: { ...selectedObject },
     startSelectedPatterns: movingPatternGroup
       ? selectedPatternObjects().map((item) => ({ id: item.id, x: item.x, y: item.y }))
       : [],
+    startSelectedPlacements: movingPlacementGroup
+      ? selectedPlacementObjects().map((item) => ({ id: item.id, x: item.x, y: item.y }))
+      : [],
     startPatterns:
       hit.type === "placement"
         ? state.patterns
-            .filter((item) => item.parentId === hit.id)
+            .filter((item) => movingPlacementGroup
+              ? selectedPlacementObjects().some((placement) => placement.id === item.parentId)
+              : item.parentId === hit.id)
             .map((item) => ({ id: item.id, x: item.x, y: item.y }))
         : [],
   };
@@ -12114,6 +13956,20 @@ function onPointerMove(event) {
     placement.x = state.drag.startObject.x + dx;
     placement.y = state.drag.startObject.y + dy;
     for (const startPattern of state.drag.startPatterns) {
+      const pattern = patternById(startPattern.id);
+      if (!pattern) continue;
+      pattern.x = startPattern.x + dx;
+      pattern.y = startPattern.y + dy;
+    }
+  }
+  if (state.drag.mode === "movePlacementSelection") {
+    for (const startPlacement of state.drag.startSelectedPlacements || []) {
+      const placement = placementById(startPlacement.id);
+      if (!placement) continue;
+      placement.x = startPlacement.x + dx;
+      placement.y = startPlacement.y + dy;
+    }
+    for (const startPattern of state.drag.startPatterns || []) {
       const pattern = patternById(startPattern.id);
       if (!pattern) continue;
       pattern.x = startPattern.x + dx;
@@ -12319,7 +14175,7 @@ function onPointerUp(event) {
   }
   const completedDrag = state.drag;
   const hadDrag = Boolean(completedDrag);
-  if (completedDrag?.mode === "movePlacement") {
+  if (["movePlacement", "movePlacementSelection"].includes(completedDrag?.mode)) {
     markManualLayout();
   }
   if (["resize", "resizeX", "resizeY"].includes(completedDrag?.mode)) {
@@ -12337,7 +14193,7 @@ function onPointerUp(event) {
     flushCanvasDraw();
     if (["movePattern", "moveSelection", "resize", "resizeX", "resizeY", "rotate"].includes(completedDrag.mode)) {
       if (!syncPatternPanelGeometry(selectedPattern())) updateSelectionPanel();
-    } else if (completedDrag.mode === "movePlacement") {
+    } else if (["movePlacement", "movePlacementSelection"].includes(completedDrag.mode)) {
       updateSelectionPanel();
     }
     if (completedDrag.mode !== "pan") updateJobAnalysisNow();
@@ -12389,24 +14245,34 @@ async function chooseOutput(options = {}) {
 
 function projectDefaultName() {
   const output = refs.outputPath?.value || "";
-  const name = output.split(/[\\/]/).pop()?.replace(/\.(nc|gcode)$/i, "") || "laser_job";
+  const raw = state.project.name || output.split(/[\\/]/).pop()?.replace(/\.(nc|gcode)$/i, "") || "laser_job";
+  const name = String(raw)
+    .replace(/\.laserjob\.json$/i, "")
+    .replace(/\.json$/i, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+    .replace(/[. ]+$/g, "")
+    .trim() || "laser_job";
   return `${name}.laserjob.json`;
 }
 
-function projectPayload() {
+function projectPayload(options = {}) {
   prepareVectorModelsForOutput();
+  ensureStateEntityIdentities();
   const imageSources = captureImageSources();
   return {
-    schema: "laser-editor-project-v2",
-    version: 2,
+    schema: ProjectState.PROJECT_SCHEMA,
+    version: ProjectState.PROJECT_VERSION,
     features: {
       embeddedPartGeometry: true,
       vectorGraph: true,
       vectorObjects: true,
       toolpathProvenance: true,
+      entityIdentity: true,
+      autosaveRecovery: true,
     },
-    name: projectDefaultName(),
-    savedAt: new Date().toISOString(),
+    name: state.project.name || "Adsız iş",
+    savedAt: options.autosave ? state.project.lastSavedAt : new Date().toISOString(),
+    project: clonePlain(state.project),
     parts: clonePlain(state.parts),
     placements: clonePlain(state.placements),
     patterns: state.patterns.map((pattern) => clonePatternPayload(pattern)),
@@ -12425,14 +14291,16 @@ function projectPayload() {
   };
 }
 
-function restoreProject(project) {
-  if (!project || !["laser-editor-project-v1", "laser-editor-project-v2"].includes(project.schema)) {
+function restoreProject(project, options = {}) {
+  if (!project || !["laser-editor-project-v1", "laser-editor-project-v2", ProjectState.PROJECT_SCHEMA].includes(project.schema)) {
     throw new Error("Bu dosya Lazer İş Editörü proje dosyası değil.");
   }
-  pushUndo("Proje ac");
   state.parts = clonePlain(project.parts || []);
   state.placements = clonePlain(project.placements || []);
   state.patterns = (project.patterns || []).map((pattern) => clonePatternPayload(pattern));
+  state.lastGeneratedRevision = null;
+  state.lastGeneratedPath = "";
+  ensureStateEntityIdentities();
   for (const pattern of state.patterns) {
     if (!vectorPatternHasPaths(pattern)) continue;
     if (Number(pattern.vectorModelVersion) === 2) compilePatternVectorModel(pattern);
@@ -12447,6 +14315,21 @@ function restoreProject(project) {
   state.layout = clonePlain(project.layout || state.layout);
   state.materialArea = normalizeMaterialArea(project.materialArea || {});
   state.laserCmd = project.laserCmd || state.laserCmd;
+  const restoredSession = options.session || project.project || {};
+  const restoredPath = options.path || restoredSession.path || "";
+  const revision = Math.max(0, Number(restoredSession.revision) || 0);
+  state.project = ProjectState.createSession({
+    ...restoredSession,
+    id: restoredSession.id || ProjectState.createId("project"),
+    name: restoredSession.name || project.name || ProjectState.projectNameFromPath(restoredPath),
+    path: restoredPath,
+    revision,
+    savedRevision: options.recovery ? Number(restoredSession.savedRevision) || 0 : revision,
+    dirty: Boolean(options.recovery),
+    lastSavedAt: restoredSession.lastSavedAt || project.savedAt || null,
+  });
+  undoStack.length = 0;
+  redoStack.length = 0;
   cancelImageTool();
   cancelDrawingTool();
   applyUndoInputSnapshot(project.inputs || {});
@@ -12461,36 +14344,60 @@ function restoreProject(project) {
   syncImageEditUi();
   draw();
   renderMachinePanel();
+  updateProjectChrome();
+  closeProjectHub();
 }
 
-async function saveProject() {
+async function saveProject(options = {}) {
   try {
     setStatus("İş projesi kaydediliyor...");
+    const saveAs = Boolean(options.saveAs);
     const data = await api("/api/save-project", {
       project: projectPayload(),
       defaultName: projectDefaultName(),
+      outputPath: saveAs ? "" : state.project.path,
     });
     if (!data.saved) {
       setStatus("Proje kaydedilmedi.");
       return;
     }
-    setStatus(`Proje kaydedildi: ${data.saved.outputPath}`);
+    state.project = ProjectState.markSaved(state.project, {
+      path: data.saved.outputPath,
+      name: ProjectState.projectNameFromPath(data.saved.outputPath, state.project.name),
+    });
+    addCurrentProjectToRecent(data.saved.outputPath);
+    await clearProjectRecovery();
+    updateProjectChrome();
+    closeProjectInfo();
+    setStatus(`Proje kaydedildi: ${data.saved.outputPath}`, "ok");
   } catch (error) {
-    setStatus(error.message);
+    setStatus(error.message, "danger");
   }
 }
 
-async function openProject() {
+async function openProject(options = {}) {
+  if (state.project.dirty && state.preferences.confirmBeforeClear) {
+    const proceed = window.confirm("Geçerli projede kaydedilmemiş değişiklikler var. Başka proje açılsın mı?");
+    if (!proceed) return;
+  }
   try {
-    const data = await api("/api/open-project", {});
+    const path = options.path || "";
+    const data = await api("/api/open-project", path ? { path } : {});
     if (!data.project) {
       setStatus("Proje seçilmedi.");
       return;
     }
-    restoreProject(data.project);
+    restoreProject(data.project, { path: data.path || path });
+    addCurrentProjectToRecent(data.path || path);
+    await clearProjectRecovery();
     setStatus(`Proje açıldı: ${data.path || data.project.name || ""}`);
   } catch (error) {
-    setStatus(error.message);
+    if (options.path) {
+      state.recentProjects = state.recentProjects.filter((item) => ProjectState.normalizeSource(item.path) !== ProjectState.normalizeSource(options.path));
+      saveProjectPreferences();
+      renderRecentProjects();
+    }
+    setStatus(error.message, "danger");
   }
 }
 
@@ -12510,8 +14417,12 @@ async function convertOutputToCut() {
     const result = data.result;
     pushUndo("G-code kesim dosyasi");
     refs.outputPath.value = result.outputPath;
+    state.lastGeneratedRevision = state.project.revision;
+    state.lastGeneratedPath = result.outputPath;
     clearMachinePreview();
     saveUiSettings();
+    await loadMachinePreview(false);
+    recordProductionHistory("generated", { message: "Kazıma blokları kesim G-code'una çevrildi." });
     updateSummary(
       `\nKesime çevrilen blok: ${result.convertedBlocks}\nGüç komutu: ${result.powerChanges}\nHız komutu: ${result.feedChanges}\nÇıktı: ${result.outputPath}`
     );
@@ -12523,10 +14434,10 @@ async function convertOutputToCut() {
 }
 
 function setGcodeGenerationBusy(busy) {
-  for (const button of [refs.generateBtn, refs.generateBtn2].filter(Boolean)) {
+  for (const button of [refs.generateBtn, refs.generateBtn2, document.getElementById("previewGenerateBtn")].filter(Boolean)) {
     button.disabled = Boolean(busy);
     button.toggleAttribute("aria-busy", Boolean(busy));
-    if (busy) button.textContent = "Hazırlanıyor...";
+    button.textContent = busy ? "Hazırlanıyor..." : "G-code Oluştur";
   }
 }
 
@@ -12575,6 +14486,8 @@ async function generateGcode() {
     };
     const data = await api("/api/generate", payload);
     const result = data.result;
+    state.lastGeneratedRevision = state.project.revision;
+    state.lastGeneratedPath = outputPath;
     result.excludedObjectCount = analysis.excludedOutsideCount + Number(result.excludedObjectCount || 0);
     setStatus(
       result.excludedObjectCount
@@ -12587,7 +14500,8 @@ async function generateGcode() {
         result.excludedObjectCount ? `\nÜretim dışı: ${result.excludedObjectCount} nesne` : ""
       }`
     );
-    ensureMachinePreviewForCurrentOutput(false);
+    await loadMachinePreview(false);
+    recordProductionHistory("generated", { message: "G-code uygulamada oluşturuldu." });
     openProduceFlow(result);
   } catch (error) {
     setStatus(error.message, "danger");
@@ -12599,6 +14513,11 @@ async function generateGcode() {
 }
 
 function clearParts() {
+  if (!(state.parts.length || state.placements.length || state.patterns.length)) {
+    setStatus("Temizlenecek nesne yok.");
+    return;
+  }
+  if (state.preferences.confirmBeforeClear && !window.confirm("Tüm DXF parçaları, yerleşimler ve desenler silinsin mi?")) return;
   if (state.parts.length || state.placements.length || state.patterns.length) pushUndo("Temizle");
   state.parts = [];
   state.placements = [];
@@ -12620,6 +14539,58 @@ function isTypingTarget(target) {
 
 function onKeyDown(event) {
   if (event.defaultPrevented || dxfQuantityDialogOpen()) return;
+  if (event.key === "Escape") {
+    if (state.productionPreview.open) {
+      setWorkspaceMode("design");
+      event.preventDefault();
+      return;
+    }
+    if (!refs.libraryModal?.classList.contains("hidden")) {
+      closeLibrary();
+      event.preventDefault();
+      return;
+    }
+    if (!refs.notificationsModal?.classList.contains("hidden")) {
+      closeNotifications();
+      event.preventDefault();
+      return;
+    }
+    if (!refs.productionHistoryModal?.classList.contains("hidden")) {
+      closeProductionHistory();
+      event.preventDefault();
+      return;
+    }
+    if (!refs.boxMakerModal?.classList.contains("hidden")) {
+      closeBoxMaker();
+      event.preventDefault();
+      return;
+    }
+    if (!refs.calibrationModal?.classList.contains("hidden")) {
+      closeCalibration();
+      event.preventDefault();
+      return;
+    }
+    if (!refs.preferencesModal?.classList.contains("hidden")) {
+      closePreferences();
+      event.preventDefault();
+      return;
+    }
+    if (!refs.helpModal?.classList.contains("hidden")) {
+      closeHelp();
+      event.preventDefault();
+      return;
+    }
+    if (!refs.projectInfoModal?.classList.contains("hidden")) {
+      closeProjectInfo();
+      event.preventDefault();
+      return;
+    }
+    if (!refs.projectHub?.classList.contains("hidden")) {
+      closeProjectHub();
+      event.preventDefault();
+      return;
+    }
+  }
   if (state.imageTool.active && !isTypingTarget(event.target) && event.key === "Escape") {
     cancelImageTool("Gorsel araci iptal edildi.");
     event.preventDefault();
@@ -12683,6 +14654,24 @@ function onKeyDown(event) {
     event.preventDefault();
     return;
   }
+  const shortcutKey = event.key.toLowerCase();
+  if (event.ctrlKey || event.metaKey) {
+    if (shortcutKey === "s") {
+      saveProject({ saveAs: event.shiftKey });
+      event.preventDefault();
+      return;
+    }
+    if (shortcutKey === "o") {
+      openProject();
+      event.preventDefault();
+      return;
+    }
+    if (shortcutKey === "n") {
+      newProject();
+      event.preventDefault();
+      return;
+    }
+  }
   if (isTypingTarget(event.target)) return;
   if (event.key === "Escape" && state.selectedVectorPaths?.length) {
     select(null, null);
@@ -12703,6 +14692,11 @@ function onKeyDown(event) {
   }
   if ((event.ctrlKey || event.metaKey) && key === "c") {
     copySelection();
+    event.preventDefault();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && key === "x") {
+    cutSelection();
     event.preventDefault();
     return;
   }
@@ -12801,6 +14795,9 @@ function applyAlignmentPreviewUpdate() {
 
 function bindControls() {
   undoInputIds.forEach((id) => bindUndoBeforeEdit(refs[id], "Ayar degisikligi"));
+  document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
+    button.addEventListener("click", () => setWorkspaceMode(button.dataset.workspaceMode));
+  });
   document.getElementById("addDxfBtn").addEventListener("click", addDxfs);
   document.getElementById("addImageBtn").addEventListener("click", addImage);
   // Ust bardaki "Foto→Vektör" artik ayar panelini acar (dogrudan tekrar
@@ -12820,8 +14817,89 @@ function bindControls() {
   refs.clearAreaBtn?.addEventListener("click", clearMaterialArea);
   document.getElementById("alignJobBtn").addEventListener("click", () => alignJobToBed(true));
   document.getElementById("applyJobOffsetBtn").addEventListener("click", applyJobOffset);
+  document.getElementById("homeNavBtn")?.addEventListener("click", openProjectHub);
+  document.getElementById("closeProjectHubBtn")?.addEventListener("click", closeProjectHub);
+  document.getElementById("newProjectBtn")?.addEventListener("click", newProject);
+  document.getElementById("hubOpenProjectBtn")?.addEventListener("click", () => openProject());
+  document.getElementById("hubSaveProjectBtn")?.addEventListener("click", () => saveProject({ saveAs: true }));
+  document.getElementById("openBoxMakerBtn")?.addEventListener("click", openBoxMaker);
+  document.getElementById("hubBoxMakerBtn")?.addEventListener("click", openBoxMaker);
+  document.querySelectorAll("[data-box-maker-close]").forEach((element) => element.addEventListener("click", closeBoxMaker));
+  document.querySelectorAll("[data-box-type]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.boxMaker.closed = button.dataset.boxType === "closed";
+      renderBoxMakerPreview();
+    });
+  });
+  refs.boxMakerForm?.querySelectorAll("input").forEach((input) => {
+    input.addEventListener("input", renderBoxMakerPreview);
+    input.addEventListener("change", renderBoxMakerPreview);
+  });
+  document.getElementById("addBoxToJobBtn")?.addEventListener("click", addBoxToJob);
+  document.getElementById("openCalibrationBtn")?.addEventListener("click", openCalibration);
+  document.querySelectorAll("[data-calibration-close]").forEach((element) => element.addEventListener("click", closeCalibration));
+  document.getElementById("addCalibrationBtn")?.addEventListener("click", addCalibrationPlate);
+  refs.calibrationForm?.querySelectorAll("input, select").forEach((input) => {
+    input.addEventListener("input", renderCalibrationSummary);
+    input.addEventListener("change", renderCalibrationSummary);
+  });
+  document.getElementById("openLibraryBtn")?.addEventListener("click", openLibrary);
+  document.getElementById("hubLibraryBtn")?.addEventListener("click", openLibrary);
+  document.querySelectorAll("[data-library-close]").forEach((element) => element.addEventListener("click", closeLibrary));
+  document.getElementById("saveSelectionToLibraryBtn")?.addEventListener("click", saveSelectionToLibrary);
+  refs.librarySearch?.addEventListener("input", renderLibraryAssets);
   document.getElementById("openProjectBtn")?.addEventListener("click", openProject);
   document.getElementById("saveProjectBtn")?.addEventListener("click", saveProject);
+  document.getElementById("projectInfoBtn")?.addEventListener("click", openProjectInfo);
+  document.getElementById("projectSaveAsBtn")?.addEventListener("click", () => saveProject({ saveAs: true }));
+  document.querySelectorAll("[data-project-info-close]").forEach((element) => element.addEventListener("click", closeProjectInfo));
+  document.getElementById("notificationsBtn")?.addEventListener("click", openNotifications);
+  document.querySelectorAll("[data-notifications-close]").forEach((element) => element.addEventListener("click", closeNotifications));
+  document.querySelectorAll("[data-notification-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activity.notificationFilter = button.dataset.notificationFilter || "all";
+      renderNotificationCenter();
+    });
+  });
+  document.getElementById("markNotificationsReadBtn")?.addEventListener("click", () => {
+    state.activity.notifications = ProductionState.markAllRead(state.activity.notifications);
+    saveNotifications();
+  });
+  document.getElementById("clearNotificationsBtn")?.addEventListener("click", () => {
+    state.activity.notifications = [];
+    saveNotifications();
+  });
+  document.getElementById("productionHistoryBtn")?.addEventListener("click", openProductionHistory);
+  document.getElementById("hubProductionHistoryBtn")?.addEventListener("click", () => {
+    closeProjectHub();
+    openProductionHistory();
+  });
+  document.querySelectorAll("[data-production-history-close]").forEach((element) => element.addEventListener("click", closeProductionHistory));
+  document.getElementById("clearProductionHistoryBtn")?.addEventListener("click", () => {
+    if (state.activity.history.length && !window.confirm("Üretim geçmişi temizlensin mi?")) return;
+    state.activity.history = [];
+    state.activity.activeHistoryId = "";
+    saveProductionHistory();
+  });
+  document.getElementById("preferencesBtn")?.addEventListener("click", openPreferences);
+  document.querySelectorAll("[data-preferences-close]").forEach((element) => element.addEventListener("click", closePreferences));
+  refs.preferencesForm?.addEventListener("submit", savePreferences);
+  document.getElementById("helpBtn")?.addEventListener("click", openHelp);
+  document.getElementById("hubHelpBtn")?.addEventListener("click", openHelp);
+  document.querySelectorAll("[data-help-close]").forEach((element) => element.addEventListener("click", closeHelp));
+  document.getElementById("downloadDiagnosticsBtn")?.addEventListener("click", downloadDiagnostics);
+  document.getElementById("helpHistoryBtn")?.addEventListener("click", () => {
+    closeHelp();
+    openProductionHistory();
+  });
+  document.getElementById("restoreRecoveryBtn")?.addEventListener("click", restoreRecoveryProject);
+  document.getElementById("discardRecoveryBtn")?.addEventListener("click", discardRecoveryProject);
+  document.getElementById("clearRecentProjectsBtn")?.addEventListener("click", () => {
+    state.recentProjects = [];
+    saveProjectPreferences();
+    renderRecentProjects();
+    setStatus("Son proje listesi temizlendi.");
+  });
   document.getElementById("chooseOutputBtn").addEventListener("click", chooseOutput);
   document.getElementById("convertOutputToCutBtn")?.addEventListener("click", convertOutputToCut);
   document.getElementById("generateBtn").addEventListener("click", generateGcode);
@@ -12878,6 +14956,26 @@ function bindControls() {
   refs.cancelDrawingBtn?.addEventListener("click", () => cancelDrawingTool("Cizim iptal edildi."));
   document.getElementById("machineNavBtn")?.addEventListener("click", () => setMachineTabOpen(true));
   document.getElementById("closeMachineTabBtn")?.addEventListener("click", () => setMachineTabOpen(false));
+  document.getElementById("closeProductionPreviewBtn")?.addEventListener("click", () => setWorkspaceMode("design"));
+  document.getElementById("refreshProductionPreviewBtn")?.addEventListener("click", () => loadMachinePreview(true));
+  document.getElementById("fitProductionPreviewBtn")?.addEventListener("click", drawProductionPreview);
+  document.getElementById("previewGenerateBtn")?.addEventListener("click", generateGcode);
+  document.getElementById("previewFrameBtn")?.addEventListener("click", frameMachineJob);
+  document.getElementById("previewSendBtn")?.addEventListener("click", sendGcodeToMachine);
+  document.getElementById("previewDeviceBtn")?.addEventListener("click", () => setWorkspaceMode("device"));
+  document.querySelectorAll("[data-preview-layer]").forEach((input) => {
+    input.addEventListener("change", () => {
+      state.productionPreview.layers[input.dataset.previewLayer] = input.checked;
+      drawProductionPreview();
+    });
+  });
+  refs.productionPreviewProgress?.addEventListener("input", () => {
+    stopProductionPlayback();
+    state.productionPreview.progress = Number(refs.productionPreviewProgress.value) || 0;
+    drawProductionPreview();
+  });
+  refs.productionPreviewPlay?.addEventListener("click", toggleProductionPlayback);
+  window.addEventListener("resize", drawProductionPreview);
   document.getElementById("refreshMachinePortsBtn")?.addEventListener("click", refreshMachinePorts);
   document.getElementById("autoConnectMachineBtn")?.addEventListener("click", autoConnectMachine);
   document.getElementById("connectMachineBtn")?.addEventListener("click", connectMachine);
@@ -12998,6 +15096,11 @@ function bindControls() {
   document.getElementById("rotateLeftBtn").addEventListener("click", () => rotateSelected(-15));
   document.getElementById("rotateRightBtn").addEventListener("click", () => rotateSelected(15));
   document.getElementById("rotate90Btn").addEventListener("click", () => rotateSelected(90));
+  refs.selectionArrange?.addEventListener("change", () => {
+    const mode = refs.selectionArrange.value;
+    refs.selectionArrange.value = "";
+    if (mode) arrangeSelectedObjects(mode);
+  });
   document.getElementById("layoutRecalculateBtn")?.addEventListener("click", autoLayout);
   document.getElementById("layoutKeepBtn")?.addEventListener("click", keepCurrentLayoutPositions);
   document.getElementById("layoutParkBtn")?.addEventListener("click", parkOutsideItems);
@@ -13037,7 +15140,10 @@ function bindControls() {
     const input = refs[id];
     if (!input) return;
     input.addEventListener("input", () => {
-      if (id === "outputPath" && state.machine.previewPath !== refs.outputPath.value.trim()) clearMachinePreview();
+      if (id === "outputPath" && state.machine.previewPath !== refs.outputPath.value.trim()) {
+        state.activity.activeHistoryId = "";
+        clearMachinePreview();
+      }
       draw();
       saveUiSettings();
       renderMachinePanel();
@@ -13082,6 +15188,10 @@ function bindControls() {
   });
 }
 
+loadProjectPreferences();
+applyPreferencesToUi(false);
+loadActivityState();
+installClientErrorBoundary();
 renderTextFontOptions();
 loadUiSettings();
 renderTextFontOptions(refs.textFont?.value || "laser-single");
@@ -13098,8 +15208,20 @@ if (window.ResizeObserver) {
 }
 updateSelectionPanel();
 updateSummary();
+updateProjectChrome();
+renderRecentProjects();
 renderMachinePanel();
 refreshMachinePorts({ silent: true });
 refreshMachineStatus(false, { silent: true });
 startMachinePolling();
 syncMachineTabFromHash();
+loadRecoveryCandidate().then(() => {
+  if (!state.recovery.snapshot && state.preferences.reopenLastProject && !projectHasContent() && state.recentProjects[0]?.path) {
+    openProject({ path: state.recentProjects[0].path });
+  }
+});
+window.addEventListener("beforeunload", (event) => {
+  if (!state.project.dirty) return;
+  event.preventDefault();
+  event.returnValue = "";
+});

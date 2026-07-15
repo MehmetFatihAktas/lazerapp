@@ -6559,6 +6559,7 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
 
     fill_paths = [vector_path for vector_path in active_paths if path_operation(vector_path) == "engrave_fill"]
     if fill_paths:
+        lines.append("(engrave fill begin)")
         source_step = max(0.05, pattern.line_step * source_height / max(0.001, pattern.height))
         segments = vector_fill_scan_segments(
             fill_paths,
@@ -6637,8 +6638,15 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
         inner_first=True,
     )
 
+    active_path_group = ""
     for entry in [*engrave_entries, *cut_entries]:
         current_operation = entry["operation"]
+        next_group = "cut" if current_operation == "cut" else "engrave line"
+        if next_group != active_path_group:
+            if active_path_group:
+                lines.append(f"({active_path_group} vector paths end)")
+            lines.append(f"({next_group} begin)")
+            active_path_group = next_group
         vector_path = entry["vectorPath"]
         clipped = entry["path"]
         closed_source = bool(entry["closedSource"])
@@ -6655,6 +6663,8 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
             append_powered_polyline(lines, clipped, engrave_power, engrave_feed, travel_feed)
         current_point = clipped[-1]
         emitted += 1
+    if active_path_group:
+        lines.append(f"({active_path_group} vector paths end)")
     if emitted == 0 and clip_region is not None:
         lines.append(f"({op_label} vector clipped empty)")
         lines.append("S0")

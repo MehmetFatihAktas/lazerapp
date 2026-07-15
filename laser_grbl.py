@@ -54,11 +54,25 @@ def clean_gcode_line(line: str) -> str:
     return " ".join(value.split())
 
 
-def gcode_lines_from_file(path: str | Path) -> list[str]:
+def read_gcode_text(path: str | Path) -> str:
     source = Path(path)
     if not source.exists() or not source.is_file():
         raise ValueError(f"G-code dosyasi bulunamadi: {source}")
-    return [line for line in (clean_gcode_line(item) for item in source.read_text(encoding="utf-8").splitlines()) if line]
+    payload = source.read_bytes()
+    for encoding in ("utf-8-sig", "cp1254", "cp1252"):
+        try:
+            return payload.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return payload.decode("latin-1")
+
+
+def gcode_raw_lines_from_file(path: str | Path) -> list[str]:
+    return [line for line in read_gcode_text(path).splitlines() if line.strip()]
+
+
+def gcode_lines_from_file(path: str | Path) -> list[str]:
+    return [line for line in (clean_gcode_line(item) for item in gcode_raw_lines_from_file(path)) if line]
 
 
 def gcode_bounds(lines: list[str]) -> dict[str, float]:
@@ -139,6 +153,10 @@ def serial_port_payload(port: Any) -> dict[str, Any]:
     }
 
 
+def preferred_serial_port(ports: list[dict[str, Any]]) -> str:
+    return str(next((port.get("device") for port in ports if port.get("likelyLaser")), "") or "")
+
+
 GCODE_WORD_RE = re.compile(r"([A-Za-z])([-+]?[0-9]*\.?[0-9]+)")
 GRBL_SETTING_RE = re.compile(r"^\$(\d+)\s*=\s*(-?\d+(?:\.\d+)?)")
 
@@ -152,6 +170,23 @@ def gcode_uses_m3(lines: list[str]) -> bool:
     return False
 
 
+def gcode_operation_marker(raw: str, current: str) -> str:
+    text = str(raw or "").strip().lower()
+    if not text.startswith("("):
+        return current
+    if "cut paths end" in text or "vector paths end" in text or "vector fill end" in text or "engrave fill end" in text or "engrave photo end" in text or "engrave image end" in text or "engrave vector end" in text:
+        return "laser"
+    if "cut paths begin" in text or text.startswith("(cut begin") or text.startswith("(cut vector") or text.startswith("(cut svg"):
+        return "cut"
+    if "engrave fill begin" in text or "engrave vector fill begin" in text or text.startswith("(engrave image"):
+        return "engrave_fill"
+    if text.startswith("(engrave photo"):
+        return "engrave_photo"
+    if "engrave line begin" in text or text.startswith("(engrave vector") or text.startswith("(engrave svg"):
+        return "engrave_line"
+    return current
+
+
 def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any]:
     """Onizleme + sure tahmini icin G-code'u coz.
 
@@ -162,35 +197,65 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
     segments: list[list[float]] = []
     line_seconds: list[float] = []
     x = y = 0.0
+    coordinate_offset_x = coordinate_offset_y = 0.0
     absolute = True
+    unit_scale = 1.0
     feed = rapid_feed
     power = 0.0
     laser_on = False
     modal_motion: int | None = None
     cut_length = travel_length = 0.0
+    operation_lengths: dict[str, float] = {}
     total_seconds = 0.0
     min_x = min_y = float("inf")
     max_x = max_y = float("-inf")
     uses_m3 = False
     uses_m4 = False
+    active_operation = "laser"
+    laser_powers: list[float] = []
+    laser_feeds: list[float] = []
+    explicit_units = False
+    explicit_distance_mode = False
+    explicit_feed_mode = False
+    laser_move_count = 0
+    arc_move_count = 0
+    unsupported_coordinate_commands: set[str] = set()
 
     for index, raw in enumerate(lines):
+        active_operation = gcode_operation_marker(raw, active_operation)
         line = clean_gcode_line(raw).upper()
         elapsed_before = total_seconds
         if line:
             target_x: float | None = None
             target_y: float | None = None
             motion = None
+            coordinate_setting = False
             for letter, value_text in GCODE_WORD_RE.findall(line):
                 value = float(value_text)
                 if letter == "G":
                     code = int(value)
                     if code in (0, 1, 2, 3):
                         motion = code
+                        if code in (2, 3):
+                            arc_move_count += 1
+                    elif code == 20:
+                        unit_scale = 25.4
+                        explicit_units = True
+                    elif code == 21:
+                        unit_scale = 1.0
+                        explicit_units = True
                     elif code == 90:
                         absolute = True
+                        explicit_distance_mode = True
                     elif code == 91:
                         absolute = False
+                        explicit_distance_mode = True
+                    elif code == 94:
+                        explicit_feed_mode = True
+                    elif code in (10, 92):
+                        coordinate_setting = True
+                    elif code in (28, 30, 53):
+                        unsupported_coordinate_commands.add(f"G{code}")
                 elif letter == "M":
                     code = int(value)
                     if code in (3, 4):
@@ -200,7 +265,7 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
                     elif code == 5:
                         laser_on = False
                 elif letter == "F":
-                    feed = max(1.0, value)
+                    feed = max(1.0, value * unit_scale)
                 elif letter == "S":
                     power = value
                 elif letter == "X":
@@ -209,9 +274,17 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
                     target_y = value
             if motion is not None:
                 modal_motion = motion
+            if coordinate_setting:
+                if "G92" in line:
+                    if target_x is not None:
+                        coordinate_offset_x = x - target_x * unit_scale
+                    if target_y is not None:
+                        coordinate_offset_y = y - target_y * unit_scale
+                line_seconds.append(round(total_seconds - elapsed_before, 4))
+                continue
             if (target_x is not None or target_y is not None) and modal_motion is not None:
-                new_x = x if target_x is None else (target_x if absolute else x + target_x)
-                new_y = y if target_y is None else (target_y if absolute else y + target_y)
+                new_x = x if target_x is None else (target_x * unit_scale + coordinate_offset_x if absolute else x + target_x * unit_scale)
+                new_y = y if target_y is None else (target_y * unit_scale + coordinate_offset_y if absolute else y + target_y * unit_scale)
                 distance = ((new_x - x) ** 2 + (new_y - y) ** 2) ** 0.5
                 if distance > 1e-9:
                     is_cut = modal_motion in (1, 2, 3) and laser_on and power > 0
@@ -219,11 +292,17 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
                     total_seconds += distance / max(1.0, move_feed) * 60.0
                     if is_cut:
                         cut_length += distance
+                        laser_move_count += 1
+                        operation = active_operation if active_operation != "travel" else "laser"
+                        operation_lengths[operation] = operation_lengths.get(operation, 0.0) + distance
+                        laser_powers.append(power)
+                        laser_feeds.append(move_feed)
                     else:
                         travel_length += distance
+                        operation = "travel"
                     segments.append([
                         round(x, 3), round(y, 3), round(new_x, 3), round(new_y, 3),
-                        1 if is_cut else 0, index,
+                        1 if is_cut else 0, index, operation, round(power, 3), round(move_feed, 3),
                     ])
                     for px, py in ((x, y), (new_x, new_y)):
                         min_x = min(min_x, px); max_x = max(max_x, px)
@@ -233,17 +312,58 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
 
     if min_x > max_x:
         min_x = min_y = max_x = max_y = 0.0
+    rounded_operations = {key: round(value, 1) for key, value in operation_lengths.items() if value > 0}
+    process_cut_length = rounded_operations.get("cut", 0.0)
+    engrave_length = round(sum(value for key, value in operation_lengths.items() if key.startswith("engrave")), 1)
+    generic_laser_length = rounded_operations.get("laser", 0.0)
+    safety_warnings: list[str] = []
+    if not explicit_units:
+        safety_warnings.append("G20/G21 birim komutu yok; kontrolcüde kalan birim modu kullanılabilir.")
+    if not explicit_distance_mode:
+        safety_warnings.append("G90/G91 koordinat modu açıkça belirtilmemiş.")
+    if not explicit_feed_mode:
+        safety_warnings.append("G94 ilerleme modu açıkça belirtilmemiş.")
+    if uses_m3:
+        safety_warnings.append("M3 sabit güç kullanılıyor; duraklama ve köşe yanığı riski ayrıca doğrulanmalı.")
+    final_laser_off = not laser_on or power <= 0
+    if cut_length > 0 and not final_laser_off:
+        safety_warnings.append("Dosya sonunda M5/S0 ile lazerin kapandığı doğrulanamadı.")
+    if arc_move_count:
+        safety_warnings.append("G2/G3 yayları önizlemede kiriş olarak gösteriliyor; makinede gerçek yay hareketi oluşur.")
+    if unsupported_coordinate_commands:
+        safety_warnings.append(f"Önizleme, {', '.join(sorted(unsupported_coordinate_commands))} koordinat komutlarını yaklaşık gösterir.")
     return {
         "segments": segments,
         "bounds": {"minX": min_x, "minY": min_y, "maxX": max_x, "maxY": max_y,
                    "width": max_x - min_x, "height": max_y - min_y},
         "cutLength": round(cut_length, 1),
+        "laserLength": round(cut_length, 1),
+        "processCutLength": process_cut_length,
+        "engraveLength": engrave_length,
+        "genericLaserLength": generic_laser_length,
+        "operationLengths": rounded_operations,
         "travelLength": round(travel_length, 1),
         "estimatedSeconds": round(total_seconds, 1),
         "lineSeconds": line_seconds,
         "lineCount": len(lines),
         "usesM3": uses_m3,
         "usesM4": uses_m4,
+        "unitMode": "inch" if unit_scale == 25.4 else "mm",
+        "explicitUnits": explicit_units,
+        "explicitDistanceMode": explicit_distance_mode,
+        "explicitFeedMode": explicit_feed_mode,
+        "finalLaserOff": final_laser_off,
+        "laserMoveCount": laser_move_count,
+        "arcMoveCount": arc_move_count,
+        "safetyWarnings": safety_warnings,
+        "powerRange": {
+            "min": min(laser_powers) if laser_powers else 0.0,
+            "max": max(laser_powers) if laser_powers else 0.0,
+        },
+        "feedRange": {
+            "min": min(laser_feeds) if laser_feeds else 0.0,
+            "max": max(laser_feeds) if laser_feeds else 0.0,
+        },
     }
 
 
@@ -304,7 +424,7 @@ class GrblController:
             }
         ports = [serial_port_payload(port) for port in list_ports.comports()]
         ports.sort(key=lambda item: (int(item.get("score") or 0), str(item.get("device") or "")), reverse=True)
-        preferred = next((port["device"] for port in ports if port.get("likelyLaser")), ports[0]["device"] if ports else "")
+        preferred = preferred_serial_port(ports)
         return {"available": True, "ports": ports, "preferredPort": preferred}
 
     def connect(self, port: str, baud: int = 115200) -> dict[str, Any]:

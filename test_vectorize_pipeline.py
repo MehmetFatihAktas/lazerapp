@@ -1659,6 +1659,57 @@ def test_generate_excludes_active_placement_outside_bed():
         assert_true(points and all(x <= 22.001 and y <= 12.001 for x, y in points), f"outside coordinates must not enter G-code: {points}")
 
 
+def test_generate_preserves_per_pattern_calibration_power_and_feed():
+    with TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "calibration.nc"
+        patterns = []
+        for index, (power, feed) in enumerate(((200, 300), (1000, 1500))):
+            patterns.append(
+                {
+                    "id": f"cal-{index}",
+                    "kind": "vector",
+                    "path": "embedded-calibration-vector",
+                    "name": f"S{power} F{feed}",
+                    "x": 5 + index * 20,
+                    "y": 5,
+                    "width": 10,
+                    "height": 10,
+                    "rotation": 0,
+                    "operation": "engrave_line",
+                    "power": power,
+                    "feed": feed,
+                    "sourceWidth": 10,
+                    "sourceHeight": 10,
+                    "vectorPaths": [
+                        {
+                            "operation": "engrave_line",
+                            "closed": False,
+                            "points": [[0, 5], [10, 5]],
+                        }
+                    ],
+                }
+            )
+
+        result = core.generate_from_state(
+            {
+                "parts": [],
+                "placements": [],
+                "patterns": patterns,
+                "settings": base_generation_settings(),
+                "outputPath": str(output_path),
+            }
+        )
+
+        lines = output_path.read_text(encoding="utf-8").splitlines()
+        assert_true(result["patternCount"] == 2, "both calibration cells should enter the job")
+        assert_true("S200" in lines and "S1000" in lines, "each calibration cell must preserve its own laser power")
+        assert_true(
+            any(line.startswith("G1 ") and "F300" in line for line in lines)
+            and any(line.startswith("G1 ") and "F1500" in line for line in lines),
+            "each calibration cell must preserve its own feed rate",
+        )
+
+
 def test_generate_rejects_when_every_active_object_is_outside():
     with TemporaryDirectory() as temp_dir:
         dxf_path = Path(temp_dir) / "part.dxf"
@@ -2771,6 +2822,7 @@ def main():
         test_closed_clip_connector_follows_inset_margin_boundary,
         test_pattern_point_supports_mirroring,
         test_generate_excludes_active_placement_outside_bed,
+        test_generate_preserves_per_pattern_calibration_power_and_feed,
         test_generate_rejects_when_every_active_object_is_outside,
         test_generate_excludes_pattern_bound_to_outside_placement,
         test_generate_validates_available_area_polygon,

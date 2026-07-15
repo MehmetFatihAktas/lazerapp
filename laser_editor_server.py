@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import base64
+import hashlib
 import math
 import mimetypes
+import platform
 import socket
 import sys
 import tempfile
@@ -34,10 +36,93 @@ CLIENTS: dict[str, float] = {}
 CLIENT_EVER_CONNECTED = False
 NO_CLIENTS_SINCE: float | None = None
 DIALOG_LOCK = threading.Lock()
+APP_VERSION = "2026.07.16"
+
+
+def device_capabilities() -> dict:
+    return {
+        "protocol": "grbl-serial",
+        "serial": True,
+        "frame": True,
+        "workOrigin": True,
+        "feedOverride": True,
+        "powerOverride": True,
+        "camera": False,
+        "rotary": False,
+        "curvedSurface": False,
+        "blade": False,
+        "pen": False,
+        "networkPairing": False,
+        "safetySensors": False,
+    }
+
+
+def diagnostics_snapshot() -> dict:
+    machine = MACHINE.snapshot()
+    return {
+        "app": {
+            "name": "Laser Editor",
+            "version": APP_VERSION,
+            "server": LaserEditorHandler.server_version if "LaserEditorHandler" in globals() else "LaserEditor/1.0",
+        },
+        "runtime": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "architecture": platform.machine(),
+        },
+        "capabilities": device_capabilities(),
+        "machine": {
+            "available": bool(machine.get("available")),
+            "connected": bool(machine.get("connected")),
+            "port": machine.get("port") or "",
+            "baud": machine.get("baud") or 0,
+            "state": machine.get("state") or "",
+            "alarm": machine.get("alarm") or "",
+            "firmware": machine.get("firmware") or "",
+        },
+        "privacy": {
+            "projectGeometryIncluded": False,
+            "projectPathsIncluded": False,
+            "gcodeIncluded": False,
+        },
+        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
 
 
 class NativeDialogBusyError(RuntimeError):
     pass
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def gcode_file_info(path_value: str | Path) -> dict:
+    path = Path(path_value)
+    if not path.is_file():
+        raise ValueError(f"G-code dosyasi bulunamadi: {path}")
+    info = laser_grbl.analyze_gcode(laser_grbl.gcode_raw_lines_from_file(path))
+    stat = path.stat()
+    info.update({
+        "fileHash": file_sha256(path),
+        "fileSize": stat.st_size,
+        "modifiedAt": stat.st_mtime,
+    })
+    return info
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def validate_generate_output_choice(state: dict) -> None:
@@ -413,7 +498,13 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
             self._serve_file(STATIC_DIR / "index.html")
             return
         if self.path == "/api/health":
-            self._json({"ok": True})
+            self._json({"ok": True, "version": APP_VERSION})
+            return
+        if self.path == "/api/capabilities":
+            self._json({"ok": True, "capabilities": device_capabilities()})
+            return
+        if self.path == "/api/diagnostics":
+            self._json({"ok": True, "diagnostics": diagnostics_snapshot()})
             return
         if self.path.startswith("/static/"):
             relative = unquote(self.path[len("/static/") :].split("?", 1)[0])
@@ -448,7 +539,11 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "saved": None})
                 else:
                     path = Path(output)
-                    path.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
+                    project_meta = project.get("project")
+                    if isinstance(project_meta, dict):
+                        project_meta["path"] = str(path)
+                        project_meta["name"] = path.name.removesuffix(".laserjob.json").removesuffix(".json")
+                    atomic_write_text(path, json.dumps(project, ensure_ascii=False, indent=2))
                     self._json({"ok": True, "saved": {"outputPath": str(path)}})
             elif self.path == "/api/open-project":
                 payload = self._read_json(optional=True)
@@ -558,8 +653,7 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                 )
             elif self.path == "/api/machine/gcode-info":
                 payload = self._read_json()
-                lines = laser_grbl.gcode_lines_from_file(payload.get("path"))
-                self._json({"ok": True, "info": laser_grbl.analyze_gcode(lines)})
+                self._json({"ok": True, "info": gcode_file_info(payload.get("path") or "")})
             elif self.path == "/api/machine/override":
                 payload = self._read_json()
                 self._json(

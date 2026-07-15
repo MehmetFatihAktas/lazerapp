@@ -503,12 +503,16 @@ def write_gcode(output_path: Path,
     if pre_cut_lines:
         lines.extend(pre_cut_lines)
 
+    if comments and paths:
+        lines.append("(cut paths begin)")
     for number, path in enumerate(paths, 1):
         if len(path) < 2:
             continue
         path = path_with_overcut(path, overcut)
         start = path[0]
         for pass_number in range(passes):
+            if comments:
+                lines.append(f"(cut path {number} pass {pass_number + 1})")
             # Boş hareket: travel_feed verilmişse G1 (kontrollü hız, lazer kapali S0),
             # yoksa G0 (makinenin $110 tepe hizi). G1 yontemi $110'u degistirmeden
             # konumlanmayi yavaslatir -> hizli sicramada adim kaybi/kayma azalir.
@@ -528,6 +532,8 @@ def write_gcode(output_path: Path,
                     lines.append(f"G1 {words}")
                 previous = point
             lines.append("S0")
+    if comments and paths:
+        lines.append("(cut paths end)")
 
     lines.append("M5 S0")
     if air_assist_command:

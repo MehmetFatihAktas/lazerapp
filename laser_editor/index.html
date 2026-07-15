@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260715-local-revector-v1" />
+    <link rel="stylesheet" href="/static/style.css?v=20260716-bambu-workflow-v2" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -13,7 +13,7 @@
         <div class="brand">
           <div class="mark">L</div>
           <div class="brand-text">
-            <h1>Lazer İş Editörü</h1>
+            <h1>Lazer İş Editörü <span class="project-title-separator">/</span> <span id="projectTitle">Adsız iş</span><span id="projectDirtyMark" class="project-dirty-mark hidden" title="Kaydedilmemiş değişiklikler">•</span></h1>
             <p id="jobStatus" class="job-status info">Hazır</p>
           </div>
         </div>
@@ -24,12 +24,23 @@
           <span id="warningChip" class="status-chip">Uyarı: 0</span>
         </div>
         <div class="title-actions">
+          <button id="homeNavBtn">Projeler</button>
           <button id="openProjectBtn">İşi Aç</button>
           <button id="saveProjectBtn">İşi Kaydet</button>
-          <button id="machineNavBtn">Makine</button>
+          <button id="projectInfoBtn" title="Proje bilgisi ve kayıt durumu">Bilgi</button>
+          <button id="productionHistoryBtn" title="Üretilen ve makineye gönderilen işleri göster">Geçmiş</button>
+          <button id="notificationsBtn" class="notification-button" title="Uyarılar ve makine bildirimleri">Bildirimler<span id="notificationBadge" class="notification-badge hidden">0</span></button>
+          <button id="helpBtn" class="icon-title-button" title="Kısayollar ve tanılama" aria-label="Kısayollar ve tanılama">?</button>
           <button id="generateBtn" class="accent">G-code Oluştur</button>
         </div>
       </header>
+
+      <nav class="workflow-tabs" aria-label="Çalışma aşaması">
+        <button class="workflow-tab active" data-workspace-mode="design">Tasarım</button>
+        <button class="workflow-tab" data-workspace-mode="prepare">Hazırla</button>
+        <button class="workflow-tab" data-workspace-mode="preview">Önizleme</button>
+        <button class="workflow-tab" data-workspace-mode="device">Cihaz</button>
+      </nav>
 
       <!-- ===================== SERIT (RIBBON) ===================== -->
       <nav class="ribbon-tabs" role="tablist">
@@ -51,6 +62,8 @@
               <button id="addDxfBtn" class="primary">DXF Ekle</button>
               <button id="addImageBtn">Desen Ekle</button>
               <button id="vectorizeBtn">Foto→Vektör</button>
+              <button id="openBoxMakerBtn">Kutu Üretici</button>
+              <button id="openLibraryBtn">Kütüphane</button>
             </div>
             <span class="ribbon-group-title">İçe Aktar</span>
           </div>
@@ -180,6 +193,7 @@
               <button id="applyProfileBtn" class="primary">Uygula</button>
               <button id="saveProfileBtn">Kaydet</button>
               <button id="deleteProfileBtn" class="danger">Sil</button>
+              <button id="openCalibrationBtn">Kalibrasyon Plakası</button>
             </div>
             <p class="hint" id="profileHint">Profil kesim + kazıma + kerf ayarlarını tek tıkla doldurur.</p>
             <span class="ribbon-group-title">Malzeme Profili</span>
@@ -438,6 +452,17 @@
               <button id="rotateLeftBtn">-15°</button>
               <button id="rotateRightBtn">+15°</button>
               <button id="rotate90Btn">90°</button>
+              <select id="selectionArrange" title="Çoklu seçimi hizala veya eşit dağıt" aria-label="Çoklu seçimi düzenle">
+                <option value="">Hizala…</option>
+                <option value="left">Sola hizala</option>
+                <option value="hcenter">Yatay ortala</option>
+                <option value="right">Sağa hizala</option>
+                <option value="bottom">Alta hizala</option>
+                <option value="vcenter">Dikey ortala</option>
+                <option value="top">Üste hizala</option>
+                <option value="distribute-h">Yatay eşit dağıt</option>
+                <option value="distribute-v">Dikey eşit dağıt</option>
+              </select>
             </div>
             <label class="precision-control">Hassas adım <span class="unit-input"><input id="nudgeStep" type="number" value="0.1" min="0.01" step="0.01" /><b>mm</b></span></label>
             <div class="canvas-readout" id="canvasReadout">400 × 400 mm</div>
@@ -474,6 +499,307 @@
       <footer id="bottomStatus" class="bottom-status">
         DXF: 0 dosya / 0 parça | Yerleşen: 0/0 | Desen: 0 | Dışta: 0 | Uyarı: 0
       </footer>
+
+      <!-- Proje merkezi -->
+      <section id="projectHub" class="project-hub hidden" aria-label="Projeler">
+        <header class="project-hub-header">
+          <div>
+            <span class="project-hub-eyebrow">Lazer İş Editörü</span>
+            <h2>Projeler</h2>
+            <p>Yeni bir iş başlatın, diskteki projeyi açın veya otomatik kurtarmadan devam edin.</p>
+          </div>
+          <button id="closeProjectHubBtn" class="project-hub-close">Editöre Dön</button>
+        </header>
+        <div class="project-hub-content">
+          <section class="project-quick-actions" aria-label="Proje işlemleri">
+            <button id="newProjectBtn" class="project-action-tile primary">
+              <strong>Yeni Proje</strong>
+              <span>Boş bir tabla ile başla</span>
+            </button>
+            <button id="hubOpenProjectBtn" class="project-action-tile">
+              <strong>Proje Aç</strong>
+              <span>.laserjob.json dosyası seç</span>
+            </button>
+            <button id="hubSaveProjectBtn" class="project-action-tile">
+              <strong>Farklı Kaydet</strong>
+              <span>Geçerli iş için yeni dosya seç</span>
+            </button>
+            <button id="hubBoxMakerBtn" class="project-action-tile">
+              <strong>Kutu Üretici</strong>
+              <span>Ölçülü geçme parçaları oluştur</span>
+            </button>
+          </section>
+
+          <section id="recoverySection" class="project-section recovery-section hidden">
+            <div class="project-section-heading">
+              <div><h3>Kurtarılabilir Çalışma</h3><p id="recoverySummary">Kaydedilmemiş bir çalışma bulundu.</p></div>
+              <div class="project-section-actions">
+                <button id="discardRecoveryBtn">Sil</button>
+                <button id="restoreRecoveryBtn" class="primary">Kurtar</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="project-section">
+            <div class="project-section-heading">
+              <div><h3>Son Projeler</h3><p>Projeler diskteki asıl dosyalarından açılır.</p></div>
+              <button id="clearRecentProjectsBtn">Listeyi Temizle</button>
+            </div>
+            <div id="recentProjectsList" class="recent-projects-list"></div>
+            <div id="recentProjectsEmpty" class="project-empty">Henüz kaydedilmiş veya açılmış proje yok.</div>
+          </section>
+
+          <section class="project-section project-settings-row">
+            <div><h3>Uygulama Ayarları</h3><p>Otomatik kurtarma, son proje listesi ve temizleme onayları.</p></div>
+            <button id="preferencesBtn">Tercihler</button>
+          </section>
+          <section class="project-section project-settings-row">
+            <div><h3>Yerel Tasarım Kütüphanesi</h3><p>Sık kullandığınız DXF parçalarını ve desenleri bu bilgisayarda saklayın.</p></div>
+            <button id="hubLibraryBtn">Kütüphaneyi Aç</button>
+          </section>
+          <section class="project-section project-settings-row">
+            <div><h3>Üretim Geçmişi</h3><p>Oluşturulan ve makineye gönderilen G-code kayıtları.</p></div>
+            <button id="hubProductionHistoryBtn">Geçmişi Aç</button>
+          </section>
+          <section class="project-section project-settings-row">
+            <div><h3>Yardım ve Tanılama</h3><p>Kısayollar, cihaz kabiliyetleri ve güvenli tanılama özeti.</p></div>
+            <button id="hubHelpBtn">Yardımı Aç</button>
+          </section>
+        </div>
+      </section>
+
+      <!-- Proje bilgisi -->
+      <section id="projectInfoModal" class="flow-modal hidden" role="dialog" aria-modal="true" aria-labelledby="projectInfoTitle">
+        <div class="flow-backdrop" data-project-info-close></div>
+        <div class="flow-card project-info-card">
+          <h3 id="projectInfoTitle">Proje Bilgisi</h3>
+          <div id="projectInfoContent" class="project-info-content"></div>
+          <div class="flow-actions">
+            <button id="projectSaveAsBtn">Farklı Kaydet</button>
+            <button id="projectInfoCloseBtn" data-project-info-close>Kapat</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Uyarı ve makine bildirim merkezi -->
+      <section id="notificationsModal" class="flow-modal notifications-modal hidden" role="dialog" aria-modal="true" aria-labelledby="notificationsTitle">
+        <div class="flow-backdrop" data-notifications-close></div>
+        <div class="flow-card activity-card">
+          <header class="activity-header">
+            <div><h3 id="notificationsTitle">Bildirimler</h3><p>Üretim ön kontrolleri, makine alarmları ve önemli uygulama uyarıları.</p></div>
+            <button type="button" data-notifications-close>Kapat</button>
+          </header>
+          <div class="activity-toolbar">
+            <div class="segmented activity-filter" role="group" aria-label="Bildirim filtresi">
+              <button type="button" class="active" data-notification-filter="all">Tümü</button>
+              <button type="button" data-notification-filter="unread">Okunmamış</button>
+              <button type="button" data-notification-filter="danger">Kritik</button>
+            </div>
+            <button id="markNotificationsReadBtn" type="button">Tümünü Okundu Yap</button>
+          </div>
+          <div id="notificationsList" class="activity-list"></div>
+          <div id="notificationsEmpty" class="activity-empty">Henüz bildirim yok.</div>
+          <div class="flow-actions">
+            <button id="clearNotificationsBtn" type="button">Listeyi Temizle</button>
+            <button type="button" data-notifications-close class="primary">Tamam</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- İzlenebilir üretim geçmişi -->
+      <section id="productionHistoryModal" class="flow-modal production-history-modal hidden" role="dialog" aria-modal="true" aria-labelledby="productionHistoryTitle">
+        <div class="flow-backdrop" data-production-history-close></div>
+        <div class="flow-card activity-card production-history-card">
+          <header class="activity-header">
+            <div><h3 id="productionHistoryTitle">Üretim Geçmişi</h3><p>G-code dosya kimliği, proje, süre ve makine gönderim durumu birlikte saklanır.</p></div>
+            <button type="button" data-production-history-close>Kapat</button>
+          </header>
+          <div id="productionHistoryList" class="activity-list production-history-list"></div>
+          <div id="productionHistoryEmpty" class="activity-empty">Henüz oluşturulmuş G-code kaydı yok.</div>
+          <div class="flow-actions">
+            <button id="clearProductionHistoryBtn" type="button">Geçmişi Temizle</button>
+            <button type="button" data-production-history-close class="primary">Tamam</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Yerel tasarım kütüphanesi -->
+      <section id="libraryModal" class="flow-modal library-modal hidden" role="dialog" aria-modal="true" aria-labelledby="libraryTitle">
+        <div class="flow-backdrop" data-library-close></div>
+        <div class="flow-card library-card">
+          <header class="library-header">
+            <div>
+              <h3 id="libraryTitle">Tasarım Kütüphanesi</h3>
+              <p>Öğeler tarayıcının yerel veritabanında saklanır ve asıl dosyadan bağımsız kopyalanır.</p>
+            </div>
+            <button type="button" data-library-close>Kapat</button>
+          </header>
+          <div class="library-toolbar">
+            <label class="library-search">Ara <input id="librarySearch" type="search" placeholder="Ad, etiket veya işlem" autocomplete="off" /></label>
+            <button id="saveSelectionToLibraryBtn" type="button" class="primary">Seçileni Kütüphaneye Kaydet</button>
+          </div>
+          <div id="libraryList" class="library-list"></div>
+          <div id="libraryEmpty" class="library-empty">Kütüphane boş. Editörde bir DXF parçası veya desen seçip kaydedin.</div>
+        </div>
+      </section>
+
+      <!-- Parametrik kutu üretici -->
+      <section id="boxMakerModal" class="flow-modal box-maker-modal hidden" role="dialog" aria-modal="true" aria-labelledby="boxMakerTitle">
+        <div class="flow-backdrop" data-box-maker-close></div>
+        <div class="flow-card box-maker-card">
+          <header class="box-maker-header">
+            <div>
+              <h3 id="boxMakerTitle">Kutu Üretici</h3>
+              <p>Milimetre ölçüsünde, karşılıklı parmak geçmeleri eşleşen kesim panelleri üretir.</p>
+            </div>
+            <button type="button" data-box-maker-close>Kapat</button>
+          </header>
+          <div class="box-maker-body">
+            <form id="boxMakerForm" class="box-maker-controls">
+              <fieldset>
+                <legend>Kutu tipi</legend>
+                <div id="boxMakerType" class="segmented box-type-control">
+                  <button type="button" data-box-type="open" class="active">Açık</button>
+                  <button type="button" data-box-type="closed">Kapaklı</button>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Gövde ölçüsü</legend>
+                <div class="box-maker-grid">
+                  <label>Genişlik <span class="unit-input"><input id="boxWidth" type="number" value="204" min="20" max="2000" step="0.1" /><b>mm</b></span></label>
+                  <label>Derinlik <span class="unit-input"><input id="boxDepth" type="number" value="70" min="20" max="2000" step="0.1" /><b>mm</b></span></label>
+                  <label>Yükseklik <span class="unit-input"><input id="boxHeight" type="number" value="49" min="15" max="1000" step="0.1" /><b>mm</b></span></label>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Geçme</legend>
+                <div class="box-maker-grid">
+                  <label>Malzeme <span class="unit-input"><input id="boxThickness" type="number" value="3" min="0.5" max="30" step="0.1" /><b>mm</b></span></label>
+                  <label>Parmak hedefi <span class="unit-input"><input id="boxFingerWidth" type="number" value="12" min="1" max="100" step="0.5" /><b>mm</b></span></label>
+                  <label>Geçme payı <span class="unit-input"><input id="boxFit" type="number" value="0.1" min="-1" max="2" step="0.01" /><b>mm</b></span></label>
+                </div>
+                <p class="box-maker-help">Pozitif geçme payı tırnakları daraltıp yuvaları genişletir. Kesimden önce küçük bir geçme testi önerilir.</p>
+              </fieldset>
+              <div id="boxMakerValidation" class="box-maker-validation" aria-live="polite"></div>
+            </form>
+            <section class="box-maker-preview-panel" aria-label="Kutu parçaları önizlemesi">
+              <div class="box-maker-preview-heading">
+                <strong>2B Kesim Önizlemesi</strong>
+                <span id="boxMakerStats"></span>
+              </div>
+              <svg id="boxMakerPreview" viewBox="0 0 600 360" preserveAspectRatio="xMidYMid meet" aria-label="Üretilecek kutu panelleri"></svg>
+            </section>
+          </div>
+          <div class="flow-actions box-maker-actions">
+            <button type="button" data-box-maker-close>Vazgeç</button>
+            <button id="addBoxToJobBtn" type="button" class="primary">Parçaları İşe Ekle</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Güç / hız kalibrasyon plakası -->
+      <section id="calibrationModal" class="flow-modal calibration-modal hidden" role="dialog" aria-modal="true" aria-labelledby="calibrationTitle">
+        <div class="flow-backdrop" data-calibration-close></div>
+        <form id="calibrationForm" class="flow-card calibration-card">
+          <header class="activity-header">
+            <div><h3 id="calibrationTitle">Güç / Hız Kalibrasyonu</h3><p>Her karenin kendi S gücü ve F hızı vardır. Önce düşük riskli aralıkla başlayın.</p></div>
+            <button type="button" data-calibration-close>Kapat</button>
+          </header>
+          <div class="calibration-body">
+            <fieldset>
+              <legend>Izgara</legend>
+              <div class="calibration-grid-fields">
+                <label>Sütun <input id="calibrationColumns" type="number" min="2" max="10" value="5" step="1" /></label>
+                <label>Satır <input id="calibrationRows" type="number" min="2" max="10" value="5" step="1" /></label>
+                <label>Kare <span class="unit-input"><input id="calibrationTile" type="number" min="5" max="50" value="12" step="1" /><b>mm</b></span></label>
+                <label>Aralık <span class="unit-input"><input id="calibrationGap" type="number" min="1" max="20" value="3" step="0.5" /><b>mm</b></span></label>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Güç ve hız aralığı</legend>
+              <div class="calibration-grid-fields">
+                <label>Min güç S <input id="calibrationMinPower" type="number" min="0" max="1000" value="200" step="10" /></label>
+                <label>Maks güç S <input id="calibrationMaxPower" type="number" min="0" max="1000" value="1000" step="10" /></label>
+                <label>Min hız F <input id="calibrationMinFeed" type="number" min="1" value="300" step="50" /></label>
+                <label>Maks hız F <input id="calibrationMaxFeed" type="number" min="1" value="1500" step="50" /></label>
+              </div>
+            </fieldset>
+            <label class="preference-field"><span>İşlem</span><select id="calibrationOperation"><option value="cut">Kesim testi</option><option value="engrave_line">Çizgi kazıma testi</option></select></label>
+            <div id="calibrationSummary" class="calibration-summary"></div>
+          </div>
+          <div class="flow-actions calibration-actions">
+            <button type="button" data-calibration-close>Vazgeç</button>
+            <button id="addCalibrationBtn" type="button" class="primary">Plakayı İşe Ekle</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Tercihler -->
+      <section id="preferencesModal" class="flow-modal hidden" role="dialog" aria-modal="true" aria-labelledby="preferencesTitle">
+        <div class="flow-backdrop" data-preferences-close></div>
+        <form id="preferencesForm" class="flow-card preferences-card">
+          <h3 id="preferencesTitle">Tercihler</h3>
+          <div class="preferences-section-title">Genel</div>
+          <label class="preference-field"><span>Arayüz yoğunluğu</span><select id="prefUserMode"><option value="advanced">Uzman</option><option value="simple">Basit</option></select></label>
+          <label class="preference-field"><span>Tema</span><select id="prefTheme"><option value="system">Sistem</option><option value="light">Açık</option><option value="dark">Koyu</option></select></label>
+          <div class="preferences-section-title">Proje</div>
+          <label class="preference-switch"><input id="prefAutosaveEnabled" type="checkbox" /><span><strong>Otomatik kurtarma</strong><small>Değişikliklerden sonra projeyi yerel kurtarma alanına kaydeder.</small></span></label>
+          <label class="preference-field"><span>Kaydetme gecikmesi</span><select id="prefAutosaveDelay"><option value="1000">1 saniye</option><option value="3000">3 saniye</option><option value="5000">5 saniye</option><option value="10000">10 saniye</option><option value="30000">30 saniye</option></select></label>
+          <label class="preference-field"><span>Son proje sayısı</span><input id="prefMaxRecent" type="number" min="3" max="30" step="1" /></label>
+          <label class="preference-field"><span>Hazırla girişinde</span><select id="prefPrepareStrategy"><option value="keep">Tasarım konumlarını koru</option><option value="auto">Değişmiş yerleşimi otomatik düzenle</option></select></label>
+          <div class="preferences-section-title">Canvas ve Önizleme</div>
+          <label class="preference-switch"><input id="prefShowGrid" type="checkbox" /><span><strong>Tabla gridini göster</strong><small>Milimetre ölçeğini ve ana grid çizgilerini canvas üzerinde gösterir.</small></span></label>
+          <label class="preference-switch"><input id="prefShowTravel" type="checkbox" /><span><strong>Boş hareketleri Önizleme'de göster</strong><small>G0 seyahat çizgileri yeni açılan üretim önizlemesinde görünür başlar.</small></span></label>
+          <div class="preferences-section-title">Güvenlik</div>
+          <label class="preference-switch"><input id="prefReopenLastProject" type="checkbox" /><span><strong>Son projeyi yeniden aç</strong><small>Kurtarılacak çalışma yoksa uygulama açılışında son diskteki projeyi yükler.</small></span></label>
+          <label class="preference-switch"><input id="prefConfirmClear" type="checkbox" /><span><strong>Temizlemeden önce sor</strong><small>Yeni proje veya tümünü sil işleminde veri kaybını önler.</small></span></label>
+          <div class="flow-actions">
+            <button type="button" data-preferences-close>Vazgeç</button>
+            <button type="submit" class="primary">Kaydet</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Yardım ve güvenli tanılama -->
+      <section id="helpModal" class="flow-modal help-modal hidden" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+        <div class="flow-backdrop" data-help-close></div>
+        <div class="flow-card help-card">
+          <header class="activity-header">
+            <div><h3 id="helpTitle">Kısayollar ve Tanılama</h3><p>Geçerli editör komutları ve bu bilgisayardaki cihaz kabiliyetleri.</p></div>
+            <button type="button" data-help-close>Kapat</button>
+          </header>
+          <div class="help-body">
+            <section>
+              <h4>Klavye Kısayolları</h4>
+              <div class="shortcut-grid">
+                <span>Yeni / Aç / Kaydet</span><kbd>Ctrl+N / O / S</kbd>
+                <span>Farklı kaydet</span><kbd>Ctrl+Shift+S</kbd>
+                <span>Geri al / Yinele</span><kbd>Ctrl+Z / Y</kbd>
+                <span>Kopyala / Kes / Yapıştır</span><kbd>Ctrl+C / X / V</kbd>
+                <span>Tüm desenleri seç</span><kbd>Ctrl+A</kbd>
+                <span>Hassas taşı</span><kbd>Ok tuşları</kbd>
+                <span>10× / 0.1× adım</span><kbd>Shift / Alt + Ok</kbd>
+                <span>Döndür</span><kbd>R / Shift+R</kbd>
+                <span>Pan</span><kbd>Boşluk + sürükle</kbd>
+                <span>İptal / pencereyi kapat</span><kbd>Esc</kbd>
+              </div>
+            </section>
+            <section>
+              <h4>Cihaz Kabiliyetleri</h4>
+              <div id="capabilityList" class="capability-list"><span>Denetleniyor…</span></div>
+            </section>
+            <section>
+              <h4>Tanılama</h4>
+              <div id="diagnosticsSummary" class="diagnostics-summary">Yerel sunucu bilgisi bekleniyor.</div>
+            </section>
+          </div>
+          <div class="flow-actions help-actions">
+            <button id="helpHistoryBtn" type="button">Üretim Geçmişi</button>
+            <button id="downloadDiagnosticsBtn" type="button" class="primary">Tanılama JSON İndir</button>
+            <button type="button" data-help-close>Kapat</button>
+          </div>
+        </div>
+      </section>
 
       <!-- Makine paneli icerigi (gizli; JS Makine sekmesine tasir) -->
       <div id="machinePanelHome" class="hidden" aria-hidden="true">
@@ -615,6 +941,69 @@
         </div>
       </section>
 
+      <!-- Tam ekran üretim önizlemesi -->
+      <section id="productionPreviewTab" class="production-preview-tab hidden" aria-label="Üretim önizlemesi">
+        <header class="production-preview-header">
+          <div>
+            <strong>Üretim Önizlemesi</strong>
+            <span id="productionPreviewPath">G-code seçilmedi</span>
+          </div>
+          <div class="production-preview-header-actions">
+            <button id="refreshProductionPreviewBtn">G-code'u Yenile</button>
+            <button id="closeProductionPreviewBtn">Editöre Dön</button>
+          </div>
+        </header>
+        <div class="production-preview-body">
+          <aside class="production-preview-summary">
+            <h2>İş Özeti</h2>
+            <div class="preview-stat-grid">
+              <div><span>Alan</span><strong id="previewStatDimensions">-</strong></div>
+              <div><span>Tahmini süre</span><strong id="previewStatDuration">-</strong></div>
+              <div><span>Kesim</span><strong id="previewStatCut">-</strong></div>
+              <div><span>Kazıma</span><strong id="previewStatEngrave">-</strong></div>
+              <div><span>Genel lazer</span><strong id="previewStatGeneric">-</strong></div>
+              <div><span>Boş hareket</span><strong id="previewStatTravel">-</strong></div>
+              <div><span>Güç / hız</span><strong id="previewStatPowerFeed">-</strong></div>
+            </div>
+            <h2>İşlemler</h2>
+            <div id="productionOperationList" class="production-operation-list"></div>
+            <div id="productionPreviewSafety" class="production-preview-safety"></div>
+          </aside>
+          <main class="production-preview-canvas-wrap">
+            <div class="production-preview-toolbar">
+              <label><input type="checkbox" data-preview-layer="cut" checked /> Kesim</label>
+              <label><input type="checkbox" data-preview-layer="engrave" checked /> Kazıma</label>
+              <label><input type="checkbox" data-preview-layer="travel" /> Boş hareket</label>
+              <button id="fitProductionPreviewBtn">Görünüme Sığdır</button>
+            </div>
+            <canvas id="productionPreviewCanvas" width="1200" height="720"></canvas>
+            <div class="production-preview-timeline">
+              <button id="productionPreviewPlayBtn" type="button" title="Önizlemeyi oynat">Oynat</button>
+              <select id="productionPreviewSpeed" title="Oynatma hızı" aria-label="Oynatma hızı">
+                <option value="0.1">0.1×</option>
+                <option value="0.2">0.2×</option>
+                <option value="0.5">0.5×</option>
+                <option value="1" selected>1×</option>
+                <option value="2">2×</option>
+                <option value="5">5×</option>
+                <option value="10">10×</option>
+              </select>
+              <label for="productionPreviewProgress">İş sırası</label>
+              <input id="productionPreviewProgress" type="range" min="0" max="0" value="0" step="1" />
+              <output id="productionPreviewProgressText">0 / 0</output>
+              <output id="productionPreviewPosition">X 0.00 · Y 0.00 · 0 sn</output>
+            </div>
+          </main>
+          <aside class="production-preview-actions">
+            <h2>Üretim</h2>
+            <button id="previewGenerateBtn" class="accent">G-code Oluştur</button>
+            <button id="previewFrameBtn">Çerçeve Gezdir</button>
+            <button id="previewSendBtn" class="primary">Makineye Gönder</button>
+            <button id="previewDeviceBtn">Cihaz Panelini Aç</button>
+          </aside>
+        </div>
+      </section>
+
       <div id="textFontMenu" class="font-menu hidden" role="listbox" aria-label="Yazı tipi seçimi">
         <div class="font-menu-search">
           <input id="textFontSearch" type="search" placeholder="Font ara" autocomplete="off" aria-label="Font ara" />
@@ -623,9 +1012,15 @@
         <div id="textFontEmpty" class="font-menu-empty hidden">Eşleşen font yok</div>
       </div>
     </div>
+    <script src="/static/project_state.js?v=20260716-project-session-v2"></script>
     <script src="/static/geometry.js?v=20260707-ribbon"></script>
+    <script src="/static/box_maker.js?v=20260715-box-maker-v1"></script>
+    <script src="/static/asset_library.js?v=20260715-library-v1"></script>
+    <script src="/static/production_state.js?v=20260716-production-state-v1"></script>
+    <script src="/static/calibration_grid.js?v=20260716-calibration-v1"></script>
+    <script src="/static/selection_layout.js?v=20260716-selection-layout-v1"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
     <script src="/static/vector_edit.js?v=20260715-local-revector-v1"></script>
-    <script src="/static/app.js?v=20260715-local-revector-v1"></script>
+    <script src="/static/app.js?v=20260716-bambu-workflow-v5"></script>
   </body>
 </html>

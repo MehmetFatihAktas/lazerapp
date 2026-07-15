@@ -1,0 +1,427 @@
+{
+  "schema": "bambu-parity-inventory-v1",
+  "auditedBambuVersion": "01.03.00.00",
+  "updatedAt": "2026-07-16",
+  "items": [
+    {
+      "id": "project-file-workflow",
+      "area": "Project",
+      "bambu": "New, Open, Save, Save As, Close",
+      "ours": "Yeni proje, proje aç, kaydet, farklı kaydet ve dirty state",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Project round-trip preserves geometry, transforms and process settings.",
+      "evidence": "laser_editor/project_state.js"
+    },
+    {
+      "id": "project-autosave-recovery",
+      "area": "Project",
+      "bambu": "Autosave, lock and crash recovery",
+      "ours": "IndexedDB autosave, recovery candidate and atomic server writes",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "A dirty session is offered after reload without overwriting the main project.",
+      "evidence": "test_project_state.js"
+    },
+    {
+      "id": "project-recents-home",
+      "area": "Project",
+      "bambu": "Recent projects home",
+      "ours": "Project hub and de-duplicated recent project list",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Recent paths stay ordered, unique and open from disk.",
+      "evidence": "test_project_state.js"
+    },
+    {
+      "id": "project-multi-tabs",
+      "area": "Project",
+      "bambu": "Multiple isolated project tabs",
+      "ours": "One active project session",
+      "capability": "always",
+      "status": "planned",
+      "acceptance": "Each project tab isolates dirty, undo, autosave, selection and jobs.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "project-info-bom",
+      "area": "Project",
+      "bambu": "Rich project info, images, BOM and attachments",
+      "ours": "Project identity, path, counts and save/recovery timestamps",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Project package validates optional images, BOM and attachment manifest.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "editor-multi-selection",
+      "area": "Design",
+      "bambu": "Multi-select and common transform",
+      "ours": "Pattern and DXF multi-select, group move and common alignment",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Ctrl selection moves and aligns every selected object without moving unselected geometry.",
+      "evidence": "laser_editor/selection_layout.js"
+    },
+    {
+      "id": "editor-clipboard",
+      "area": "Design",
+      "bambu": "Copy, cut, paste and duplicate",
+      "ours": "Ctrl+C/X/V for patterns, contours and one or more DXF placements",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Pasted DXF placements receive new instance IDs and retain child patterns.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "editor-grouping",
+      "area": "Design",
+      "bambu": "Group, ungroup, attach and detach",
+      "ours": "Placement-child pattern attachment and semantic vector objects",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Nested document groups support group/ungroup and save-open round-trip.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "editor-order-visibility-lock",
+      "area": "Design",
+      "bambu": "Object tree, z-order, enable, hide and lock",
+      "ours": "Part/pattern lists, process ignore and contour locks",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "A unified tree controls rename, z-order, visibility, lock and export behavior.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "editor-align-distribute",
+      "area": "Design",
+      "bambu": "Align and distribute",
+      "ours": "Left, center, right, top, middle, bottom and equal distribution",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Alignment deltas preserve object dimensions and equal distribution preserves outer extent.",
+      "evidence": "test_selection_layout.js"
+    },
+    {
+      "id": "editor-mirror",
+      "area": "Design",
+      "bambu": "Mirror X/Y",
+      "ours": "Mirror-copy against DXF center axes",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Mirrored copies preserve the source and remain aligned to the chosen axis.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "editor-boolean",
+      "area": "Design",
+      "bambu": "Union, subtract, intersect, difference and merge",
+      "ours": "Topology-specific region and contour repair tools",
+      "capability": "always",
+      "status": "planned",
+      "acceptance": "All five Boolean operations produce valid closed polygons with undo and preview.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "editor-offset-path",
+      "area": "Design",
+      "bambu": "Offset, path edit, simplify and tab",
+      "ours": "Contour smoothing, repair, cut regions and manual bridge editing",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Offset exposes join/end style and live preview; simplify reports point delta.",
+      "evidence": "laser_editor/vector_edit.js"
+    },
+    {
+      "id": "editor-arrays",
+      "area": "Design",
+      "bambu": "Grid and circular array",
+      "ours": "Copy/paste and automatic layout",
+      "capability": "always",
+      "status": "planned",
+      "acceptance": "Grid and circular arrays support count, spacing, pivot and source-linked editing.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "editor-shapes-text",
+      "area": "Design",
+      "bambu": "Rectangle, ellipse, polygon and text",
+      "ours": "Measured rectangle, circle, polygon and loaded/single-line fonts",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Generated geometry remains 1:1 mm and supports process assignment.",
+      "evidence": "laser_editor/geometry.js"
+    },
+    {
+      "id": "editor-pen-pencil-arcs",
+      "area": "Design",
+      "bambu": "Pen, pencil, three-point arc and center-point arc",
+      "ours": "Vector/freehand drawing with smoothing and close-path",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Dedicated pen, pencil and both arc constraints survive save-open and undo.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "editor-qr-barcode-shear",
+      "area": "Design",
+      "bambu": "QR, barcode and shear",
+      "ours": "No production-safe generator yet",
+      "capability": "always",
+      "status": "planned",
+      "acceptance": "Codes pass scanner validation at physical size; shear uses numeric pivot and undo.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "canvas-grid-reference",
+      "area": "Design",
+      "bambu": "Rulers, grid and reference layers",
+      "ours": "Dynamic mm grid, origin, bed, margin, center axes and material polygon",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Reference layers are independently visible and never affect G-code or nesting bounds.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "image-adjustments",
+      "area": "Image",
+      "bambu": "Brightness, contrast, gamma, sharpness and filters",
+      "ours": "Non-destructive brightness, contrast, sharpness, negative and presets",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Edits remain reversible and the rendered raster is the one used for G-code.",
+      "evidence": "test_server_dialogs.py"
+    },
+    {
+      "id": "image-crop-mask-background",
+      "area": "Image",
+      "bambu": "Crop, mask and background removal",
+      "ours": "Crop, paint mask and background/vector cleanup controls",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Crop coordinates are orientation-safe and mask edits support undo.",
+      "evidence": "test_server_dialogs.py"
+    },
+    {
+      "id": "image-monochrome-trace",
+      "area": "Image",
+      "bambu": "Monochrome trace",
+      "ours": "OpenCV, Potrace and VTracer line-art pipeline",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "White background is ignored and clean mask paths preserve line-art topology.",
+      "evidence": "test_vectorize_pipeline.py"
+    },
+    {
+      "id": "image-layered-trace",
+      "area": "Image",
+      "bambu": "Layered color trace",
+      "ours": "Single monochrome operation output",
+      "capability": "always",
+      "status": "planned",
+      "acceptance": "Color layers have independent vectors, operation settings and ordering.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "image-print-then-cut",
+      "area": "Image",
+      "bambu": "Print Then Cut and sticker frame options",
+      "ours": "Raster/vector clipping to DXF boundary",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Registration marks, frame, holes and cut-through pass a printed alignment test.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "processing-types",
+      "area": "Processing",
+      "bambu": "Basic Cut, Drawing Line, Drawing Fill and raster",
+      "ours": "Cut, line engraving, fill engraving, raster and ignore",
+      "capability": "grbl-serial",
+      "status": "implemented",
+      "acceptance": "Operation markers and per-object S/F values survive G-code analysis.",
+      "evidence": "test_laser_grbl.py"
+    },
+    {
+      "id": "processing-order",
+      "area": "Processing",
+      "bambu": "User-visible processing order",
+      "ours": "Inner-first plus engraving-before-outer-cut toolpath order",
+      "capability": "grbl-serial",
+      "status": "partial",
+      "acceptance": "A visible operation graph allows safe reorder and detects dependency conflicts.",
+      "evidence": "laser_editor_core.py"
+    },
+    {
+      "id": "materials-profiles",
+      "area": "Materials",
+      "bambu": "Material catalog by device, watt, thickness and process",
+      "ours": "Built-in and custom cut/engrave profiles",
+      "capability": "grbl-serial",
+      "status": "partial",
+      "acceptance": "Profile identity includes material, thickness, laser watt, process and calibration source.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "material-batches",
+      "area": "Materials",
+      "bambu": "Multiple material batches",
+      "ours": "One bed and one active profile",
+      "capability": "always",
+      "status": "planned",
+      "acceptance": "Objects can be assigned to independent batches and output groups.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "calibration-grid",
+      "area": "Calibration",
+      "bambu": "Power/speed calibration matrix",
+      "ours": "2-10 by 2-10 cut/line matrix with independent S/F and labels",
+      "capability": "grbl-serial",
+      "status": "implemented",
+      "acceptance": "Every generated cell carries its own bounded power and feed value.",
+      "evidence": "test_calibration_grid.js"
+    },
+    {
+      "id": "prepare-workflow",
+      "area": "Prepare",
+      "bambu": "Separate Prepare stage with keep-layout or auto-arrange",
+      "ours": "Design/Prepare workflow with persistent entry strategy",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Prepare preserves manual positions or recalculates only when configured.",
+      "evidence": "laser_editor/project_state.js"
+    },
+    {
+      "id": "prepare-nesting",
+      "area": "Prepare",
+      "bambu": "Shape-aware auto arrange on work area or captured stock",
+      "ours": "Deterministic multi-strategy rectangular packing and editable stock polygon",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Polygon/NFP nesting reports material utilization and never overlaps active contours.",
+      "evidence": "test_packing.js"
+    },
+    {
+      "id": "prepare-multi-plate",
+      "area": "Prepare",
+      "bambu": "Automatic split across multiple plates",
+      "ours": "Single bed with explicit out-of-bed parking",
+      "capability": "always",
+      "status": "planned",
+      "acceptance": "Overflow creates independent named plates with stable object ownership.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "prepare-heat-mirror",
+      "area": "Prepare",
+      "bambu": "Non-destructive heat-transfer mirror",
+      "ours": "Design-level mirror copy",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "A plate mirror flag changes toolpaths without changing source geometry.",
+      "evidence": "laser_editor/app.js"
+    },
+    {
+      "id": "prepare-camera-capture",
+      "area": "Prepare",
+      "bambu": "Capture Image and Fine Contour Extraction",
+      "ours": "Capability disabled on the current GRBL profile",
+      "capability": "camera",
+      "status": "capability-gated",
+      "acceptance": "Capture requires calibrated camera homography and explicit user confirmation.",
+      "evidence": "laser_editor_server.py"
+    },
+    {
+      "id": "prepare-batch-engrave",
+      "area": "Prepare",
+      "bambu": "Vision-based Batch Engrave",
+      "ours": "Capability disabled without a calibrated camera",
+      "capability": "camera",
+      "status": "capability-gated",
+      "acceptance": "Detected poses remain editable and never enter G-code before confirmation.",
+      "evidence": "laser_editor_server.py"
+    },
+    {
+      "id": "preview-layers-timeline",
+      "area": "Preview",
+      "bambu": "Processing/travel layers, timeline, scrub and playback speed",
+      "ours": "Cut/engrave/travel filters, scrub, play/pause and 0.1x-10x speed",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Timeline position, elapsed time and visible segments match analyzed G-code.",
+      "evidence": "test_laser_grbl.py"
+    },
+    {
+      "id": "preview-metrics-safety",
+      "area": "Preview",
+      "bambu": "Duration, distance, current position and Make",
+      "ours": "Process/travel distance, estimate, X/Y and hash-linked safe production actions",
+      "capability": "grbl-serial",
+      "status": "implemented",
+      "acceptance": "External G-code is hash identified and unsafe/incomplete modal state blocks sending.",
+      "evidence": "test_laser_grbl.py"
+    },
+    {
+      "id": "device-grbl-console",
+      "area": "Device",
+      "bambu": "Connect, upload, start, pause and telemetry",
+      "ours": "GRBL serial connect, jog, home, hold, resume, reset, frame, origin and stream",
+      "capability": "grbl-serial",
+      "status": "implemented",
+      "acceptance": "Alarm, E-stop and disconnect end with laser off and traceable history.",
+      "evidence": "test_laser_grbl.py"
+    },
+    {
+      "id": "device-lan-pairing",
+      "area": "Device",
+      "bambu": "LAN-only discovery and access-code pairing",
+      "ours": "Local serial-port discovery",
+      "capability": "network-pairing",
+      "status": "capability-gated",
+      "acceptance": "Network adapters store credentials in the OS vault and work without cloud.",
+      "evidence": "BAMBU_SUITE_ESDEGERLIK_YOL_HARITASI.md"
+    },
+    {
+      "id": "device-rotary-curved-tools",
+      "area": "Device",
+      "bambu": "Rotary, curved surface, blade and pen",
+      "ours": "Capabilities explicitly disabled for the current GRBL profile",
+      "capability": "special-hardware",
+      "status": "capability-gated",
+      "acceptance": "Unsupported tools are absent from post-processing and cannot leak commands.",
+      "evidence": "laser_editor_server.py"
+    },
+    {
+      "id": "preferences-general-project-canvas",
+      "area": "Preferences",
+      "bambu": "General, Project, Canvas and Processing preferences",
+      "ours": "Theme, simple/expert density, autosave, recents, grid, Prepare and Preview defaults",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Preferences persist across reload and application/project scopes remain separate.",
+      "evidence": "test_project_state.js"
+    },
+    {
+      "id": "help-shortcuts-diagnostics",
+      "area": "Help",
+      "bambu": "Shortcuts, config, update, report, privacy and licenses",
+      "ours": "Shortcut reference, capability report and privacy-safe diagnostics export",
+      "capability": "always",
+      "status": "partial",
+      "acceptance": "Diagnostics contain no project geometry, project paths or G-code content.",
+      "evidence": "test_server_dialogs.py"
+    },
+    {
+      "id": "activity-notifications-history",
+      "area": "Production",
+      "bambu": "Persistent HMS-like alerts and job history",
+      "ours": "Persistent notifications and hash-linked generated/sent/job status history",
+      "capability": "always",
+      "status": "implemented",
+      "acceptance": "Warnings, alarms and completion records survive reload and de-duplicate safely.",
+      "evidence": "test_production_state.js"
+    }
+  ]
+}

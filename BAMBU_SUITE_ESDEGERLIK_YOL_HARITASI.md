@@ -50,7 +50,22 @@ Kurulu uygulamanın `About Bambu Suite` ekranında sürüm `01.03.00.00` olarak 
 - `Preview` alanında play/pause/scrub, hız çarpanı, anlık XYZ, işlem/rapid mesafe ve süre ayrımı ile traversal görünürlüğü doğrulandı.
 - Cihaz penceresinde yerel ağ keşfi ile LAN-only IP/access-code eşleştirme yolu; proje klasöründe ise `.lac`, `.lock`, `2D/Objects` ve `Metadata2D` tabanlı autosave/kurtarma paketi doğrulandı.
 
-Bu kayıt, tek seferlik bir ekran listesi değildir. `P0-021` ile sürüm bazlı parite envanterine, `T-024` ile otomatik doğrulama kapısına dönüştürülecektir.
+Bu kayıt artık tek seferlik bir ekran listesi değildir. [Bambu Parite Envanteri](BAMBU_PARITE_ENVANTERI.json), her özellik ailesini kabiliyet, durum, kabul testi ve kanıtla izler; `test_parity_inventory.py` kimlik ve kanıt bütünlüğünü otomatik doğrular.
+
+### 16 Temmuz 2026 uygulama dilimi
+
+Bu dalda aşağıdaki yerel karşılıklar tamamlandı ve test kapsamına alındı:
+
+- Proje kimliği, kirli durum, atomik kayıt, otomatik kurtarma, son projeler ve kalıcı tercihler.
+- Aranabilir yerel tasarım kütüphanesi ve ölçülü altı parçalı kutu üretici.
+- `Tasarım -> Hazırla -> Önizleme -> Cihaz` iş akışı; katman filtreli, zaman çizelgeli ve hash kimlikli G-code Preview.
+- Kalıcı bildirim merkezi ve üretilen/gönderilen/çalışan/tamamlanan iş geçmişi.
+- Güç/hız kalibrasyon plakası; her hücre için bağımsız `S/F` ve düşük güçlü etiketler.
+- Desen ve DXF için çoklu seçim, toplu taşıma, `Ctrl+C/X/V`, hizalama ve eşit dağıtma.
+- Basit/uzman görünüm, tema/grid/Prepare/Preview tercihleri, kısayol penceresi ve gizlilik güvenli tanılama özeti.
+- Kamera, rotary, blade, pen, curved-surface ve ağ eşleştirme gibi bulunmayan donanımlar için açık capability gating.
+
+Bu dilim Bambu Suite'in tüm ileri CAD, çoklu plaka, material-batch ve kamera özelliklerini tamamlanmış saymaz. Ayrıntılı gerçek durum için parite envanteri yetkili kaynaktır.
 
 ## 3. Durum özeti
 
@@ -72,11 +87,11 @@ Laser Editor'ın bugün Bambu Suite'e göre güçlü olduğu alanlar:
 
 En büyük eşdeğerlik açıkları:
 
-- Proje güvenliği: otomatik kayıt, çökme kurtarma, kirli proje göstergesi ve son projeler.
+- Proje paketi: gömülü asset manifesti, çoklu proje sekmeleri, BOM ve ek dosya doğrulaması.
 - Standart CAD düzenleme: nesne ağacı, gruplama, z-sırası, hizalama/dağıtma, offset, array, Boolean ve genel node editörü.
 - Üretim modeli: malzeme partileri, plakalar, cihaz/watt/kalınlık bazlı malzeme profilleri ve kalibrasyon geçmişi.
 - Hazırlama: şekle duyarlı gerçek nesting, çoklu plaka ve ayrı `Prepare` aşaması.
-- Önizleme: zaman çizelgeli iş simülasyonu, katman/seyahat görünürlüğü ve ayrıntılı süre/mesafe raporu.
+- Önizleme: temel zaman çizelgesi tamamlandı; büyük G-code için level-of-detail ve işlem grafiği ayrıntısı.
 - Uzun işlemlerde kullanıcı deneyimi: arka plan worker, ilerleme, iptal ve hatadan geri dönüş.
 - Donanım bağlı gelişmiş akışlar: kamera, batch vision, curved-surface, rotary ve güvenlik sensörleri.
 
