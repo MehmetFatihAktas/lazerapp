@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import base64
+import math
 import mimetypes
 import socket
 import sys
@@ -18,6 +19,7 @@ from urllib.parse import unquote
 
 import laser_grbl
 import laser_editor_core as core
+from PIL import Image, ImageOps
 
 
 ROOT = Path(__file__).resolve().parent
@@ -32,6 +34,17 @@ CLIENTS: dict[str, float] = {}
 CLIENT_EVER_CONNECTED = False
 NO_CLIENTS_SINCE: float | None = None
 DIALOG_LOCK = threading.Lock()
+
+
+class NativeDialogBusyError(RuntimeError):
+    pass
+
+
+def validate_generate_output_choice(state: dict) -> None:
+    requested_output = str(state.get("outputPath") or "").strip()
+    output_path = Path(requested_output) if requested_output else None
+    if output_path and output_path.exists() and not bool(state.get("overwriteConfirmed")):
+        raise ValueError("Mevcut G-code dosyasının üzerine yazmak için hedefi yeniden seçin.")
 
 
 def image_data_url_to_temp_file(data_url: str) -> Path:
@@ -57,6 +70,99 @@ def image_data_url_to_temp_file(data_url: str) -> Path:
         return Path(temp.name)
     finally:
         temp.close()
+
+
+def crop_raster_image_to_temp(source_path: Path, crop_normalized: dict, padding_pixels: int = 12) -> tuple[Path, dict]:
+    """Crop an EXIF-oriented raster using top-left normalized source coordinates."""
+    if not isinstance(crop_normalized, dict):
+        raise ValueError("Gecersiz yerel vektor secim alani.")
+
+    def crop_value(name: str, fallback: float) -> float:
+        try:
+            value = float(crop_normalized.get(name, fallback))
+        except (TypeError, ValueError) as error:
+            raise ValueError("Gecersiz yerel vektor secim alani.") from error
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("Yerel vektor secim alani gorsel sinirlari disinda.")
+        return value
+
+    min_x = crop_value("minX", 0.0)
+    min_y = crop_value("minY", 0.0)
+    max_x = crop_value("maxX", 1.0)
+    max_y = crop_value("maxY", 1.0)
+    if max_x - min_x <= 1e-6 or max_y - min_y <= 1e-6:
+        raise ValueError("Yerel vektor secim alani cok kucuk.")
+
+    with Image.open(source_path) as opened:
+        oriented = ImageOps.exif_transpose(opened)
+        width, height = oriented.size
+        if width < 2 or height < 2:
+            raise ValueError("Yerel vektorlestirme icin gorsel cok kucuk.")
+        requested_left = max(0, min(width - 1, int(math.floor(min_x * width))))
+        requested_top = max(0, min(height - 1, int(math.floor(min_y * height))))
+        requested_right = max(requested_left + 1, min(width, int(math.ceil(max_x * width))))
+        requested_bottom = max(requested_top + 1, min(height, int(math.ceil(max_y * height))))
+        if requested_right - requested_left < 3 or requested_bottom - requested_top < 3:
+            raise ValueError("Yerel vektor secim alani en az 3 piksel olmali.")
+
+        padding = max(0, min(256, int(padding_pixels or 0)))
+        left = max(0, requested_left - padding)
+        top = max(0, requested_top - padding)
+        right = min(width, requested_right + padding)
+        bottom = min(height, requested_bottom + padding)
+        cropped = oriented.crop((left, top, right, bottom))
+        if cropped.mode not in {"L", "RGB", "RGBA"}:
+            cropped = cropped.convert("RGBA")
+
+        temp = tempfile.NamedTemporaryFile(prefix="laser_vector_crop_", suffix=".png", delete=False)
+        temp_path = Path(temp.name)
+        temp.close()
+        try:
+            cropped.save(temp_path, format="PNG")
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+    return temp_path, {
+        "normalized": {
+            "minX": left / width,
+            "minY": top / height,
+            "maxX": right / width,
+            "maxY": bottom / height,
+        },
+        "requestedNormalized": {
+            "minX": min_x,
+            "minY": min_y,
+            "maxX": max_x,
+            "maxY": max_y,
+        },
+        "pixelBounds": {"left": left, "top": top, "right": right, "bottom": bottom},
+        "pixelWidth": right - left,
+        "pixelHeight": bottom - top,
+        "originalWidth": width,
+        "originalHeight": height,
+    }
+
+
+def materialize_raster_pattern_data_urls(state: dict) -> list[Path]:
+    """Replace embedded edited raster sources with temporary file paths."""
+    created: list[Path] = []
+    try:
+        for pattern in state.get("patterns") or []:
+            data_url = pattern.pop("dataUrl", None)
+            if not data_url:
+                continue
+            if str(pattern.get("kind") or "").lower() != "raster":
+                raise ValueError("Gomulu gorsel yalniz raster desenlerde kullanilabilir.")
+            path = image_data_url_to_temp_file(str(data_url))
+            created.append(path)
+            pattern["path"] = str(path)
+            pattern["sourcePath"] = str(path)
+        return created
+    except Exception:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
 
 
 def record_client_ping(client_id: str) -> None:
@@ -113,8 +219,12 @@ def monitor_client_shutdown(server: ThreadingHTTPServer) -> None:
 
 def locked_dialog(func):
     def wrapper(*args, **kwargs):
-        with DIALOG_LOCK:
+        if not DIALOG_LOCK.acquire(blocking=False):
+            raise NativeDialogBusyError("Bir dosya seçme veya kaydetme penceresi zaten açık.")
+        try:
             return func(*args, **kwargs)
+        finally:
+            DIALOG_LOCK.release()
 
     return wrapper
 
@@ -182,7 +292,7 @@ def choose_raster_image_file() -> str:
 
 
 @locked_dialog
-def choose_gcode_output() -> str:
+def choose_gcode_output(default_name: str = "laser_job.nc") -> str:
     import tkinter as tk
     from tkinter import filedialog
 
@@ -193,7 +303,7 @@ def choose_gcode_output() -> str:
         return filedialog.asksaveasfilename(
             title="G-code çıktısı",
             initialdir=str(DEFAULT_DIR if DEFAULT_DIR.exists() else Path.home()),
-            initialfile="laser_job.nc",
+            initialfile=Path(str(default_name or "laser_job.nc")).name,
             defaultextension=".nc",
             filetypes=[("G-code / NC", "*.nc *.gcode"), ("All files", "*.*")],
         )
@@ -264,7 +374,7 @@ def svg_as_vector_payload(path: Path) -> dict:
     width = float(image.get("sourceWidth") or image.get("width") or 100)
     height = float(image.get("sourceHeight") or image.get("height") or 100)
     stats = image.get("vectorStats") or {}
-    return {
+    payload = {
         "kind": "vector",
         "sourcePath": str(path),
         "name": image.get("name") or f"{path.stem}.svg",
@@ -289,6 +399,7 @@ def svg_as_vector_payload(path: Path) -> dict:
             "pathsKept": len([item for item in image.get("vectorPaths") or [] if not item.get("removed")]),
         },
     }
+    return core.attach_vector_topology_payload(payload)
 
 
 class LaserEditorHandler(BaseHTTPRequestHandler):
@@ -324,6 +435,8 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                 self._vectorize_image()
             elif self.path == "/api/classify-vector-regions":
                 self._classify_vector_regions()
+            elif self.path == "/api/analyze-vector-separation":
+                self._analyze_vector_separation()
             elif self.path == "/api/save-vector-svg":
                 self._save_vector_svg()
             elif self.path == "/api/save-project":
@@ -347,11 +460,18 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                     project = json.loads(path.read_text(encoding="utf-8"))
                     self._json({"ok": True, "project": project, "path": str(path)})
             elif self.path == "/api/save-gcode-dialog":
-                output = choose_gcode_output()
+                payload = self._read_json(optional=True)
+                output = choose_gcode_output(payload.get("defaultName") or "laser_job.nc")
                 self._json({"path": output})
             elif self.path == "/api/generate":
                 state = self._read_json()
-                result = core.generate_from_state(state)
+                validate_generate_output_choice(state)
+                temporary_rasters = materialize_raster_pattern_data_urls(state)
+                try:
+                    result = core.generate_from_state(state)
+                finally:
+                    for path in temporary_rasters:
+                        path.unlink(missing_ok=True)
                 self._json({"ok": True, "result": result})
             elif self.path == "/api/convert-gcode-to-cut":
                 payload = self._read_json()
@@ -514,20 +634,31 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
 
     def _vectorize_image(self) -> None:
         payload = self._read_json(optional=True)
-        temp_path = None
+        temp_paths: list[Path] = []
         try:
             if payload.get("dataUrl"):
                 source_path = image_data_url_to_temp_file(str(payload.get("dataUrl")))
-                temp_path = source_path
+                temp_paths.append(source_path)
             else:
                 filename = payload.get("path") or choose_raster_image_file()
                 if not filename:
                     self._json({"ok": True, "vector": None})
                     return
                 source_path = Path(filename)
+            original_source_path = source_path
             if source_path.suffix.lower() == ".svg":
+                if payload.get("cropNormalized"):
+                    raise ValueError("Yerel yeniden isleme yalniz raster kaynakli vektorlerde kullanilabilir.")
                 self._json({"ok": True, "vector": svg_as_vector_payload(source_path)})
                 return
+            crop_meta = None
+            if payload.get("cropNormalized"):
+                source_path, crop_meta = crop_raster_image_to_temp(
+                    source_path,
+                    payload.get("cropNormalized"),
+                    padding_pixels=int(float(payload.get("cropPaddingPixels", 12))),
+                )
+                temp_paths.append(source_path)
             product_mode = str(payload.get("productMode") or payload.get("professionalMode") or "").lower().replace("-", "_")
             requested_mode = str(payload.get("mode", "auto"))
             if product_mode in {"cut_stencil", "cut_template"}:
@@ -586,11 +717,15 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
                 vector["regionClassification"] = classification
                 vector.setdefault("stats", {})["regionCutPaths"] = len(cut_ids)
                 vector.setdefault("stats", {})["regionEngravePaths"] = max(0, len(vector.get("vectorPaths", [])) - len(cut_ids))
+                core.refresh_vector_topology_operations(vector)
             if payload.get("name"):
                 vector["name"] = str(payload.get("name"))
+            if crop_meta:
+                vector["crop"] = crop_meta
+                vector["sourcePath"] = str(original_source_path)
             self._json({"ok": True, "vector": vector})
         finally:
-            if temp_path:
+            for temp_path in reversed(temp_paths):
                 try:
                     temp_path.unlink(missing_ok=True)
                 except OSError:
@@ -607,6 +742,10 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
             max_dimension=int(float(payload.get("maxDimension", 1600))),
         )
         self._json({"ok": True, "classification": result})
+
+    def _analyze_vector_separation(self) -> None:
+        payload = self._read_json()
+        self._json({"ok": True, "separation": core.analyze_vector_separation(payload)})
 
     def _save_vector_svg(self) -> None:
         payload = self._read_json()

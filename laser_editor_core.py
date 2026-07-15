@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import math
 import mimetypes
@@ -700,6 +701,136 @@ def append_powered_polyline(lines: list[str],
     for point in points[2:]:
         lines.append(f"G1 X{fmt(point[0])} Y{fmt(point[1])}")
     lines.append("S0")
+
+
+def toolpath_travel_distance(paths: Iterable[list[Point]],
+                             start: Point = (0.0, 0.0)) -> float:
+    current = (float(start[0]), float(start[1]))
+    total = 0.0
+    for path in paths:
+        if len(path) < 2:
+            continue
+        total += converter.dist(current, path[0])
+        current = path[-1]
+    return total
+
+
+def _toolpath_is_closed(path: list[Point], tolerance: float = 0.05) -> bool:
+    return len(path) >= 4 and converter.dist(path[0], path[-1]) <= tolerance
+
+
+def _orient_toolpath_near(path: list[Point],
+                          current: Point,
+                          preserve_start: bool = False) -> list[Point]:
+    points = [(float(point[0]), float(point[1])) for point in path]
+    if len(points) < 2:
+        return points
+    if preserve_start:
+        return points
+    if _toolpath_is_closed(points):
+        ring = points[:-1]
+        if not ring:
+            return points
+        start_index = min(range(len(ring)), key=lambda index: converter.dist(current, ring[index]))
+        rotated = ring[start_index:] + ring[:start_index]
+        return [*rotated, rotated[0]]
+    if converter.dist(current, points[-1]) < converter.dist(current, points[0]):
+        points.reverse()
+    return points
+
+
+def _nearest_toolpath_records(records: list[dict[str, Any]],
+                              start: Point) -> tuple[list[dict[str, Any]], Point]:
+    if not records:
+        return [], start
+    current = (float(start[0]), float(start[1]))
+    remaining = [{**record, "path": list(record["path"])} for record in records]
+    ordered: list[dict[str, Any]] = []
+
+    if len(remaining) > 1200:
+        centers = []
+        for record in remaining:
+            path = record["path"]
+            centers.append((sum(point[0] for point in path) / len(path), sum(point[1] for point in path) / len(path)))
+        row_count = max(1, int(math.sqrt(len(remaining))))
+        min_y = min(center[1] for center in centers)
+        max_y = max(center[1] for center in centers)
+        row_height = max(0.5, (max_y - min_y) / row_count)
+        indexed = list(zip(remaining, centers))
+        indexed.sort(key=lambda item: (
+            int((item[1][1] - min_y) / row_height),
+            item[1][0] if int((item[1][1] - min_y) / row_height) % 2 == 0 else -item[1][0],
+        ))
+        remaining = [item[0] for item in indexed]
+        for record in remaining:
+            oriented = _orient_toolpath_near(record["path"], current, bool(record.get("preserveStart")))
+            ordered.append({**record, "path": oriented})
+            current = oriented[-1]
+        return ordered, current
+
+    while remaining:
+        best_index = 0
+        best_path = _orient_toolpath_near(
+            remaining[0]["path"],
+            current,
+            bool(remaining[0].get("preserveStart")),
+        )
+        best_distance = converter.dist(current, best_path[0])
+        for index in range(1, len(remaining)):
+            oriented = _orient_toolpath_near(
+                remaining[index]["path"],
+                current,
+                bool(remaining[index].get("preserveStart")),
+            )
+            distance = converter.dist(current, oriented[0])
+            if distance < best_distance - 1e-9:
+                best_index = index
+                best_path = oriented
+                best_distance = distance
+        record = remaining.pop(best_index)
+        ordered.append({**record, "path": best_path})
+        current = best_path[-1]
+    return ordered, current
+
+
+def optimize_toolpath_records(records: list[dict[str, Any]],
+                              start: Point = (0.0, 0.0),
+                              inner_first: bool = False) -> list[dict[str, Any]]:
+    valid = [record for record in records if len(record.get("path") or []) >= 2]
+    if not valid:
+        return []
+    if not inner_first:
+        return _nearest_toolpath_records(valid, start)[0]
+
+    open_records = [record for record in valid if not _toolpath_is_closed(record["path"])]
+    closed_records = [record for record in valid if _toolpath_is_closed(record["path"])]
+    depth_groups: dict[int, list[dict[str, Any]]] = {}
+    for record in closed_records:
+        polygon = list(record["path"][:-1])
+        probe = polygon[0]
+        depth = sum(
+            1
+            for other in closed_records
+            if other is not record and point_in_polygon(probe, list(other["path"][:-1]))
+        )
+        depth_groups.setdefault(depth, []).append(record)
+
+    ordered: list[dict[str, Any]] = []
+    current = start
+    if open_records:
+        group, current = _nearest_toolpath_records(open_records, current)
+        ordered.extend(group)
+    for depth in sorted(depth_groups, reverse=True):
+        group, current = _nearest_toolpath_records(depth_groups[depth], current)
+        ordered.extend(group)
+    return ordered
+
+
+def optimize_toolpaths(paths: list[list[Point]],
+                       start: Point = (0.0, 0.0),
+                       inner_first: bool = False) -> list[list[Point]]:
+    records = [{"path": path, "sourceIndex": index} for index, path in enumerate(paths)]
+    return [record["path"] for record in optimize_toolpath_records(records, start, inner_first)]
 
 
 def open_pattern_image(path: Path):
@@ -1410,9 +1541,248 @@ def stitch_open_vector_paths(vector_paths: list[dict[str, Any]],
     return paths, merged_count
 
 
+def weld_open_endpoints(vector_paths: list[dict[str, Any]],
+                        tolerance: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Birbirine cok yakin ACIK yol uclarini ortak noktaya kaynat.
+
+    Iskelet izleyici her kavsakta ayri acik yollar uretir; son islemler uclari
+    birkac piksel oynatinca gorunur bosluk kalir. Bu adim tolerans icindeki
+    uclari kumeleyip ortak merkeze SNAP eder: bosluk kapanir, kavsak AutoCAD
+    gibi tam ust uste gelir. Yol BIRLESTIRMEZ; yalnizca mevcut uclari kaydirir,
+    bu yuzden asla yeni/hayalet cizgi segmenti uretemez (lazer cikti guvenligi).
+    """
+    tolerance = max(0.0, float(tolerance))
+    if tolerance <= 0:
+        return vector_paths, {"weldedEndpoints": 0}
+    points = [[list(map(float, pt)) for pt in item.get("points", [])] for item in vector_paths]
+    closed = [bool(item.get("closed")) for item in vector_paths]
+
+    ends = []
+    for index, pts in enumerate(points):
+        if closed[index] or len(pts) < 2:
+            continue
+        ends.append((index, 0))
+        ends.append((index, 1))
+    if len(ends) < 2:
+        return vector_paths, {"weldedEndpoints": 0}
+
+    def coord(entry):
+        index, which = entry
+        return points[index][0] if which == 0 else points[index][-1]
+
+    parent = list(range(len(ends)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    tol2 = tolerance * tolerance
+    for a in range(len(ends)):
+        ax, ay = coord(ends[a])
+        for b in range(a + 1, len(ends)):
+            bx, by = coord(ends[b])
+            if (ax - bx) ** 2 + (ay - by) ** 2 <= tol2:
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[ra] = rb
+
+    clusters: dict[int, list[int]] = {}
+    for a in range(len(ends)):
+        clusters.setdefault(find(a), []).append(a)
+
+    welded = 0
+    for members in clusters.values():
+        if len(members) < 2:
+            continue
+        cx = sum(coord(ends[m])[0] for m in members) / len(members)
+        cy = sum(coord(ends[m])[1] for m in members) / len(members)
+        for m in members:
+            index, which = ends[m]
+            if which == 0:
+                points[index][0] = [cx, cy]
+            else:
+                points[index][-1] = [cx, cy]
+            welded += 1
+
+    if not welded:
+        return vector_paths, {"weldedEndpoints": 0}
+    result_paths = []
+    for index, item in enumerate(vector_paths):
+        new_item = dict(item)
+        new_item["points"] = points[index]
+        result_paths.append(new_item)
+    return result_paths, {"weldedEndpoints": welded}
+
+
+def merge_coincident_open_paths(vector_paths: list[dict[str, Any]],
+                                tolerance: float,
+                                max_angle: float = 55.0) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Kavsakta CAKISAN acik yol parcalarini tek surekli cizgiye birlestir.
+
+    Iskelet izleyici bir dogrusal cizgiyi her derece-2 gecis noktasinda ayri
+    parcalara boluyor; weld/snap uclari ust uste getirse de parcalar ayri yol
+    olarak kaliyor (editorde "kirik" gorunum, gereksiz kalem-kaldir/indir).
+
+    Bu adim SADECE su cok dar kosulu saglayan uc ciftlerini birlestirir:
+      * iki uc birbirine `tolerance` icinde CAKISIR (weld sonrasi ~0 px),
+      * her iki ucun da o noktada TEK ortagi vardir (derece-2 gecis; gercek
+        Y/T dallanmalari 3+ uc oldugu icin haric tutulur -> korunur),
+      * disari bakan tegetler yaklasik zit yonludur (dogrusal devam;
+        keskin geri-donen mahmuzlar `max_angle` ile elenir).
+
+    Cakisan uclar ayni noktada oldugundan birlestirme YENI segment URETMEZ:
+    `a + b[1:]` yinelenen ortak noktayi atar. Cikti geometrisi -> toolpath
+    birebir ayni; yalnizca parca sayisi azalir. Bu yuzden hatali/hayalet
+    kesim uretmesi yapisal olarak imkansizdir.
+    """
+    tolerance = max(0.0, float(tolerance))
+    if tolerance <= 0:
+        return vector_paths, {"mergedOpenPaths": 0}
+    tol2 = tolerance * tolerance
+
+    open_slot: list[int] = []
+    pts_list: list[list[list[float]]] = []
+    for slot, item in enumerate(vector_paths):
+        pts = [[float(pt[0]), float(pt[1])] for pt in item.get("points", [])]
+        if item.get("removed") or item.get("closed") or len(pts) < 2:
+            continue
+        open_slot.append(slot)
+        pts_list.append(pts)
+    m = len(pts_list)
+    if m < 2:
+        return vector_paths, {"mergedOpenPaths": 0}
+
+    def endpoint(k: int, which: int) -> list[float]:
+        return pts_list[k][0] if which == 0 else pts_list[k][-1]
+
+    cell = max(2.0, tolerance * 2.0)
+    grid: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for k in range(m):
+        for which in (0, 1):
+            x, y = endpoint(k, which)
+            grid.setdefault((int(math.floor(x / cell)), int(math.floor(y / cell))), []).append((k, which))
+
+    def neighbors(k: int, which: int) -> list[tuple[int, int]]:
+        x, y = endpoint(k, which)
+        cx = int(math.floor(x / cell))
+        cy = int(math.floor(y / cell))
+        found: list[tuple[int, int]] = []
+        for gy in range(cy - 1, cy + 2):
+            for gx in range(cx - 1, cx + 2):
+                for (kk, ww) in grid.get((gx, gy), ()):  # type: ignore[union-attr]
+                    if kk == k:
+                        continue
+                    ox, oy = endpoint(kk, ww)
+                    if (x - ox) ** 2 + (y - oy) ** 2 <= tol2:
+                        found.append((kk, ww))
+        return found
+
+    def outward_tangent(points: list[list[float]], which: int) -> tuple[float, float]:
+        if which == 0:
+            base = points[0]
+            seq = points[1:]
+        else:
+            base = points[-1]
+            seq = list(reversed(points[:-1]))
+        for cand in seq:
+            dx = base[0] - cand[0]
+            dy = base[1] - cand[1]
+            if dx * dx + dy * dy >= 1.0:
+                length = math.hypot(dx, dy)
+                return dx / length, dy / length
+        cand = seq[0]
+        dx = base[0] - cand[0]
+        dy = base[1] - cand[1]
+        length = math.hypot(dx, dy) or 1.0
+        return dx / length, dy / length
+
+    cos_limit = math.cos(math.radians(max_angle))
+    match: dict[tuple[int, int], tuple[int, int]] = {}
+    for k in range(m):
+        for which in (0, 1):
+            nb = neighbors(k, which)
+            if len(nb) != 1:
+                continue  # not a clean degree-2 meeting
+            k2, w2 = nb[0]
+            nb2 = neighbors(k2, w2)
+            if len(nb2) != 1 or nb2[0] != (k, which):
+                continue  # partner must be mutual and unique
+            t1 = outward_tangent(pts_list[k], which)
+            t2 = outward_tangent(pts_list[k2], w2)
+            # outward tangents point AWAY from the shared point; a straight
+            # continuation makes them nearly opposite (dot ~ -1).
+            if -(t1[0] * t2[0] + t1[1] * t2[1]) >= cos_limit:
+                match[(k, which)] = (k2, w2)
+
+    if not match:
+        return vector_paths, {"mergedOpenPaths": 0}
+
+    visited = [False] * m
+
+    def walk(enter_k: int, enter_w: int) -> list[tuple[int, bool]]:
+        chain: list[tuple[int, bool]] = []
+        k, w = enter_k, enter_w
+        while not visited[k]:
+            visited[k] = True
+            chain.append((k, w == 1))  # flip when we enter at the tail
+            nxt = match.get((k, 1 - w))
+            if nxt is None:
+                break
+            k2, w2 = nxt
+            if visited[k2]:
+                break
+            k, w = k2, w2
+        return chain
+
+    groups: list[list[tuple[int, bool]]] = []
+    for k in range(m):
+        for w in (0, 1):
+            if (k, w) not in match and not visited[k]:
+                groups.append(walk(k, w))
+    for k in range(m):  # any remaining pure cycles
+        if not visited[k]:
+            groups.append(walk(k, 0))
+
+    combined_by_slot: dict[int, list[list[float]]] = {}
+    removed_slots: set[int] = set()
+    merged = 0
+    for group in groups:
+        if len(group) < 2:
+            continue
+        combined: list[list[float]] = []
+        for (k, flip) in group:
+            seq = list(reversed(pts_list[k])) if flip else list(pts_list[k])
+            if combined:
+                lx, ly = combined[-1]
+                if (lx - seq[0][0]) ** 2 + (ly - seq[0][1]) ** 2 <= tol2:
+                    seq = seq[1:]
+            combined.extend(seq)
+        head_slot = open_slot[group[0][0]]
+        combined_by_slot[head_slot] = combined
+        for (k, _flip) in group[1:]:
+            removed_slots.add(open_slot[k])
+        merged += len(group) - 1
+
+    if merged == 0:
+        return vector_paths, {"mergedOpenPaths": 0}
+
+    result_paths: list[dict[str, Any]] = []
+    for slot, item in enumerate(vector_paths):
+        if slot in removed_slots:
+            continue
+        new_item = dict(item)
+        if slot in combined_by_slot:
+            new_item["points"] = combined_by_slot[slot]
+        result_paths.append(new_item)
+    return result_paths, {"mergedOpenPaths": merged}
+
+
 def snap_open_vector_endpoints_to_paths(vector_paths: list[dict[str, Any]],
                                         max_gap: float,
-                                        max_angle: float = 70.0) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                                        max_angle: float = 70.0,
+                                        min_path_length: float = 0.0) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Close tiny endpoint-to-path gaps while preserving separate nearby art.
 
     Skeleton junctions are represented as separate open paths. Smoothing and
@@ -1421,8 +1791,13 @@ def snap_open_vector_endpoints_to_paths(vector_paths: list[dict[str, Any]],
     naturally toward a nearby segment are snapped.
     """
     max_gap = max(0.0, float(max_gap or 0.0))
+    min_path_length = max(0.0, float(min_path_length or 0.0))
     if max_gap <= 0:
-        return vector_paths, {"snappedCenterlineEndpoints": 0, "maxSnappedEndpointGap": 0.0}
+        return vector_paths, {
+            "snappedCenterlineEndpoints": 0,
+            "maxSnappedEndpointGap": 0.0,
+            "skippedMicroDetailSnaps": 0,
+        }
 
     paths = [
         {
@@ -1478,9 +1853,14 @@ def snap_open_vector_endpoints_to_paths(vector_paths: list[dict[str, Any]],
         return float(endpoint[0]) - float(candidate[0]), float(endpoint[1]) - float(candidate[1])
 
     updates: dict[tuple[int, int], tuple[list[float], float]] = {}
+    skipped_micro_details = 0
     for path_index, item in enumerate(paths):
         points = item.get("points", [])
         if item.get("removed") or item.get("closed") or len(points) < 2:
+            continue
+        path_length = float(item.get("length") or _polyline_length(points))
+        if min_path_length > 0 and path_length < min_path_length:
+            skipped_micro_details += 1
             continue
         for at_start, endpoint_index in ((True, 0), (False, len(points) - 1)):
             endpoint = points[endpoint_index]
@@ -1529,7 +1909,46 @@ def snap_open_vector_endpoints_to_paths(vector_paths: list[dict[str, Any]],
         "snappedCenterlineEndpoints": snapped,
         "maxSnappedEndpointGap": round(max_snapped_gap, 4),
         "endpointSnapTolerance": round(max_gap, 4),
+        "skippedMicroDetailSnaps": skipped_micro_details,
     }
+
+
+def _shared_open_endpoint_anchor_indices(vector_paths: list[dict[str, Any]],
+                                         tolerance: float = 1e-6) -> set[tuple[int, int]]:
+    """Find endpoints that already represent the same traced graph node.
+
+    Only endpoint equality is considered. Proximity alone never creates a new
+    connection between otherwise separate details.
+    """
+    tolerance = max(1e-9, float(tolerance))
+    cell_size = tolerance * 2.0
+    endpoint_grid: dict[tuple[int, int], list[tuple[int, int, list[float]]]] = {}
+    anchors: set[tuple[int, int]] = set()
+
+    for path_index, item in enumerate(vector_paths):
+        points = item.get("points") or []
+        if item.get("removed") or item.get("closed") or len(points) < 2:
+            continue
+        for endpoint_side, point in ((0, points[0]), (1, points[-1])):
+            current = [float(point[0]), float(point[1])]
+            cell_x = math.floor(current[0] / cell_size)
+            cell_y = math.floor(current[1] / cell_size)
+            matches: list[tuple[int, int]] = []
+            for offset_x in (-1, 0, 1):
+                for offset_y in (-1, 0, 1):
+                    for other_index, other_side, other_point in endpoint_grid.get(
+                        (cell_x + offset_x, cell_y + offset_y), []
+                    ):
+                        if math.dist(current, other_point) <= tolerance:
+                            matches.append((other_index, other_side))
+            if matches:
+                anchors.add((path_index, endpoint_side))
+                anchors.update(matches)
+            endpoint_grid.setdefault((cell_x, cell_y), []).append(
+                (path_index, endpoint_side, current)
+            )
+
+    return anchors
 
 
 def straighten_centerline_paths(vector_paths: list[dict[str, Any]],
@@ -1543,14 +1962,20 @@ def straighten_centerline_paths(vector_paths: list[dict[str, Any]],
     error is small compared with their span.
     """
     if np is None:
-        return vector_paths, {"straightenedCenterlinePaths": 0, "straightenedCenterlinePointsRemoved": 0}
+        return vector_paths, {
+            "straightenedCenterlinePaths": 0,
+            "straightenedCenterlinePointsRemoved": 0,
+            "preservedStraightenedJunctionAnchors": 0,
+        }
     straightened = 0
     points_removed = 0
+    preserved_junction_anchors = 0
     min_span = max(28.0, min(float(source_width), float(source_height)) * 0.045)
     base_deviation = max(1.6, min(4.0, float(stroke_width or 0.0) * 1.6))
+    shared_anchors = _shared_open_endpoint_anchor_indices(vector_paths)
 
     result: list[dict[str, Any]] = []
-    for item in vector_paths:
+    for path_index, item in enumerate(vector_paths):
         points = [[float(point[0]), float(point[1])] for point in item.get("points", [])]
         if item.get("closed") or len(points) < 5:
             result.append(item)
@@ -1611,6 +2036,12 @@ def straighten_centerline_paths(vector_paths: list[dict[str, Any]],
             [round(float(start[0]), 3), round(float(start[1]), 3)],
             [round(float(end[0]), 3), round(float(end[1]), 3)],
         ]
+        if (path_index, 0) in shared_anchors:
+            new_points[0] = [float(points[0][0]), float(points[0][1])]
+            preserved_junction_anchors += 1
+        if (path_index, 1) in shared_anchors:
+            new_points[-1] = [float(points[-1][0]), float(points[-1][1])]
+            preserved_junction_anchors += 1
         updated = {**item, "points": new_points, "closed": False}
         updated["length"] = _polyline_length(new_points)
         warnings = list(updated.get("warnings") or [])
@@ -1623,6 +2054,7 @@ def straighten_centerline_paths(vector_paths: list[dict[str, Any]],
     return result, {
         "straightenedCenterlinePaths": straightened,
         "straightenedCenterlinePointsRemoved": points_removed,
+        "preservedStraightenedJunctionAnchors": preserved_junction_anchors,
     }
 
 
@@ -1634,9 +2066,11 @@ def flatten_axis_aligned_centerline_runs(vector_paths: list[dict[str, Any]],
     band_limit = max(2.0, min(5.0, float(stroke_width or 0.0) * 2.0))
     runs_flattened = 0
     points_adjusted = 0
+    preserved_junction_anchors = 0
+    shared_anchors = _shared_open_endpoint_anchor_indices(vector_paths)
     result: list[dict[str, Any]] = []
 
-    for item in vector_paths:
+    for path_index, item in enumerate(vector_paths):
         points = [[float(point[0]), float(point[1])] for point in item.get("points", [])]
         if len(points) < 4:
             result.append(item)
@@ -1675,6 +2109,10 @@ def flatten_axis_aligned_centerline_runs(vector_paths: list[dict[str, Any]],
             if kind == "h" and width >= min_span and height <= band_limit:
                 y = sorted(point[1] for point in run_points)[len(run_points) // 2]
                 for point_index in range(start_index, end_index + 1):
+                    endpoint_side = 0 if point_index == 0 else 1 if point_index == len(points) - 1 else None
+                    if endpoint_side is not None and (path_index, endpoint_side) in shared_anchors:
+                        preserved_junction_anchors += 1
+                        continue
                     if abs(updated_points[point_index][1] - y) > 0.05:
                         points_adjusted += 1
                     updated_points[point_index][1] = y
@@ -1683,6 +2121,10 @@ def flatten_axis_aligned_centerline_runs(vector_paths: list[dict[str, Any]],
             elif kind == "v" and height >= min_span and width <= band_limit:
                 x = sorted(point[0] for point in run_points)[len(run_points) // 2]
                 for point_index in range(start_index, end_index + 1):
+                    endpoint_side = 0 if point_index == 0 else 1 if point_index == len(points) - 1 else None
+                    if endpoint_side is not None and (path_index, endpoint_side) in shared_anchors:
+                        preserved_junction_anchors += 1
+                        continue
                     if abs(updated_points[point_index][0] - x) > 0.05:
                         points_adjusted += 1
                     updated_points[point_index][0] = x
@@ -1703,6 +2145,7 @@ def flatten_axis_aligned_centerline_runs(vector_paths: list[dict[str, Any]],
     return result, {
         "axisStraightenedCenterlineRuns": runs_flattened,
         "axisStraightenedCenterlinePoints": points_adjusted,
+        "preservedAxisJunctionAnchors": preserved_junction_anchors,
     }
 
 
@@ -3110,10 +3553,10 @@ def centerline_dense_junction_holes(binary: Any,
         candidates.append(
             {
                 "label": label,
-                "hole": hole,
                 "bbox": (x, y, component_width, component_height),
                 "area": area,
                 "junctionClusters": junction_clusters,
+                "hole": hole,
             }
         )
 
@@ -3433,7 +3876,7 @@ def preserve_centerline_dot_components(binary: Any,
     stroke = max(1.0, float(stroke_width or 1.0))
     min_area = max(4.0, stroke * stroke * 1.1)
     max_area = max(32.0, stroke * stroke * 16.0)
-    max_span = max(7.0, min(16.0, stroke * 6.0))
+    max_span = max(7.0, min(48.0, stroke * 6.0))
     result = list(vector_paths)
     preserved = 0
     for label in range(1, int(count)):
@@ -3450,7 +3893,7 @@ def preserve_centerline_dot_components(binary: Any,
         if component_skeleton_pixels > 2:
             continue
         center_x, center_y = (float(value) for value in centroids[label])
-        radius = max(0.75, min(2.5, min(width, height) * 0.24))
+        radius = max(0.75, min(stroke * 0.9, min(width, height) * 0.24))
         point_count = 12
         points = [
             [
@@ -3473,6 +3916,899 @@ def preserve_centerline_dot_components(binary: Any,
         )
         preserved += 1
     return result, {"preservedDotDetails": preserved}
+
+
+def _graph_projection(point: list[float], start: list[float], end: list[float]) -> tuple[list[float], float, float]:
+    dx = float(end[0]) - float(start[0])
+    dy = float(end[1]) - float(start[1])
+    length_squared = dx * dx + dy * dy
+    if length_squared <= 1e-12:
+        projected = [float(start[0]), float(start[1])]
+        return projected, 0.0, math.dist(point, projected)
+    t = max(0.0, min(1.0, ((float(point[0]) - float(start[0])) * dx + (float(point[1]) - float(start[1])) * dy) / length_squared))
+    projected = [float(start[0]) + dx * t, float(start[1]) + dy * t]
+    return projected, t, math.dist(point, projected)
+
+
+def _graph_path_arc_data(points: list[list[float]], closed: bool) -> tuple[list[float], list[tuple[int, int, float, float]], float]:
+    cumulative = [0.0]
+    segments: list[tuple[int, int, float, float]] = []
+    segment_count = len(points) if closed else max(0, len(points) - 1)
+    total = 0.0
+    for index in range(segment_count):
+        next_index = (index + 1) % len(points)
+        length = math.dist(points[index], points[next_index])
+        if length <= 1e-9:
+            continue
+        segments.append((index, next_index, total, length))
+        total += length
+        if next_index != 0:
+            while len(cumulative) <= next_index:
+                cumulative.append(total)
+    return cumulative, segments, total
+
+
+def _graph_point_at_arc(points: list[list[float]], segments: list[tuple[int, int, float, float]], total: float, arc: float) -> list[float]:
+    if not points:
+        return [0.0, 0.0]
+    if total <= 1e-9:
+        return [float(points[0][0]), float(points[0][1])]
+    value = max(0.0, min(total, float(arc)))
+    if value >= total - 1e-9:
+        last = segments[-1]
+        return [float(points[last[1]][0]), float(points[last[1]][1])]
+    for start_index, end_index, start_arc, length in segments:
+        if value <= start_arc + length + 1e-9:
+            t = max(0.0, min(1.0, (value - start_arc) / length))
+            return [
+                float(points[start_index][0]) + (float(points[end_index][0]) - float(points[start_index][0])) * t,
+                float(points[start_index][1]) + (float(points[end_index][1]) - float(points[start_index][1])) * t,
+            ]
+    return [float(points[-1][0]), float(points[-1][1])]
+
+
+def _graph_slice_arc(points: list[list[float]], segments: list[tuple[int, int, float, float]], total: float,
+                     start_arc: float, end_arc: float, wrap: bool = False) -> list[list[float]]:
+    if end_arc < start_arc:
+        return []
+
+    def slice_linear(start: float, end: float) -> list[list[float]]:
+        result = [_graph_point_at_arc(points, segments, total, start)]
+        for _start_index, end_index, segment_start, length in segments:
+            vertex_arc = segment_start + length
+            if start + 1e-7 < vertex_arc < end - 1e-7:
+                result.append([float(points[end_index][0]), float(points[end_index][1])])
+        result.append(_graph_point_at_arc(points, segments, total, end))
+        return _dedupe_points(result, closed=False, min_distance=1e-7)
+
+    if not wrap or end_arc <= total + 1e-9:
+        return slice_linear(start_arc, min(total, end_arc))
+    first = slice_linear(start_arc, total)
+    second = slice_linear(0.0, end_arc - total)
+    return _dedupe_points(first + second[1:], closed=False, min_distance=1e-7)
+
+
+def _graph_curvature_stats(points: list[list[float]], closed: bool) -> dict[str, float]:
+    if len(points) < 3:
+        return {"mean": 0.0, "max": 0.0}
+    angles: list[float] = []
+    indexes = range(len(points)) if closed else range(1, len(points) - 1)
+    for index in indexes:
+        previous = points[(index - 1) % len(points)]
+        current = points[index]
+        following = points[(index + 1) % len(points)]
+        first = (float(current[0]) - float(previous[0]), float(current[1]) - float(previous[1]))
+        second = (float(following[0]) - float(current[0]), float(following[1]) - float(current[1]))
+        first_length = math.hypot(*first)
+        second_length = math.hypot(*second)
+        if first_length <= 1e-9 or second_length <= 1e-9:
+            continue
+        cosine = max(-1.0, min(1.0, (first[0] * second[0] + first[1] * second[1]) / (first_length * second_length)))
+        angles.append(abs(math.acos(cosine)))
+    return {
+        "mean": round(sum(angles) / max(1, len(angles)), 6),
+        "max": round(max(angles, default=0.0), 6),
+    }
+
+
+def _graph_tangent(points: list[list[float]], at_start: bool) -> list[float]:
+    if len(points) < 2:
+        return [0.0, 0.0]
+    first, second = (points[0], points[1]) if at_start else (points[-2], points[-1])
+    dx = float(second[0]) - float(first[0])
+    dy = float(second[1]) - float(first[1])
+    length = math.hypot(dx, dy)
+    return [round(dx / length, 6), round(dy / length, 6)] if length > 1e-9 else [0.0, 0.0]
+
+
+def _analyze_graph_blocks(graph: dict[str, Any]) -> None:
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    edge_by_id = {str(edge["id"]): edge for edge in edges}
+    adjacency: dict[str, list[str]] = {str(node["id"]): [] for node in nodes}
+    for edge in edges:
+        edge_id = str(edge["id"])
+        start = str(edge["startNodeId"])
+        end = str(edge["endNodeId"])
+        adjacency.setdefault(start, []).append(edge_id)
+        adjacency.setdefault(end, []).append(edge_id)
+
+    visited_nodes: set[str] = set()
+    components: list[dict[str, Any]] = []
+    for node_id in sorted(adjacency):
+        if node_id in visited_nodes or not adjacency[node_id]:
+            continue
+        queue = [node_id]
+        component_nodes: set[str] = set()
+        component_edges: set[str] = set()
+        visited_nodes.add(node_id)
+        while queue:
+            current = queue.pop()
+            component_nodes.add(current)
+            for edge_id in adjacency.get(current, []):
+                component_edges.add(edge_id)
+                edge = edge_by_id[edge_id]
+                other = str(edge["endNodeId"] if str(edge["startNodeId"]) == current else edge["startNodeId"])
+                if other not in visited_nodes:
+                    visited_nodes.add(other)
+                    queue.append(other)
+        component_id = f"component-{len(components) + 1}"
+        cycle_rank = max(0, len(component_edges) - len(component_nodes) + 1)
+        components.append({"id": component_id, "nodeIds": sorted(component_nodes), "edgeIds": sorted(component_edges), "cycleRank": cycle_rank})
+        for current in component_nodes:
+            next(node for node in nodes if str(node["id"]) == current)["componentId"] = component_id
+        for edge_id in component_edges:
+            edge_by_id[edge_id]["componentId"] = component_id
+
+    discovery: dict[str, int] = {}
+    low: dict[str, int] = {}
+    edge_stack: list[str] = []
+    blocks: list[list[str]] = []
+    bridges: set[str] = set()
+    articulation: set[str] = set()
+    processed_loops: set[str] = set()
+    tick = 0
+
+    def pop_block(stop_edge: str) -> None:
+        block: list[str] = []
+        while edge_stack:
+            current = edge_stack.pop()
+            block.append(current)
+            if current == stop_edge:
+                break
+        if block:
+            blocks.append(block)
+
+    def visit(node_id: str, parent_edge: str | None = None) -> None:
+        nonlocal tick
+        tick += 1
+        discovery[node_id] = tick
+        low[node_id] = tick
+        child_count = 0
+        for edge_id in adjacency.get(node_id, []):
+            edge = edge_by_id[edge_id]
+            start = str(edge["startNodeId"])
+            end = str(edge["endNodeId"])
+            if start == end:
+                if edge_id not in processed_loops:
+                    processed_loops.add(edge_id)
+                    blocks.append([edge_id])
+                continue
+            other = end if start == node_id else start
+            if edge_id == parent_edge:
+                continue
+            if other not in discovery:
+                child_count += 1
+                edge_stack.append(edge_id)
+                visit(other, edge_id)
+                low[node_id] = min(low[node_id], low[other])
+                if low[other] >= discovery[node_id]:
+                    if parent_edge is not None or child_count > 1:
+                        articulation.add(node_id)
+                    pop_block(edge_id)
+                if low[other] > discovery[node_id]:
+                    bridges.add(edge_id)
+            elif discovery[other] < discovery[node_id]:
+                edge_stack.append(edge_id)
+                low[node_id] = min(low[node_id], discovery[other])
+
+    for node_id in sorted(adjacency):
+        if node_id not in discovery and adjacency[node_id]:
+            visit(node_id)
+            if edge_stack:
+                blocks.append(list(reversed(edge_stack)))
+                edge_stack.clear()
+
+    graph_blocks: list[dict[str, Any]] = []
+    for index, block_edge_ids in enumerate(blocks, 1):
+        unique_edges = sorted(set(block_edge_ids))
+        block_nodes = {
+            str(edge_by_id[edge_id][key])
+            for edge_id in unique_edges
+            for key in ("startNodeId", "endNodeId")
+        }
+        block_id = f"block-{index}"
+        cyclic = len(unique_edges) >= len(block_nodes)
+        cycle_ids = [f"cycle-{index}"] if cyclic else []
+        graph_blocks.append({"id": block_id, "edgeIds": unique_edges, "nodeIds": sorted(block_nodes), "cyclic": cyclic})
+        for edge_id in unique_edges:
+            edge_by_id[edge_id]["blockId"] = block_id
+            edge_by_id[edge_id]["cycleIds"] = list(cycle_ids)
+            edge_by_id[edge_id]["bridge"] = edge_id in bridges
+
+    node_by_id = {str(node["id"]): node for node in nodes}
+    junction_regions: list[dict[str, Any]] = []
+    for node_id, node in node_by_id.items():
+        incident = sorted(set(adjacency.get(node_id, [])))
+        degree = sum(2 if str(edge_by_id[edge_id]["startNodeId"]) == str(edge_by_id[edge_id]["endNodeId"]) == node_id else 1 for edge_id in incident)
+        node["degree"] = degree
+        node["type"] = "junction" if degree > 2 else "pass-through" if degree == 2 else "endpoint"
+        node["articulation"] = node_id in articulation
+        node["blockIds"] = sorted({str(edge_by_id[edge_id].get("blockId") or "") for edge_id in incident if edge_by_id[edge_id].get("blockId")})
+        if degree > 2:
+            region_id = f"junction-{len(junction_regions) + 1}"
+            node["junctionRegionId"] = region_id
+            junction_regions.append({
+                "id": region_id,
+                "nodeIds": [node_id],
+                "position": copy.deepcopy(node.get("position") or [0, 0]),
+                "gateEdgeIds": incident,
+                "localStrokeWidth": float(node.get("localStrokeWidth") or 1.0),
+                "confidence": float(node.get("confidence") or 1.0),
+            })
+    graph["components"] = components
+    graph["blocks"] = graph_blocks
+    graph["junctionRegions"] = junction_regions
+    graph["articulationNodeIds"] = sorted(articulation)
+    graph["bridgeEdgeIds"] = sorted(bridges)
+
+
+def _graph_bbox_for_edges(edges: list[dict[str, Any]]) -> tuple[float, float, float, float]:
+    points = [point for edge in edges for point in edge.get("points") or []]
+    return _points_bbox(points) if points else (0.0, 0.0, 0.0, 0.0)
+
+
+def _propose_graph_objects(graph: dict[str, Any], stroke_width: float) -> list[dict[str, Any]]:
+    edge_by_id = {str(edge["id"]): edge for edge in graph.get("edges") or []}
+    adjacency: dict[str, list[str]] = {str(node["id"]): [] for node in graph.get("nodes") or []}
+    for edge_id, edge in edge_by_id.items():
+        adjacency.setdefault(str(edge["startNodeId"]), []).append(edge_id)
+        adjacency.setdefault(str(edge["endNodeId"]), []).append(edge_id)
+    component_by_id = {str(component["id"]): component for component in graph.get("components") or []}
+    candidates: list[dict[str, Any]] = []
+
+    for gate_id in graph.get("articulationNodeIds") or []:
+        gate_id = str(gate_id)
+        component_id = str(next((edge_by_id[edge_id].get("componentId") for edge_id in adjacency.get(gate_id, [])), ""))
+        component = component_by_id.get(component_id)
+        if not component:
+            continue
+        component_edge_ids = set(str(value) for value in component.get("edgeIds") or [])
+        component_length = sum(float(edge_by_id[edge_id].get("lengthSource") or 0.0) for edge_id in component_edge_ids)
+        seen_sets: set[tuple[str, ...]] = set()
+        for seed_edge_id in sorted(set(adjacency.get(gate_id, []))):
+            branch_edges: set[str] = set()
+            queue_edges = [seed_edge_id]
+            while queue_edges:
+                edge_id = queue_edges.pop()
+                if edge_id in branch_edges or edge_id not in component_edge_ids:
+                    continue
+                branch_edges.add(edge_id)
+                edge = edge_by_id[edge_id]
+                for node_id in (str(edge["startNodeId"]), str(edge["endNodeId"])):
+                    if node_id == gate_id:
+                        continue
+                    queue_edges.extend(adjacency.get(node_id, []))
+            key = tuple(sorted(branch_edges))
+            if not key or key in seen_sets or len(branch_edges) >= len(component_edge_ids):
+                continue
+            seen_sets.add(key)
+            branch = [edge_by_id[edge_id] for edge_id in key]
+            remainder = [edge_by_id[edge_id] for edge_id in component_edge_ids - branch_edges]
+            branch_length = sum(float(edge.get("lengthSource") or 0.0) for edge in branch)
+            remainder_length = max(0.0, component_length - branch_length)
+            if branch_length < max(3.0, float(stroke_width) * 3.0) or remainder_length <= 1e-6:
+                continue
+            ratio = branch_length / max(1e-9, component_length)
+            if ratio < 0.015 or ratio > 0.68:
+                continue
+            min_x, min_y, max_x, max_y = _graph_bbox_for_edges(branch)
+            width = max_x - min_x
+            height = max_y - min_y
+            minor = max(min(width, height), max(0.2, float(stroke_width) * 0.25))
+            aspect = max(width, height) / minor
+            if aspect > 7.0:
+                continue
+            candidate_nodes = {str(edge[key_name]) for edge in branch for key_name in ("startNodeId", "endNodeId")}
+            cycle_rank = max(0, len(branch) - len(candidate_nodes) + 1)
+            cyclic_edges = sum(1 for edge in branch if edge.get("cycleIds") or edge.get("closed"))
+            internal_junctions = sum(1 for node in graph.get("nodes") or [] if str(node["id"]) in candidate_nodes - {gate_id} and int(node.get("degree") or 0) > 2)
+            if cycle_rank <= 0 and cyclic_edges <= 0 and internal_junctions < 2:
+                continue
+            diagonal = max(1e-6, math.hypot(width, height))
+            compactness = max(0.0, min(1.0, 3.5 / max(1.0, aspect)))
+            density = max(0.0, min(1.0, branch_length / (diagonal * 5.0)))
+            closure = max(0.0, min(1.0, (cycle_rank + cyclic_edges * 0.5) / 2.0))
+            branching = max(0.0, min(1.0, internal_junctions / 3.0))
+            size_score = max(0.0, 1.0 - abs(ratio - 0.28) / 0.38)
+            rmin_x, rmin_y, rmax_x, rmax_y = _graph_bbox_for_edges(remainder)
+            remainder_minor = max(min(rmax_x - rmin_x, rmax_y - rmin_y), max(0.2, float(stroke_width) * 0.25))
+            remainder_aspect = max(rmax_x - rmin_x, rmax_y - rmin_y) / remainder_minor
+            trunk_contrast = max(0.0, min(1.0, (remainder_aspect / max(1.0, aspect) - 1.0) / 4.0))
+            score = 0.30 * closure + 0.22 * compactness + 0.15 * density + 0.13 * branching + 0.10 * size_score + 0.10 * trunk_contrast
+            confidence = max(0.50, min(0.98, 0.46 + score * 0.54))
+            candidates.append({
+                "edgeIds": list(key),
+                "gateNodeIds": [gate_id],
+                "componentId": component_id,
+                "confidence": round(confidence, 4),
+                "autoApplicable": confidence >= 0.92,
+                "features": {
+                    "cycleRank": cycle_rank,
+                    "cyclicEdges": cyclic_edges,
+                    "internalJunctions": internal_junctions,
+                    "compactness": round(compactness, 4),
+                    "density": round(density, 4),
+                    "trunkContrast": round(trunk_contrast, 4),
+                    "lengthRatio": round(ratio, 4),
+                },
+            })
+
+    ranked = sorted(candidates, key=lambda item: (-float(item["confidence"]), len(item["edgeIds"]), item["edgeIds"]))
+    selected: list[dict[str, Any]] = []
+    for candidate in ranked:
+        edge_set = set(candidate["edgeIds"])
+        if any(len(edge_set & set(existing["edgeIds"])) / max(1, len(edge_set | set(existing["edgeIds"]))) >= 0.82 for existing in selected):
+            continue
+        candidate = copy.deepcopy(candidate)
+        candidate["id"] = f"proposal-{len(selected) + 1}"
+        candidate["name"] = f"Kompakt motif {len(selected) + 1}"
+        candidate["graphRevision"] = int(graph.get("revision") or 1)
+        candidate["createdBy"] = "structural-analysis"
+        candidate["warnings"] = [] if candidate["autoApplicable"] else ["Onaylanmadan geometri veya sahiplik değişmez."]
+        selected.append(candidate)
+        if len(selected) >= 12:
+            break
+    return selected
+
+
+def build_vector_topology(vector_paths: list[dict[str, Any]], source_width: float, source_height: float,
+                          stroke_width: float = 1.0, evidence_mask: Any | None = None,
+                          evidence_scale: float = 1.0) -> dict[str, Any]:
+    """Build a conservative attributed graph without proximity-only repairs."""
+    clean_paths: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for index, vector_path in enumerate(vector_paths or []):
+        points = _dedupe_points(
+            [[float(point[0]), float(point[1])] for point in vector_path.get("points") or [] if len(point) >= 2 and math.isfinite(float(point[0])) and math.isfinite(float(point[1]))],
+            closed=bool(vector_path.get("closed")),
+            min_distance=1e-7,
+        )
+        if len(points) < 2:
+            continue
+        path_id = str(vector_path.get("id") or f"path-{index + 1}")
+        while path_id in used_ids:
+            path_id = f"{path_id}-{index + 1}"
+        used_ids.add(path_id)
+        _cumulative, segments, total = _graph_path_arc_data(points, bool(vector_path.get("closed")))
+        if total <= 1e-8:
+            continue
+        clean_paths.append({"id": path_id, "points": points, "closed": bool(vector_path.get("closed")), "data": vector_path, "segments": segments, "total": total})
+
+    global_stroke = max(0.2, float(stroke_width or 1.0))
+    strict_tolerance = max(0.12, min(0.45, global_stroke * 0.12))
+    split_arcs: dict[int, list[float]] = {index: [] for index in range(len(clean_paths))}
+    endpoint_targets: dict[tuple[int, int], tuple[list[float], float]] = {}
+    cell_size = max(1.0, strict_tolerance * 4.0)
+    segment_grid: dict[tuple[int, int], list[tuple[int, int, list[float], list[float], float, float]]] = {}
+    for path_index, path_record in enumerate(clean_paths):
+        for segment_index, (start_index, end_index, start_arc, length) in enumerate(path_record["segments"]):
+            start = path_record["points"][start_index]
+            end = path_record["points"][end_index]
+            min_cell_x = math.floor((min(start[0], end[0]) - strict_tolerance) / cell_size)
+            max_cell_x = math.floor((max(start[0], end[0]) + strict_tolerance) / cell_size)
+            min_cell_y = math.floor((min(start[1], end[1]) - strict_tolerance) / cell_size)
+            max_cell_y = math.floor((max(start[1], end[1]) + strict_tolerance) / cell_size)
+            entry = (path_index, segment_index, start, end, start_arc, length)
+            for cell_x in range(min_cell_x, max_cell_x + 1):
+                for cell_y in range(min_cell_y, max_cell_y + 1):
+                    segment_grid.setdefault((cell_x, cell_y), []).append(entry)
+
+    for path_index, path_record in enumerate(clean_paths):
+        if path_record["closed"]:
+            continue
+        for endpoint_side, point in ((0, path_record["points"][0]), (1, path_record["points"][-1])):
+            cell_x = math.floor(point[0] / cell_size)
+            cell_y = math.floor(point[1] / cell_size)
+            best: tuple[float, int, float, list[float]] | None = None
+            checked: set[tuple[int, int]] = set()
+            for offset_x in (-1, 0, 1):
+                for offset_y in (-1, 0, 1):
+                    for target_index, segment_index, start, end, start_arc, length in segment_grid.get((cell_x + offset_x, cell_y + offset_y), []):
+                        if target_index == path_index or (target_index, segment_index) in checked:
+                            continue
+                        checked.add((target_index, segment_index))
+                        projected, t, distance = _graph_projection(point, start, end)
+                        if distance > strict_tolerance or t <= 1e-4 or t >= 1.0 - 1e-4:
+                            continue
+                        arc = start_arc + length * t
+                        candidate = (distance, target_index, arc, projected)
+                        if best is None or candidate[:3] < best[:3]:
+                            best = candidate
+            if best is not None:
+                distance, target_index, arc, projected = best
+                split_arcs[target_index].append(arc)
+                endpoint_targets[(path_index, endpoint_side)] = (projected, distance)
+
+    distance_field = None
+    if cv2 is not None and np is not None and evidence_mask is not None:
+        try:
+            distance_field = cv2.distanceTransform((evidence_mask > 0).astype(np.uint8), cv2.DIST_L2, 3)
+        except (ValueError, TypeError, cv2.error):
+            distance_field = None
+
+    def width_at(point: list[float]) -> float:
+        if distance_field is None:
+            return global_stroke
+        scale = max(1e-6, float(evidence_scale or 1.0))
+        x = max(0, min(distance_field.shape[1] - 1, int(round(float(point[0]) * scale))))
+        y = max(0, min(distance_field.shape[0] - 1, int(round(float(point[1]) * scale))))
+        return max(0.2, float(distance_field[y, x]) * 2.0 / scale)
+
+    fragments: list[dict[str, Any]] = []
+    for path_index, path_record in enumerate(clean_paths):
+        points = copy.deepcopy(path_record["points"])
+        if (path_index, 0) in endpoint_targets:
+            points[0] = copy.deepcopy(endpoint_targets[(path_index, 0)][0])
+        if (path_index, 1) in endpoint_targets:
+            points[-1] = copy.deepcopy(endpoint_targets[(path_index, 1)][0])
+        _cumulative, segments, total = _graph_path_arc_data(points, path_record["closed"])
+        arcs = sorted(float(value) for value in split_arcs[path_index] if 1e-7 < float(value) < total - 1e-7)
+        unique_arcs: list[float] = []
+        for arc in arcs:
+            if not unique_arcs or abs(arc - unique_arcs[-1]) > max(1e-5, strict_tolerance * 0.2):
+                unique_arcs.append(arc)
+        intervals: list[tuple[float, float, bool]] = []
+        if path_record["closed"]:
+            if not unique_arcs:
+                intervals = [(0.0, total, True)]
+            elif len(unique_arcs) == 1:
+                intervals = [(unique_arcs[0], unique_arcs[0] + total, True)]
+            else:
+                intervals = [(unique_arcs[index], unique_arcs[(index + 1) % len(unique_arcs)] + (total if index == len(unique_arcs) - 1 else 0.0), False) for index in range(len(unique_arcs))]
+        else:
+            boundaries = [0.0, *unique_arcs, total]
+            intervals = [(boundaries[index], boundaries[index + 1], False) for index in range(len(boundaries) - 1)]
+        for fragment_index, (start_arc, end_arc, closed_fragment) in enumerate(intervals):
+            fragment_points = _graph_slice_arc(points, segments, total, start_arc, end_arc, wrap=path_record["closed"])
+            if closed_fragment and len(fragment_points) > 2 and math.dist(fragment_points[0], fragment_points[-1]) <= 1e-7:
+                fragment_points.pop()
+            if len(fragment_points) < 2 or _polyline_length(fragment_points + ([fragment_points[0]] if closed_fragment else [])) <= 1e-8:
+                continue
+            fragments.append({
+                "pathIndex": path_index,
+                "pathId": path_record["id"],
+                "points": fragment_points,
+                "closed": closed_fragment,
+                "sourceInterval": [round(start_arc / total, 9), round(end_arc / total, 9)],
+                "fragmentIndex": fragment_index,
+                "data": path_record["data"],
+            })
+
+    nodes: list[dict[str, Any]] = []
+    node_grid: dict[tuple[int, int], list[int]] = {}
+
+    def node_for(point: list[float]) -> str:
+        cell_x = math.floor(point[0] / cell_size)
+        cell_y = math.floor(point[1] / cell_size)
+        for offset_x in (-1, 0, 1):
+            for offset_y in (-1, 0, 1):
+                for node_index in node_grid.get((cell_x + offset_x, cell_y + offset_y), []):
+                    if math.dist(nodes[node_index]["position"], point) <= strict_tolerance:
+                        return str(nodes[node_index]["id"])
+        node_id = f"node-{len(nodes) + 1}"
+        nodes.append({
+            "id": node_id,
+            "position": [round(float(point[0]), 6), round(float(point[1]), 6)],
+            "localStrokeWidth": round(width_at(point), 4),
+            "confidence": 1.0,
+            "lineage": {"createdBy": "trace-endpoint"},
+        })
+        node_grid.setdefault((cell_x, cell_y), []).append(len(nodes) - 1)
+        return node_id
+
+    edges: list[dict[str, Any]] = []
+    path_fragment_counts: dict[str, int] = {}
+    for fragment in fragments:
+        path_id = str(fragment["pathId"])
+        path_fragment_counts[path_id] = path_fragment_counts.get(path_id, 0) + 1
+    for fragment in fragments:
+        points = copy.deepcopy(fragment["points"])
+        start_node_id = node_for(points[0])
+        end_node_id = start_node_id if fragment["closed"] else node_for(points[-1])
+        node_by_id = {str(node["id"]): node for node in nodes}
+        points[0] = copy.deepcopy(node_by_id[start_node_id]["position"])
+        if not fragment["closed"]:
+            points[-1] = copy.deepcopy(node_by_id[end_node_id]["position"])
+        path_data = copy.deepcopy(fragment["data"])
+        for key in ("id", "points", "closed", "operation", "removed", "length", "area"):
+            path_data.pop(key, None)
+        path_id = str(fragment["pathId"])
+        edge_id = f"edge:{path_id}" if path_fragment_counts[path_id] == 1 else f"edge:{path_id}:s{int(fragment['fragmentIndex']) + 1}"
+        widths = [width_at(points[0]), width_at(points[len(points) // 2]), width_at(points[-1])]
+        edges.append({
+            "id": edge_id,
+            "startNodeId": start_node_id,
+            "endNodeId": end_node_id,
+            "points": points,
+            "closed": bool(fragment["closed"]),
+            "lengthSource": round(_polyline_length(points + ([points[0]] if fragment["closed"] else [])), 6),
+            "widthProfile": [round(value, 4) for value in widths],
+            "tangentStart": _graph_tangent(points, True),
+            "tangentEnd": _graph_tangent(points, False),
+            "curvatureStats": _graph_curvature_stats(points, bool(fragment["closed"])),
+            "contourRole": "closed-region" if fragment["closed"] else "stroke",
+            "operation": normalize_operation(fragment["data"].get("operation"), "engrave_line"),
+            "removed": bool(fragment["data"].get("removed")),
+            "pathData": path_data,
+            "lineage": {
+                "canonicalEdgeLineageId": f"trace:{path_id}",
+                "parentEdgeId": None,
+                "sourcePathIds": [path_id],
+                "legacyPathId": path_id,
+                "sourceInterval": copy.deepcopy(fragment["sourceInterval"]),
+                "sourceComponentId": fragment["data"].get("sourceComponentId"),
+            },
+            "warnings": copy.deepcopy(fragment["data"].get("warnings") or []),
+        })
+
+    graph = {"revision": 1, "nodes": nodes, "edges": edges, "analysisVersion": "attributed-graph-p1"}
+    _analyze_graph_blocks(graph)
+    objects: list[dict[str, Any]] = []
+    edge_by_id = {str(edge["id"]): edge for edge in edges}
+    for component_index, component in enumerate(graph.get("components") or [], 1):
+        component_edges = [edge_by_id[str(edge_id)] for edge_id in component.get("edgeIds") or []]
+        min_x, min_y, max_x, max_y = _graph_bbox_for_edges(component_edges)
+        operations: dict[str, int] = {}
+        for edge in component_edges:
+            operation = normalize_operation(edge.get("operation"), "engrave_line")
+            operations[operation] = operations.get(operation, 0) + 1
+        operation = max(operations, key=operations.get) if operations else "engrave_line"
+        objects.append({
+            "id": f"object:component-{component_index}",
+            "name": f"Ana yol {component_index}",
+            "edgeRefs": [{"edgeId": str(edge_id), "ownership": "exclusive", "role": "stroke", "emit": True} for edge_id in component.get("edgeIds") or []],
+            "attachments": [],
+            "localFrame": {"originSource": [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0], "originDesign": [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0]},
+            "transform": [1, 0, 0, 1, 0, 0],
+            "transformComponents": {"translateX": 0, "translateY": 0, "scaleX": 1, "scaleY": 1, "rotation": 0},
+            "transformRevision": 0,
+            "resizePolicy": "scale",
+            "locked": False,
+            "removed": False,
+            "deformable": True,
+            "operation": operation,
+            "confidence": 1.0,
+            "createdBy": "structural-analysis-base",
+        })
+    proposals = _propose_graph_objects(graph, global_stroke)
+    return {
+        "vectorModelVersion": 2,
+        "source": {"width": float(source_width), "height": float(source_height), "traceScale": float(evidence_scale or 1.0), "analysisVersion": "attributed-graph-p1"},
+        "sourceToDesign": {"matrix": [1, 0, 0, 1, 0, 0], "unit": "source", "designWidth": float(source_width), "designHeight": float(source_height)},
+        "vectorGraph": graph,
+        "vectorObjects": objects,
+        "connections": [],
+        "occlusionMasks": [],
+        "objectProposals": proposals,
+        "repairProposals": [],
+        "objectTransformRevision": 0,
+        "vectorPathsDerivedFromRevision": 0,
+        "topologyStats": {
+            "graphNodes": len(nodes),
+            "graphEdges": len(edges),
+            "junctionRegions": len(graph.get("junctionRegions") or []),
+            "articulationNodes": len(graph.get("articulationNodeIds") or []),
+            "biconnectedBlocks": len(graph.get("blocks") or []),
+            "cycleBlocks": sum(1 for block in graph.get("blocks") or [] if block.get("cyclic")),
+            "exactJunctionProjections": len(endpoint_targets),
+            "autoRepairsApplied": 0,
+            "ambiguousRepairs": 0,
+            "objectProposalCount": len(proposals),
+        },
+    }
+
+
+def attach_vector_topology_payload(vector: dict[str, Any], evidence_mask: Any | None = None,
+                                   evidence_scale: float = 1.0) -> dict[str, Any]:
+    topology = build_vector_topology(
+        vector.get("vectorPaths") or [],
+        float(vector.get("sourceWidth") or 1.0),
+        float(vector.get("sourceHeight") or 1.0),
+        stroke_width=float((vector.get("stats") or {}).get("estimatedStrokeWidth") or 1.0),
+        evidence_mask=evidence_mask,
+        evidence_scale=evidence_scale,
+    )
+    vector.update(topology)
+    vector.setdefault("stats", {}).update(topology.get("topologyStats") or {})
+    return vector
+
+
+def refresh_vector_topology_operations(vector: dict[str, Any]) -> dict[str, Any]:
+    operations = {
+        str(vector_path.get("id") or ""): normalize_operation(vector_path.get("operation"), "engrave_line")
+        for vector_path in vector.get("vectorPaths") or []
+    }
+    graph = vector.get("vectorGraph") or {}
+    edge_by_id = {str(edge.get("id") or ""): edge for edge in graph.get("edges") or []}
+    for edge in edge_by_id.values():
+        legacy_id = str((edge.get("lineage") or {}).get("legacyPathId") or "")
+        if legacy_id in operations:
+            edge["operation"] = operations[legacy_id]
+    for vector_object in vector.get("vectorObjects") or []:
+        counts: dict[str, int] = {}
+        for edge_ref in vector_object.get("edgeRefs") or []:
+            edge = edge_by_id.get(str(edge_ref.get("edgeId") or ""))
+            if edge:
+                operation = normalize_operation(edge.get("operation"), "engrave_line")
+                counts[operation] = counts.get(operation, 0) + 1
+        if counts:
+            vector_object["operation"] = max(counts, key=counts.get)
+    return vector
+
+
+def _graph_edge_outward_tangent(edge: dict[str, Any], node_id: str) -> tuple[float, float]:
+    if str(edge.get("startNodeId") or "") == node_id:
+        tangent = edge.get("tangentStart") or [0.0, 0.0]
+        return float(tangent[0]), float(tangent[1])
+    tangent = edge.get("tangentEnd") or [0.0, 0.0]
+    return -float(tangent[0]), -float(tangent[1])
+
+
+def _graph_edge_pair_affinity(first: dict[str, Any], second: dict[str, Any], node_id: str) -> float:
+    first_tangent = _graph_edge_outward_tangent(first, node_id)
+    second_tangent = _graph_edge_outward_tangent(second, node_id)
+    first_length = math.hypot(*first_tangent)
+    second_length = math.hypot(*second_tangent)
+    dot = 0.0
+    if first_length > 1e-9 and second_length > 1e-9:
+        dot = max(-1.0, min(1.0, (
+            first_tangent[0] * second_tangent[0] + first_tangent[1] * second_tangent[1]
+        ) / (first_length * second_length)))
+    straight_continuity = (1.0 - dot) / 2.0
+    first_widths = [float(value) for value in first.get("widthProfile") or [1.0]]
+    second_widths = [float(value) for value in second.get("widthProfile") or [1.0]]
+    first_width = sum(first_widths) / max(1, len(first_widths))
+    second_width = sum(second_widths) / max(1, len(second_widths))
+    width_similarity = 1.0 - min(1.0, abs(first_width - second_width) / max(0.2, first_width, second_width))
+    first_curvature = float((first.get("curvatureStats") or {}).get("mean") or 0.0)
+    second_curvature = float((second.get("curvatureStats") or {}).get("mean") or 0.0)
+    curvature_similarity = 1.0 - min(1.0, abs(first_curvature - second_curvature) / math.pi)
+    shared_cycle = bool(set(first.get("cycleIds") or []) & set(second.get("cycleIds") or []))
+    same_block = bool(first.get("blockId") and first.get("blockId") == second.get("blockId"))
+    return max(0.01, (
+        0.08
+        + 2.8 * straight_continuity * straight_continuity
+        + 0.65 * width_similarity
+        + 0.55 * curvature_similarity
+        + (2.4 if shared_cycle else 0.35 if same_block else 0.0)
+    ))
+
+
+def _graph_cut_reachable(vertices: list[str], pair_weights: dict[tuple[str, str], float],
+                         source_weights: dict[str, float], sink_weights: dict[str, float]) -> set[str]:
+    source = "\x00source"
+    sink = "\x00sink"
+    adjacency: dict[str, list[list[Any]]] = {vertex: [] for vertex in [*vertices, source, sink]}
+
+    def add_directed(start: str, end: str, capacity: float) -> None:
+        forward: list[Any] = [end, float(max(0.0, capacity)), None]
+        reverse: list[Any] = [start, 0.0, forward]
+        forward[2] = reverse
+        adjacency[start].append(forward)
+        adjacency[end].append(reverse)
+
+    for (first, second), capacity in pair_weights.items():
+        add_directed(first, second, capacity)
+        add_directed(second, first, capacity)
+    for vertex in vertices:
+        if source_weights.get(vertex, 0.0) > 0:
+            add_directed(source, vertex, source_weights[vertex])
+        if sink_weights.get(vertex, 0.0) > 0:
+            add_directed(vertex, sink, sink_weights[vertex])
+
+    while True:
+        level = {source: 0}
+        queue = [source]
+        for current in queue:
+            for edge in adjacency[current]:
+                if edge[1] > 1e-9 and edge[0] not in level:
+                    level[edge[0]] = level[current] + 1
+                    queue.append(edge[0])
+        if sink not in level:
+            break
+        cursor = {vertex: 0 for vertex in adjacency}
+
+        def push(current: str, available: float) -> float:
+            if current == sink:
+                return available
+            while cursor[current] < len(adjacency[current]):
+                edge = adjacency[current][cursor[current]]
+                if edge[1] > 1e-9 and level.get(edge[0]) == level[current] + 1:
+                    sent = push(edge[0], min(available, edge[1]))
+                    if sent > 1e-9:
+                        edge[1] -= sent
+                        edge[2][1] += sent
+                        return sent
+                cursor[current] += 1
+            return 0.0
+
+        while push(source, float("inf")) > 1e-9:
+            pass
+
+    reachable = {source}
+    queue = [source]
+    for current in queue:
+        for edge in adjacency[current]:
+            if edge[1] > 1e-9 and edge[0] not in reachable:
+                reachable.add(edge[0])
+                queue.append(edge[0])
+    return reachable - {source, sink}
+
+
+def _graph_cut_auto_background(graph: dict[str, Any], foreground: set[str], keep_gate_ids: set[str],
+                               protected_edge_ids: set[str] | None = None) -> set[str]:
+    edge_by_id = {str(edge.get("id") or ""): edge for edge in graph.get("edges") or []}
+    foreground_components = {
+        str(edge_by_id[edge_id].get("componentId") or "")
+        for edge_id in foreground
+        if edge_id in edge_by_id
+    }
+    blocked_by_keep = {
+        edge_id
+        for edge_id, edge in edge_by_id.items()
+        if str(edge.get("startNodeId") or "") in keep_gate_ids or str(edge.get("endNodeId") or "") in keep_gate_ids
+    }
+    protected = set(protected_edge_ids or set())
+    candidates = [
+        edge for edge_id, edge in edge_by_id.items()
+        if edge_id not in foreground
+        and edge_id not in protected
+        and edge_id not in blocked_by_keep
+        and (not foreground_components or str(edge.get("componentId") or "") in foreground_components)
+    ]
+    if not candidates:
+        return set()
+
+    def background_score(edge: dict[str, Any]) -> tuple[float, float, str]:
+        length = float(edge.get("lengthSource") or 0.0)
+        curvature = float((edge.get("curvatureStats") or {}).get("mean") or 0.0)
+        straightness = 1.0 / (1.0 + curvature * 4.0)
+        bridge_bonus = 1.4 if edge.get("bridge") else 1.0
+        return length * (1.0 + straightness) * bridge_bonus, length, str(edge.get("id") or "")
+
+    ranked = sorted(candidates, key=background_score, reverse=True)
+    best_score = max(1e-9, background_score(ranked[0])[0])
+    return {
+        str(edge.get("id") or "")
+        for edge in ranked[:4]
+        if background_score(edge)[0] >= best_score * 0.42
+    }
+
+
+def analyze_vector_separation(payload: dict[str, Any]) -> dict[str, Any]:
+    model = payload.get("vectorModel") or payload.get("model") or payload
+    graph = model.get("vectorGraph") or {}
+    revision = int(graph.get("revision") or 0)
+    requested_revision = int(payload.get("graphRevision") or revision)
+    if revision <= 0 or requested_revision != revision:
+        raise ValueError("Vektor graph revizyonu degisti; ayrim onerisi yeniden hesaplanmali.")
+    edge_ids = {str(edge.get("id") or "") for edge in graph.get("edges") or []}
+    foreground = {str(value) for value in payload.get("foregroundEdgeIds") or []}
+    background = {str(value) for value in payload.get("backgroundEdgeIds") or []}
+    if not foreground:
+        raise ValueError("Ayrim analizi icin en az bir on plan edge secilmeli.")
+    if foreground & background:
+        raise ValueError("Ayni edge hem on plan hem arka plan tohumu olamaz.")
+    missing = (foreground | background) - edge_ids
+    if missing:
+        raise ValueError(f"Ayrim analizi bulunmayan edge iceriyor: {sorted(missing)[0]}")
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for proposal in model.get("objectProposals") or []:
+        if int(proposal.get("graphRevision") or 0) != revision:
+            continue
+        proposal_edges = {str(value) for value in proposal.get("edgeIds") or []}
+        overlap = foreground & proposal_edges
+        if not overlap or proposal_edges & background:
+            continue
+        seed_coverage = len(overlap) / max(1, len(foreground))
+        proposal_coverage = len(overlap) / max(1, len(proposal_edges))
+        score = 0.68 * seed_coverage + 0.32 * proposal_coverage
+        ranked.append((score, proposal))
+    warnings: list[str] = []
+    proposal: dict[str, Any] | None = None
+    if ranked:
+        match_score, proposal = max(ranked, key=lambda item: (item[0], float(item[1].get("confidence") or 0.0)))
+        confidence = min(float(proposal.get("confidence") or 0.0), 0.55 + match_score * 0.45)
+        proposal_id = str(proposal.get("id") or "")
+        if match_score < 0.58:
+            warnings.append("Tohum secimi yapisal oneriyi zayif eslestirdi; onizlemeyi kontrol edin.")
+    else:
+        confidence = 0.35
+        proposal_id = "seed-only"
+        warnings.append("Hazir yapisal oneriden eslesme bulunamadi; edge graph-cut yalniz kullanici tohumlariyla calisti.")
+    proposal_edge_ids = {str(value) for value in (proposal or {}).get("edgeIds") or []}
+    overrides = payload.get("gateOverrides") or {}
+    normalized_overrides = {
+        str(node_id): str(value or "cut").lower()
+        for node_id, value in overrides.items()
+        if str(value or "cut").lower() in {"cut", "keep"}
+    }
+    keep_gate_ids = {node_id for node_id, value in normalized_overrides.items() if value == "keep"}
+    explicit_background = bool(background)
+    if not background:
+        background = _graph_cut_auto_background(graph, foreground, keep_gate_ids, proposal_edge_ids)
+        if background:
+            warnings.append("Arka plan tohumu otomatik olarak uzun ana yollardan secildi.")
+
+    edge_by_id = {str(edge.get("id") or ""): edge for edge in graph.get("edges") or []}
+    incident: dict[str, list[str]] = {}
+    for edge_id, edge in edge_by_id.items():
+        incident.setdefault(str(edge.get("startNodeId") or ""), []).append(edge_id)
+        incident.setdefault(str(edge.get("endNodeId") or ""), []).append(edge_id)
+    pair_weights: dict[tuple[str, str], float] = {}
+    for node_id, raw_edge_ids in incident.items():
+        node_edge_ids = sorted(set(raw_edge_ids))
+        override = normalized_overrides.get(node_id)
+        for first_index, first_id in enumerate(node_edge_ids):
+            for second_id in node_edge_ids[first_index + 1:]:
+                key = (first_id, second_id)
+                if override == "cut":
+                    weight = 0.001
+                elif override == "keep":
+                    weight = 1_000_000.0
+                else:
+                    weight = _graph_edge_pair_affinity(edge_by_id[first_id], edge_by_id[second_id], node_id)
+                pair_weights[key] = pair_weights.get(key, 0.0) + weight
+
+    hard_capacity = 10_000_000.0
+    source_weights = {edge_id: hard_capacity for edge_id in foreground}
+    sink_weights = {edge_id: hard_capacity for edge_id in background}
+    for edge_id in edge_ids - foreground - background:
+        if edge_id in proposal_edge_ids:
+            source_weights[edge_id] = max(source_weights.get(edge_id, 0.0), 3.5 * max(0.5, confidence))
+        else:
+            sink_weights[edge_id] = max(sink_weights.get(edge_id, 0.0), 0.04)
+    proposal_edges = _graph_cut_reachable(sorted(edge_ids), pair_weights, source_weights, sink_weights)
+    proposal_edges |= foreground
+    proposal_edges -= background
+
+    cut_gate_ids: set[str] = set()
+    candidate_gate_ids = set(str(value) for value in (proposal or {}).get("gateNodeIds") or [])
+    for node_id, node_edge_ids in incident.items():
+        inside = sum(1 for edge_id in set(node_edge_ids) if edge_id in proposal_edges)
+        outside = sum(1 for edge_id in set(node_edge_ids) if edge_id not in proposal_edges)
+        if inside and outside:
+            candidate_gate_ids.add(node_id)
+            if normalized_overrides.get(node_id) != "keep":
+                cut_gate_ids.add(node_id)
+    if proposal_id == "seed-only" and len(proposal_edges) > len(foreground):
+        confidence = min(0.72, confidence + 0.08)
+    if explicit_background:
+        confidence = min(0.98, confidence + 0.03)
+    return {
+        "graphRevision": revision,
+        "proposalId": proposal_id,
+        "foregroundEdgeIds": sorted(proposal_edges),
+        "backgroundEdgeIds": sorted(edge_ids - proposal_edges),
+        "seedForegroundEdgeIds": sorted(foreground),
+        "seedBackgroundEdgeIds": sorted(background),
+        "cutGates": sorted(cut_gate_ids),
+        "candidateGateNodeIds": sorted(candidate_gate_ids),
+        "gateOverrides": normalized_overrides,
+        "confidence": round(max(0.0, min(1.0, confidence)), 4),
+        "warnings": warnings,
+    }
 
 
 def vectorize_image(path: Path,
@@ -3537,7 +4873,8 @@ def vectorize_image(path: Path,
     if cad_centerline:
         source_height, source_width = image.shape[:2]
         available_scale = float(max_dimension) / max(1.0, float(max(source_width, source_height)))
-        cad_trace_scale = max(1.0, min(2.0, available_scale))
+        # Trace small CAD details at up to 4x and scale the vectors back.
+        cad_trace_scale = max(1.0, min(4.0, available_scale))
         if cad_trace_scale >= 1.20:
             stage_start = time.perf_counter()
             trace_width = max(1, int(round(source_width * cad_trace_scale)))
@@ -3792,7 +5129,9 @@ def vectorize_image(path: Path,
             simplify=max(0.0, float(simplify)),
             smooth=int(smooth),
             max_contours=max(1, int(max_contours)),
-            stitch_gap=float(effective_stitch_gap),
+            # CAD topology is canonical evidence. Gap joins are proposals in
+            # the attributed graph, never proximity-only path mutations.
+            stitch_gap=0.0 if cad_centerline else float(effective_stitch_gap),
             skeleton=skeleton_preview,
             trim_open_ends=not cad_centerline,
             post_simplify_epsilon=0.25 if cad_centerline else None,
@@ -3801,7 +5140,11 @@ def vectorize_image(path: Path,
         stats["prunedSpurPixels"] = pruned_spur_pixels
         stats["centerlineSolidifyRadius"] = centerline_solidify_radius
         stats.update(micro_hole_stats)
-        vector_paths, stitched_count = stitch_open_vector_paths(vector_paths, min(2.0, float(effective_stitch_gap)))
+        if cad_centerline:
+            stitched_count = 0
+            stats["deferredOpenPathRepairs"] = True
+        else:
+            vector_paths, stitched_count = stitch_open_vector_paths(vector_paths, min(2.0, float(effective_stitch_gap)))
         stats["stitchedGap"] = int(stats.get("stitchedRaw", 0)) + stitched_count
         vector_paths, straight_stats = straighten_centerline_paths(
             vector_paths,
@@ -3836,13 +5179,16 @@ def vectorize_image(path: Path,
             if cad_trace_scale > 1.0:
                 vector_paths = scaled_vector_paths(vector_paths, 1.0 / cad_trace_scale)
             original_stroke_width = float(pre_trace_stroke_estimate) / cad_trace_scale
-            endpoint_snap_gap = max(1.0, min(2.0, original_stroke_width))
-            vector_paths, endpoint_stats = snap_open_vector_endpoints_to_paths(
-                vector_paths,
-                max_gap=endpoint_snap_gap,
-                max_angle=70.0,
-            )
-            stats.update(endpoint_stats)
+            # Endpoint-to-path snap caused false joins in toes, lettering and
+            # other dense details. P1 keeps these candidates reversible; only
+            # sub-pixel, already-supported junctions are collapsed by the graph
+            # builder below.
+            stats["snappedOpenEndpoints"] = 0
+            stats["endpointSnapDeferred"] = True
+            stats["endpointSnapCandidateGap"] = round(max(1.5, min(4.0, original_stroke_width * 1.6)), 3)
+            stats["weldedEndpoints"] = 0
+            stats["mergedOpenPaths"] = 0
+            stats["cadProximityWeldDisabled"] = True
             stats["cadTopologyPreserved"] = True
         timings["trace"] = time.perf_counter() - stage_start
     else:
@@ -3917,7 +5263,7 @@ def vectorize_image(path: Path,
     timings["debugPreview"] = time.perf_counter() - stage_start
     timings["total"] = time.perf_counter() - total_start
     stats["timings"] = {key: round(value, 4) for key, value in timings.items()}
-    return {
+    result = {
         "kind": "vector",
         "sourcePath": str(path),
         "name": f"{path.stem}-vector.svg",
@@ -3962,6 +5308,12 @@ def vectorize_image(path: Path,
         },
         "stats": stats,
     }
+    attach_vector_topology_payload(
+        result,
+        evidence_mask=binary,
+        evidence_scale=cad_trace_scale if cad_centerline else 1.0,
+    )
+    return result
 
 
 def _nearest_vector_region_label(labels: Any, x: int, y: int, max_radius: int = 18) -> int:
@@ -4085,48 +5437,91 @@ def _dominant_enclosing_vector_path_id(vector_paths: list[dict[str, Any]]) -> st
 def _structural_exterior_vector_path_ids(vector_paths: list[dict[str, Any]],
                                          adjacent_path_ids: list[str],
                                          dominant_path: dict[str, Any] | None) -> list[str]:
-    """Promote exposed structure without turning tiny details into cuts.
+    """Promote the outer silhouette after a surrounding frame is removed.
 
-    Removing a surrounding frame makes every isolated motif adjacent to the
-    same white exterior region. Relative length and envelope thresholds keep
-    major hearts, branches and base contours eligible while bird feet, flowers
-    and similar small engraving details remain engraving.
+    Model (kullanicinin tarifi): kalan konturlarin etrafina bir "lastik bant"
+    (konveks zarf) gerilir; bu zarfa DEGEN cizgiler dis kenardir -> kesim,
+    degmeyen her sey icerde kalir -> kazima. Cizgi cizimlerinde beyaz arka
+    plan her yere degdigi icin "dis beyaz bolgeye komsu" testi tum ic motifleri
+    de yakaliyordu; konveks zarfa yakinlik testi yalnizca gercekten en distaki
+    cevre konturlarini (cerceve kalpleri, dis dallar, taban) secer, ortadaki
+    kalp / kuslar / cicekler / yazi kazima kalir.
     """
     if not dominant_path or not dominant_path.get("removed"):
         return []
-    usable = [item for item in vector_paths or [] if len(item.get("points", [])) >= 2]
-    if not usable:
+    active = [
+        item
+        for item in vector_paths or []
+        if not item.get("removed") and len(item.get("points", [])) >= 2
+    ]
+    if len(active) < 2:
         return []
-    all_points = [point for item in usable for point in item.get("points", [])]
-    if len(all_points) < 2:
+    all_points = [point for item in active for point in item.get("points", [])]
+    if len(all_points) < 3:
         return []
     min_x, min_y, max_x, max_y = _points_bbox(all_points)
     design_diagonal = math.hypot(max_x - min_x, max_y - min_y)
-    dominant_points = dominant_path.get("points", [])
-    dominant_length = float(
-        dominant_path.get("length")
-        or _polyline_length(
-            dominant_points
-            + ([dominant_points[0]] if dominant_path.get("closed") and dominant_points else [])
+    if design_diagonal <= 0:
+        return []
+
+    # Konveks zarf ("sarmal") ve ona degme testi OpenCV ile. cv2 yoksa
+    # eski goreli-uzunluk davranisina guvenli sekilde geri don.
+    if cv2 is None or np is None:
+        dominant_points = dominant_path.get("points", [])
+        dominant_length = float(
+            dominant_path.get("length")
+            or _polyline_length(
+                dominant_points
+                + ([dominant_points[0]] if dominant_path.get("closed") and dominant_points else [])
+            )
         )
-    )
-    min_length = max(24.0, design_diagonal * 0.18, dominant_length * 0.075)
-    min_diagonal = max(12.0, design_diagonal * 0.10)
-    adjacent = {str(path_id) for path_id in adjacent_path_ids}
+        min_length = max(24.0, design_diagonal * 0.18, dominant_length * 0.075)
+        min_diagonal = max(12.0, design_diagonal * 0.10)
+        adjacent = {str(path_id) for path_id in adjacent_path_ids}
+        fallback: list[str] = []
+        for item in active:
+            path_id = str(item.get("id") or "")
+            points = item.get("points", [])
+            if not path_id or path_id not in adjacent:
+                continue
+            p_min_x, p_min_y, p_max_x, p_max_y = _points_bbox(points)
+            path_diagonal = math.hypot(p_max_x - p_min_x, p_max_y - p_min_y)
+            path_length = float(
+                item.get("length")
+                or _polyline_length(points + ([points[0]] if item.get("closed") and points else []))
+            )
+            if path_length >= min_length and path_diagonal >= min_diagonal:
+                fallback.append(path_id)
+        return sorted(set(fallback))
+
+    hull = cv2.convexHull(np.array(all_points, dtype=np.float32))
+    # "Degme" toleransi dar: cizgi zarfin uzerinde olmali, yakininda degil.
+    touch_tolerance = max(5.0, design_diagonal * 0.006)
+    # Cok kucuk parcalar (tek yaprak/cicek ucu zarfa denk gelse bile) kesime
+    # gitmesin diye mutevazi bir asgari uzunluk.
+    min_length = max(24.0, design_diagonal * 0.04)
     structural: list[str] = []
-    for item in usable:
+    for item in active:
         path_id = str(item.get("id") or "")
         points = item.get("points", [])
-        if not path_id or path_id not in adjacent or item.get("removed"):
+        if not path_id:
             continue
-        path_min_x, path_min_y, path_max_x, path_max_y = _points_bbox(points)
-        path_diagonal = math.hypot(path_max_x - path_min_x, path_max_y - path_min_y)
+        touching = 0
+        for point in points:
+            distance = cv2.pointPolygonTest(hull, (float(point[0]), float(point[1])), True)
+            if abs(distance) <= touch_tolerance:
+                touching += 1
+                if touching >= 2:
+                    break
+        if touching < 2:
+            continue
         path_length = float(
             item.get("length")
             or _polyline_length(points + ([points[0]] if item.get("closed") and points else []))
         )
-        if path_length >= min_length and path_diagonal >= min_diagonal:
-            structural.append(path_id)
+        if path_length < min_length:
+            continue
+        structural.append(path_id)
     return sorted(set(structural))
 
 
@@ -4685,6 +6080,11 @@ def build_svg_vector_engrave_lines(pattern: RasterPattern,
         raise ValueError("SVG icinde G-code'a cevrilecek path bulunamadi.")
     if operation == "cut":
         output_paths = apply_kerf_to_paths(output_paths, kerf)
+    output_paths = optimize_toolpaths(
+        output_paths,
+        start=pattern_point(pattern, 0.0, 0.0),
+        inner_first=operation == "cut",
+    )
     for output_path in output_paths:
         append_powered_polyline(lines, output_path, pattern.power, pattern.feed, travel_feed)
     lines.append(f"({op_label} svg end)")
@@ -4835,6 +6235,271 @@ def auto_ignored_inner_cut_path_indexes(vector_paths: list[dict[str, Any]], fall
     return ignored
 
 
+def _affine_point(matrix: list[float], point: list[float] | tuple[float, float]) -> list[float]:
+    a, b, c, d, e, f = matrix
+    x = float(point[0])
+    y = float(point[1])
+    return [a * x + c * y + e, b * x + d * y + f]
+
+
+def _affine_inverse(value: Any) -> list[float] | None:
+    if not isinstance(value, list) or len(value) != 6:
+        return None
+    try:
+        a, b, c, d, e, f = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(item) for item in (a, b, c, d, e, f)):
+        return None
+    determinant = a * d - b * c
+    if abs(determinant) <= 1e-12:
+        return None
+    return [
+        d / determinant,
+        -b / determinant,
+        -c / determinant,
+        a / determinant,
+        (c * f - d * e) / determinant,
+        (b * e - a * f) / determinant,
+    ]
+
+
+def _segment_intersection_parameter(start: Point, end: Point, first: Point, second: Point) -> float | None:
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    ex = second[0] - first[0]
+    ey = second[1] - first[1]
+    denominator = dx * ey - dy * ex
+    if abs(denominator) <= 1e-12:
+        return None
+    rx = first[0] - start[0]
+    ry = first[1] - start[1]
+    t = (rx * ey - ry * ex) / denominator
+    u = (rx * dy - ry * dx) / denominator
+    if -1e-9 <= t <= 1.0 + 1e-9 and -1e-9 <= u <= 1.0 + 1e-9:
+        return max(0.0, min(1.0, t))
+    return None
+
+
+def _clip_polyline_outside_polygons(points: list[list[float]], closed: bool,
+                                    polygons: list[list[Point]]) -> list[dict[str, Any]]:
+    source = [(float(point[0]), float(point[1])) for point in points]
+    masks = [polygon for polygon in polygons if len(polygon) >= 3]
+    if len(source) < 2:
+        return []
+    if not masks:
+        return [{"points": [[x, y] for x, y in source], "closed": bool(closed), "masked": False}]
+    fragments: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    removed_any = False
+    segment_count = len(source) if closed else len(source) - 1
+
+    def point_at(start: Point, end: Point, t: float) -> Point:
+        return start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t
+
+    def append_piece(start: Point, end: Point) -> None:
+        nonlocal current
+        if converter.dist(start, end) <= 1e-9:
+            return
+        if current is not None and converter.dist(tuple(current["points"][-1]), start) <= 1e-7:
+            current["points"].append([end[0], end[1]])
+        else:
+            current = {"points": [[start[0], start[1]], [end[0], end[1]]], "closed": False, "masked": True}
+            fragments.append(current)
+
+    for segment_index in range(segment_count):
+        start = source[segment_index]
+        end = source[(segment_index + 1) % len(source)]
+        breaks = [0.0, 1.0]
+        for polygon in masks:
+            for index, first in enumerate(polygon):
+                value = _segment_intersection_parameter(start, end, first, polygon[(index + 1) % len(polygon)])
+                if value is not None:
+                    breaks.append(value)
+        ordered = sorted(set(round(value, 10) for value in breaks))
+        for index in range(1, len(ordered)):
+            t0 = ordered[index - 1]
+            t1 = ordered[index]
+            if t1 - t0 <= 1e-10:
+                continue
+            midpoint = point_at(start, end, (t0 + t1) / 2.0)
+            masked = any(point_in_polygon(midpoint, polygon) for polygon in masks)
+            if masked:
+                removed_any = True
+                current = None
+            else:
+                append_piece(point_at(start, end, t0), point_at(start, end, t1))
+    if not removed_any:
+        return [{"points": [[x, y] for x, y in source], "closed": bool(closed), "masked": False}]
+    if closed and len(fragments) > 1:
+        first = fragments[0]
+        last = fragments[-1]
+        if converter.dist(tuple(last["points"][-1]), tuple(first["points"][0])) <= 1e-7:
+            fragments[0] = {
+                "points": [*last["points"], *first["points"][1:]],
+                "closed": False,
+                "masked": True,
+            }
+            fragments.pop()
+    return [fragment for fragment in fragments if len(fragment["points"]) >= 2 and polyline_length(fragment["points"]) > 1e-8]
+
+
+def _compiled_occlusion_masks(item: dict[str, Any], objects: dict[str, dict[str, Any]],
+                              source_to_design: list[float], design_to_source: list[float],
+                              fallback_operation: str) -> dict[str, list[list[Point]]]:
+    masks_by_target: dict[str, list[list[Point]]] = {}
+    for mask in item.get("occlusionMasks") or []:
+        if mask.get("removed") or str(mask.get("mode") or "") != "mask-underlay":
+            continue
+        owner_id = str(mask.get("ownerObjectId") or "")
+        owner = objects.get(owner_id)
+        if owner is None or owner.get("removed") or normalize_operation(owner.get("operation"), fallback_operation) == "ignore":
+            continue
+        transform = owner.get("transform") or [1, 0, 0, 1, 0, 0]
+        if _affine_inverse(transform) is None:
+            raise ValueError(f"Maske sahibi vektor nesnesinin donusumu gecersiz: {owner_id or '?'}")
+        transform = [float(value) for value in transform]
+        polygon: list[Point] = []
+        for point in mask.get("polygonSource") or []:
+            design_point = _affine_point(source_to_design, point)
+            transformed_design = _affine_point(transform, design_point)
+            transformed_source = _affine_point(design_to_source, transformed_design)
+            polygon.append((float(transformed_source[0]), float(transformed_source[1])))
+        if len(polygon) < 3 or abs(polygon_signed_area(polygon)) <= 1e-9:
+            raise ValueError(f"Vektor alt-cizgi maskesi gecersiz: {mask.get('id') or '?'}")
+        for target_id in {str(value) for value in mask.get("targetObjectIds") or []}:
+            if target_id and target_id != owner_id and target_id in objects:
+                masks_by_target.setdefault(target_id, []).append(polygon)
+    return masks_by_target
+
+
+def compile_vector_objects(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compile V2 canonical graph/object ownership into legacy-compatible paths.
+
+    The returned list is disposable toolpath IR. Canonical edge coordinates and
+    object transforms remain unchanged in the project payload.
+    """
+    if _int(item.get("vectorModelVersion"), 0) != 2:
+        return copy.deepcopy(item.get("vectorPaths") or [])
+
+    graph = item.get("vectorGraph") or {}
+    revision = max(0, _int(graph.get("revision"), 0))
+    source_to_design = (item.get("sourceToDesign") or {}).get("matrix") or [1, 0, 0, 1, 0, 0]
+    design_to_source = _affine_inverse(source_to_design)
+    if design_to_source is None:
+        raise ValueError("Vektor modelindeki sourceToDesign donusumu gecersiz.")
+    source_to_design = [float(value) for value in source_to_design]
+    edges = {str(edge.get("id") or ""): edge for edge in graph.get("edges") or [] if edge.get("id")}
+    nodes = {str(node.get("id") or ""): node for node in graph.get("nodes") or [] if node.get("id")}
+    fallback_operation = normalize_operation(item.get("operation"), "engrave_line")
+    objects = {str(vector_object.get("id") or ""): vector_object for vector_object in item.get("vectorObjects") or []}
+    masks_by_target = _compiled_occlusion_masks(item, objects, source_to_design, design_to_source, fallback_operation)
+    exclusive_owners: dict[str, str] = {}
+    emitted_keys: set[str] = set()
+    canonical_operations: dict[str, str] = {}
+    compiled: list[dict[str, Any]] = []
+
+    for vector_object in item.get("vectorObjects") or []:
+        object_id = str(vector_object.get("id") or "")
+        object_operation = normalize_operation(vector_object.get("operation"), fallback_operation)
+        if vector_object.get("removed") or object_operation == "ignore":
+            continue
+        transform = vector_object.get("transform") or [1, 0, 0, 1, 0, 0]
+        if _affine_inverse(transform) is None:
+            raise ValueError(f"Vektor nesnesinin donusumu gecersiz: {object_id or '?'}")
+        transform = [float(value) for value in transform]
+        attachment_policy = str(vector_object.get("attachmentPolicy") or ((vector_object.get("attachments") or [{}])[0].get("policy") or "detached"))
+        if attachment_policy in {"pinned", "shared-joint"}:
+            attachments = list(vector_object.get("attachments") or [])
+            constrained_attachments = attachments[:1] if attachment_policy == "pinned" else attachments
+            for attachment in constrained_attachments:
+                node = nodes.get(str(attachment.get("graphNodeId") or ""))
+                if node is None:
+                    raise ValueError(f"Vektor nesnesi bulunmayan anchor dugumune bagli: {object_id or '?'}")
+                anchor = _affine_point(source_to_design, node.get("position") or [0, 0])
+                transformed_anchor = _affine_point(transform, anchor)
+                if math.dist(anchor, transformed_anchor) > 1e-6:
+                    raise ValueError(f"Vektor nesnesi {attachment_policy} anchor kisitini ihlal ediyor: {object_id or '?'}")
+        transform_key = ",".join(f"{value:.9f}" for value in transform)
+
+        for edge_ref in vector_object.get("edgeRefs") or []:
+            edge_id = str(edge_ref.get("edgeId") or "")
+            edge = edges.get(edge_id)
+            if edge is None:
+                raise ValueError(f"Vektor nesnesi bulunmayan edge'e bagli: {edge_id or '?'}")
+            if str(edge_ref.get("ownership") or "exclusive") == "exclusive":
+                previous_owner = exclusive_owners.get(edge_id)
+                if previous_owner and previous_owner != object_id:
+                    raise ValueError(f"Vektor edge birden fazla bagimsiz nesneye ait: {edge_id}")
+                exclusive_owners[edge_id] = object_id
+            if edge_ref.get("emit") is False or edge.get("removed"):
+                continue
+
+            operation = normalize_operation(edge.get("operation"), object_operation)
+            if operation == "ignore":
+                continue
+            lineage = edge.get("lineage") or {}
+            canonical_id = str(lineage.get("canonicalEdgeLineageId") or edge_id)
+            source_interval = lineage.get("sourceInterval") or [0, 1]
+            interval_key = ":".join(f"{float(value):.9f}" for value in source_interval)
+            canonical_instance_key = f"{canonical_id}|{interval_key}|{transform_key}"
+            previous_operation = canonical_operations.get(canonical_instance_key)
+            if previous_operation and previous_operation != operation:
+                raise ValueError(f"Ayni vektor edge icin celisen islemler var: {edge_id}")
+            canonical_operations[canonical_instance_key] = operation
+            emission_key = f"{canonical_instance_key}|{operation}"
+            if emission_key in emitted_keys:
+                continue
+            emitted_keys.add(emission_key)
+
+            points: list[list[float]] = []
+            for point in edge.get("points") or []:
+                design_point = _affine_point(source_to_design, point)
+                transformed_design = _affine_point(transform, design_point)
+                points.append(_affine_point(design_to_source, transformed_design))
+            if len(points) < 2:
+                continue
+            legacy_path_id = str(lineage.get("legacyPathId") or "")
+            identity_transform = all(abs(value - expected) <= 1e-9 for value, expected in zip(transform, [1, 0, 0, 1, 0, 0]))
+            fragments = _clip_polyline_outside_polygons(points, bool(edge.get("closed")), masks_by_target.get(object_id, []))
+            for fragment_index, fragment in enumerate(fragments, 1):
+                path_data = copy.deepcopy(edge.get("pathData") or {})
+                for key in ("points", "id", "edgeId", "objectId", "provenance"):
+                    path_data.pop(key, None)
+                fragment_emission_key = f"{emission_key}|mask:{fragment_index}" if fragment.get("masked") else emission_key
+                identity_id = (
+                    legacy_path_id
+                    and identity_transform
+                    and vector_object.get("createdBy") == "v1-migration"
+                    and not fragment.get("masked")
+                    and len(fragments) == 1
+                )
+                path_data.update(
+                    {
+                        "id": legacy_path_id if identity_id else f"{edge_id}@{object_id}{f':mask{fragment_index}' if fragment.get('masked') else ''}",
+                        "points": fragment["points"],
+                        "closed": bool(fragment.get("closed")),
+                        "operation": operation,
+                        "removed": False,
+                        "locked": bool(vector_object.get("locked") or path_data.get("locked")),
+                        "deformable": bool(vector_object.get("deformable", True) and path_data.get("deformable", True)),
+                        "edgeId": edge_id,
+                        "objectId": object_id,
+                        "provenance": {
+                            "objectId": object_id,
+                            "edgeId": edge_id,
+                            "graphRevision": revision,
+                            "canonicalEdgeLineageId": canonical_id,
+                            "sourceInterval": copy.deepcopy(source_interval),
+                            "emissionKey": fragment_emission_key,
+                            "occlusionMaskApplied": bool(fragment.get("masked")),
+                        },
+                    }
+                )
+                compiled.append(path_data)
+    return compiled
+
+
 def build_embedded_vector_engrave_lines(item: dict[str, Any],
                                         travel_feed: float | None = None,
                                         operation: str = "engrave",
@@ -4868,10 +6533,11 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
             return "engrave_line"
         return current_operation
 
-    auto_ignored_indexes = auto_ignored_inner_cut_path_indexes(item.get("vectorPaths", []), fallback_operation)
+    vector_paths = compile_vector_objects(item)
+    auto_ignored_indexes = auto_ignored_inner_cut_path_indexes(vector_paths, fallback_operation)
     active_paths = [
         vector_path
-        for index, vector_path in enumerate(item.get("vectorPaths", []))
+        for index, vector_path in enumerate(vector_paths)
         if not vector_path.get("removed")
         and len(vector_path.get("points", [])) >= 2
         and index not in auto_ignored_indexes
@@ -4889,6 +6555,7 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
     cut_power = _int(item.get("cutPower", item.get("power", pattern.power)), pattern.power)
     cut_feed = _float(item.get("cutFeed", item.get("feed", pattern.feed)), pattern.feed)
     emitted = 0
+    current_point = pattern_point(pattern, 0.0, 0.0)
 
     fill_paths = [vector_path for vector_path in active_paths if path_operation(vector_path) == "engrave_fill"]
     if fill_paths:
@@ -4917,6 +6584,7 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
                     travel_feed,
                 )
                 emitted += 1
+                current_point = clipped_end
             reverse = not reverse
         lines.append(f"({op_label} vector fill end)")
         lines.append("S0")
@@ -4946,6 +6614,8 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
                     "vectorPath": vector_path,
                     "path": clipped,
                     "closedSource": closed_source,
+                    "preserveStart": current_operation == "cut"
+                    and _int(vector_path.get("tabCount", vector_path.get("microTabCount", 0)), 0) > 0,
                 }
             )
             if current_operation == "cut":
@@ -4955,7 +6625,19 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
     for entry_index, kerfed_path in zip(cut_entry_indexes, apply_kerf_to_paths(raw_cut_paths, kerf)):
         path_entries[entry_index]["path"] = kerfed_path
 
-    for entry in path_entries:
+    engrave_entries = optimize_toolpath_records(
+        [entry for entry in path_entries if entry["operation"] != "cut"],
+        start=current_point,
+    )
+    if engrave_entries:
+        current_point = engrave_entries[-1]["path"][-1]
+    cut_entries = optimize_toolpath_records(
+        [entry for entry in path_entries if entry["operation"] == "cut"],
+        start=current_point,
+        inner_first=True,
+    )
+
+    for entry in [*engrave_entries, *cut_entries]:
         current_operation = entry["operation"]
         vector_path = entry["vectorPath"]
         clipped = entry["path"]
@@ -4971,6 +6653,7 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
                 append_powered_polyline(lines, clipped, cut_power, cut_feed, travel_feed)
         else:
             append_powered_polyline(lines, clipped, engrave_power, engrave_feed, travel_feed)
+        current_point = clipped[-1]
         emitted += 1
     if emitted == 0 and clip_region is not None:
         lines.append(f"({op_label} vector clipped empty)")
@@ -4982,8 +6665,9 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
 
 
 def embedded_vector_has_active_paths(item: dict[str, Any], fallback_operation: str) -> bool:
-    auto_ignored_indexes = auto_ignored_inner_cut_path_indexes(item.get("vectorPaths", []), fallback_operation)
-    for index, vector_path in enumerate(item.get("vectorPaths", [])):
+    vector_paths = compile_vector_objects(item)
+    auto_ignored_indexes = auto_ignored_inner_cut_path_indexes(vector_paths, fallback_operation)
+    for index, vector_path in enumerate(vector_paths):
         if index in auto_ignored_indexes:
             continue
         if vector_path.get("removed") or len(vector_path.get("points", [])) < 2:
@@ -5387,7 +7071,10 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
                 excluded_placement_ids.add(placement_id)
                 excluded_object_count += 1
                 continue
-            for path in transformed:
+            for path in optimize_toolpaths(
+                transformed,
+                start=(_float(placement.get("x")), _float(placement.get("y"))),
+            ):
                 append_powered_polyline(pattern_lines, path, engrave_power, engrave_feed, travel_feed)
         active_output_count += len(transformed)
         # Kirpma sinirlari TASARIM sinirinda kalir (kerf'ten etkilenmez):
@@ -5417,7 +7104,10 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             operation = "engrave_fill"
         gcode_operation = "cut" if operation == "cut" else "engrave"
         vector_fallback_operation = "cut" if operation == "cut" else "engrave_fill" if operation == "engrave_fill" else "engrave_line"
-        if (kind == "vector" or (kind == "svg" and item.get("vectorPaths"))) and not embedded_vector_has_active_paths(item, vector_fallback_operation):
+        has_embedded_vectors = kind == "vector" or (
+            kind == "svg" and (item.get("vectorPaths") or _int(item.get("vectorModelVersion"), 0) == 2)
+        )
+        if has_embedded_vectors and not embedded_vector_has_active_paths(item, vector_fallback_operation):
             continue
         default_pattern_power = power if operation == "cut" else 250
         default_pattern_feed = feed if operation == "cut" else 1800.0
@@ -5464,7 +7154,7 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             clip_margin = (max(placement_margins) if placement_margins else 0.0) + extra_clip_margin
         clip_region = ClipRegion(clip_polygons, clip_margin) if clip_polygons else None
         item_lines: list[str]
-        if kind == "vector" or (kind == "svg" and item.get("vectorPaths")):
+        if has_embedded_vectors:
             vector_item = {
                 **item,
                 "power": item.get("power", default_pattern_power),
@@ -5506,6 +7196,8 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         pattern_lines.extend(item_lines)
         active_output_count += 1
         generated_pattern_count += 1
+
+    cut_paths = optimize_toolpaths(cut_paths, start=(margin, margin), inner_first=True)
 
     if active_output_count == 0:
         raise ValueError("G-code icin aktif kesim veya kazima yolu yok.")

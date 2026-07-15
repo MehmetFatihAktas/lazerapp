@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260712-cad-region-v6" />
+    <link rel="stylesheet" href="/static/style.css?v=20260715-local-revector-v1" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -38,6 +38,8 @@
         <button class="ribbon-tab" data-tab="tabla" role="tab">Tabla &amp; Yerleşim</button>
         <button class="ribbon-tab" data-tab="kesim" role="tab">Kesim &amp; Kazıma</button>
         <button class="ribbon-tab" data-tab="vektor" role="tab">Vektör</button>
+        <button class="ribbon-tab" data-tab="gorsel" role="tab">Görsel</button>
+        <button class="ribbon-tab" data-tab="cizim" role="tab">Çizim</button>
         <button class="ribbon-tab" data-tab="cikti" role="tab">Çıktı</button>
       </nav>
 
@@ -266,7 +268,7 @@
           <div class="ribbon-group vector-action-group">
             <div class="rib-btn-row vector-action-grid">
               <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>
-              <button id="revectorizeBtn">Seçili Vektörü Yeniden İşle</button>
+              <button id="revectorizeBtn" title="Konturlar fareyle tarandıysa yalnız seçili alanı; desen seçiliyse tüm vektörü yeniden işler.">Seçili Vektörü Yeniden İşle</button>
               <button id="vectorAutoPresetBtn">Otomatik ayar</button>
               <button id="saveVectorSvgBtn">Seçili Vektörü SVG Kaydet</button>
             </div>
@@ -293,6 +295,90 @@
               </div>
             </details>
             <span class="ribbon-group-title">Gelişmiş</span>
+          </div>
+        </div>
+
+        <!-- ---- GORSEL ---- -->
+        <div class="ribbon-panel image-edit-panel" data-tab="gorsel" id="imageEditPanel">
+          <div class="ribbon-group image-filter-group">
+            <div class="image-filter-row" id="imageFilterPresets">
+              <button type="button" data-image-filter="original" class="image-filter-card active"><span class="filter-preview original"></span><b>Orijinal</b></button>
+              <button type="button" data-image-filter="clean"><span class="filter-preview clean"></span><b>Temiz</b></button>
+              <button type="button" data-image-filter="line"><span class="filter-preview line"></span><b>Çizgi</b></button>
+              <button type="button" data-image-filter="engrave"><span class="filter-preview engrave"></span><b>Gravür</b></button>
+            </div>
+            <span class="ribbon-group-title">Hızlı Filtre</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group image-adjust-group">
+            <div class="image-adjust-grid">
+              <label>Keskinlik <span><input id="imageSharpness" type="range" min="0" max="100" value="0" step="1" /><output id="imageSharpnessValue">0</output></span></label>
+              <label>Parlaklık <span><input id="imageBrightness" type="range" min="-100" max="100" value="0" step="1" /><output id="imageBrightnessValue">0</output></span></label>
+              <label>Kontrast <span><input id="imageContrast" type="range" min="-100" max="100" value="0" step="1" /><output id="imageContrastValue">0</output></span></label>
+            </div>
+            <div class="rib-row image-toggle-row">
+              <label class="checkline"><input id="imageNegative" type="checkbox" /> Negatif renk</label>
+              <button id="resetImageAdjustmentsBtn" type="button">Ayarları Sıfırla</button>
+            </div>
+            <span class="ribbon-group-title">Görsel Ayarı</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group image-tool-group">
+            <div class="image-tool-row">
+              <button id="removeImageBackgroundBtn" type="button" class="image-tool-card"><span class="tool-icon bg-erase">BG</span><b>Arka Plan Sil</b><small>Köşe rengini temizler</small></button>
+              <button id="cropImageBtn" type="button" class="image-tool-card"><span class="tool-icon crop">⌗</span><b>Kırp</b><small>Tuvalde alan çiz</small></button>
+              <button id="traceImageBtn" type="button" class="image-tool-card"><span class="tool-icon trace">⌁</span><b>Vektöre Çevir</b><small>Mevcut ayarla trace</small></button>
+              <button id="maskImageBtn" type="button" class="image-tool-card"><span class="tool-icon mask">◐</span><b>Maske</b><small>Boyayarak gizle</small></button>
+            </div>
+            <div class="rib-row image-mask-options">
+              <label class="rib-field">Maske fırçası<span class="unit-input"><input id="imageMaskBrush" type="number" value="8" min="1" max="80" step="1" /><b>%</b></span></label>
+              <button id="finishImageToolBtn" type="button" disabled>Aracı Bitir</button>
+              <button id="resetImageOriginalBtn" type="button">Orijinale Dön</button>
+            </div>
+            <div id="imageEditHint" class="inline-note">Düzenlemek için bir JPG/PNG desen seçin. Tüm işlemler geri alınabilir.</div>
+            <span class="ribbon-group-title">Araçlar</span>
+          </div>
+        </div>
+
+        <!-- ---- CIZIM ---- -->
+        <div class="ribbon-panel drawing-panel" data-tab="cizim" id="drawingPanel">
+          <div class="ribbon-group drawing-mode-group">
+            <div class="drawing-mode-cards" id="drawingModeCards">
+              <button type="button" data-drawing-mode="vector" class="drawing-mode-card active">
+                <span class="drawing-mode-icon vector-pen"><i></i><i></i><i></i></span>
+                <b>Vektör Kalemi</b>
+                <small>Nokta koyarak hassas yol çiz</small>
+              </button>
+              <button type="button" data-drawing-mode="freehand" class="drawing-mode-card">
+                <span class="drawing-mode-icon freehand-pen">〰</span>
+                <b>Serbest Kalem</b>
+                <small>Fareyi basılı tutarak çiz</small>
+              </button>
+            </div>
+            <span class="ribbon-group-title">Kalem Modu</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group drawing-settings-group">
+            <div class="rib-row">
+              <label class="rib-field">İşlem<select id="drawingOperation">
+                <option value="engrave_line" selected>Kazıma çizgi</option>
+                <option value="cut">Kesim yolu</option>
+              </select></label>
+              <label class="rib-field">Yumuşatma<input id="drawingSmoothing" type="number" value="45" min="0" max="100" step="5" /></label>
+              <label class="checkline"><input id="drawingClosePath" type="checkbox" /> Yolu kapat</label>
+            </div>
+            <div class="rib-btn-row">
+              <button id="startDrawingBtn" type="button" class="primary">Çizime Başla</button>
+              <button id="finishDrawingBtn" type="button" disabled>Çizimi Bitir</button>
+              <button id="cancelDrawingBtn" type="button" disabled>İptal</button>
+            </div>
+            <div id="drawingHint" class="inline-note">Vektör kalemi: tuvale tıklayarak noktaları ekleyin; Enter veya Çizimi Bitir ile kaydedin.</div>
+            <span class="ribbon-group-title">Çizim Ayarı</span>
+          </div>
+          <div class="ribbon-sep"></div>
+          <div class="ribbon-group drawing-cad-note">
+            <div class="inline-note"><strong>CAD tek çizgi korunuyor.</strong> Fotoğraftan otomatik merkez çizgi çıkarmak için Vektör sekmesindeki “CAD tek çizgi · dış kesim” modunu kullanmaya devam edin.</div>
+            <span class="ribbon-group-title">Otomatik Vektör</span>
           </div>
         </div>
 
@@ -357,6 +443,7 @@
             <div class="canvas-readout" id="canvasReadout">400 × 400 mm</div>
           </div>
           <canvas id="editorCanvas"></canvas>
+          <div id="selectionCursor" class="canvas-selection-cursor" hidden aria-hidden="true"><span></span></div>
           <div class="canvas-overlay">
             <div class="legend">
               <span><i class="swatch cut"></i>Kesim</span>
@@ -538,7 +625,7 @@
     </div>
     <script src="/static/geometry.js?v=20260707-ribbon"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
-    <script src="/static/vector_edit.js?v=20260713-fine-detail-v1"></script>
-    <script src="/static/app.js?v=20260713-fine-detail-v1"></script>
+    <script src="/static/vector_edit.js?v=20260715-local-revector-v1"></script>
+    <script src="/static/app.js?v=20260715-local-revector-v1"></script>
   </body>
 </html>

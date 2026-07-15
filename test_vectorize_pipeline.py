@@ -1,3 +1,4 @@
+import copy
 import math
 import re
 from pathlib import Path
@@ -81,6 +82,62 @@ def assert_raises_contains(func, text):
         assert_true(text in str(exc), f"expected error containing {text!r}, got {exc!r}")
         return
     raise AssertionError(f"expected error containing {text!r}")
+
+
+def test_toolpath_optimizer_reduces_empty_travel_and_reverses_open_paths():
+    paths = [
+        [(90.0, 0.0), (100.0, 0.0)],
+        [(20.0, 0.0), (10.0, 0.0)],
+        [(60.0, 0.0), (50.0, 0.0)],
+    ]
+    before = core.toolpath_travel_distance(paths)
+    optimized = core.optimize_toolpaths(paths)
+    after = core.toolpath_travel_distance(optimized)
+
+    assert_true(after < before * 0.4, f"expected substantial travel reduction, before={before}, after={after}")
+    assert_true(optimized[0][0] == (10.0, 0.0), "nearest open path must be allowed to run in reverse")
+    original_segments = {frozenset(path) for path in paths}
+    optimized_segments = {frozenset(path) for path in optimized}
+    assert_true(original_segments == optimized_segments, "optimizer must not change open-path geometry")
+
+
+def test_cut_toolpath_optimizer_keeps_outer_contour_last():
+    outer = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0), (0.0, 0.0)]
+    hole = [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0), (20.0, 20.0)]
+    open_detail = [(80.0, 80.0), (85.0, 85.0)]
+    optimized = core.optimize_toolpaths([outer, hole, open_detail], inner_first=True)
+
+    assert_true(optimized[0][0] in open_detail, "open cut details must run before releasing closed contours")
+    assert_true(abs(core.polygon_signed_area(optimized[-1][:-1])) == 10000.0, "outer contour must remain last")
+    assert_true(optimized[-1][0] == optimized[-1][-1], "closed contour must remain closed after rotation")
+
+
+def test_embedded_vector_builder_uses_optimized_path_order():
+    item = {
+        "path": "synthetic-vector.svg",
+        "name": "route test",
+        "kind": "vector",
+        "operation": "engrave_line",
+        "x": 0,
+        "y": 0,
+        "width": 100,
+        "height": 100,
+        "sourceWidth": 100,
+        "sourceHeight": 100,
+        "power": 250,
+        "feed": 1800,
+        "vectorPaths": [
+            {"id": "far", "points": [[90, 50], [100, 50]], "closed": False, "operation": "engrave_line"},
+            {"id": "near", "points": [[20, 50], [10, 50]], "closed": False, "operation": "engrave_line"},
+            {"id": "middle", "points": [[60, 50], [50, 50]], "closed": False, "operation": "engrave_line"},
+        ],
+    }
+    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000)
+    emitted = list(core.iter_powered_toolpaths_from_gcode(lines))
+
+    assert_true(len(emitted) == 3, "all vector paths must still be emitted")
+    assert_true(emitted[0][0][0] == 10.0, "nearest path endpoint should be emitted first")
+    assert_true(core.toolpath_travel_distance(emitted) < 130.0, "builder must use optimized route, not source order")
 
 
 def test_filter_keeps_auto_removed_paths():
@@ -172,8 +229,9 @@ def test_cad_centerline_mode_returns_single_line_metadata():
     assert_true(active, "CAD centerline mode should produce usable paths")
     assert_true(data["stats"]["traceEngine"] == "centerline", "CAD line art must use the centerline engine")
     assert_true(data["stats"]["cadCenterline"] is True, "CAD centerline metadata should be explicit")
-    assert_true(data["stats"].get("cadTraceScale", 1) > 1, "clean CAD line art should use high-resolution tracing")
+    assert_true(data["stats"].get("cadTraceScale", 1) >= 3.9, "small CAD details should use up to 4x high-resolution tracing")
     assert_true(data["stats"].get("cadTopologyPreserved") is True, "CAD tracing should preserve real short junction branches")
+    assert_true(data["stats"].get("cadProximityWeldDisabled") is True, "CAD detail paths must not be proximity-welded")
     assert_true(data["stats"].get("prunedSpurPixels") == 0, "CAD tracing must not prune legitimate short connections")
     assert_true(data["settings"]["cadCenterline"] is True, "saved settings should preserve CAD centerline mode")
     assert_true(data["sourceWidth"] == 240 and data["sourceHeight"] == 180, "trace upscaling must not change source coordinates")
@@ -385,6 +443,16 @@ def test_centerline_endpoint_snap_closes_natural_gap_without_sideways_join():
     assert_true(sideways_stats["snappedCenterlineEndpoints"] == 0, "a sideways nearby contour must stay separate")
     assert_true(unchanged[0]["points"][-1] == [0.0, 4.0], "rejected endpoint should not move")
 
+    micro_detail, micro_stats = core.snap_open_vector_endpoints_to_paths(
+        natural,
+        max_gap=2.0,
+        max_angle=70.0,
+        min_path_length=8.0,
+    )
+    assert_true(micro_stats["snappedCenterlineEndpoints"] == 0, "short detail paths must not be auto-joined")
+    assert_true(micro_stats["skippedMicroDetailSnaps"] == 1, "the protected micro detail should be reported")
+    assert_true(micro_detail[0]["points"][-1] == [4.0, 5.0], "protected detail endpoint must stay unchanged")
+
 
 def test_centerline_micro_hole_fill_removes_pixel_artifact_but_keeps_real_region():
     binary = core.np.zeros((32, 32), dtype=core.np.uint8)
@@ -492,6 +560,25 @@ def test_cad_centerline_smoothing_keeps_junction_anchors():
     assert_true(junctions <= traced_points, f"smoothing must not move shared graph junctions: {junctions - traced_points}")
 
 
+def test_cad_centerline_collapses_small_outlined_junctions():
+    binary = core.np.zeros((180, 220), dtype=core.np.uint8)
+    core.cv2.ellipse(binary, (105, 90), (22, 12), 0, 0, 360, 255, 3)
+    core.cv2.line(binary, (30, 90), (83, 90), 255, 3)
+    core.cv2.line(binary, (127, 90), (190, 90), 255, 3)
+    core.cv2.line(binary, (105, 30), (105, 78), 255, 3)
+
+    skeleton = core.thin_binary(binary)
+    fixed, stats = core.centerline_dense_junction_holes(
+        binary,
+        skeleton,
+        stroke_width=core.estimate_stroke_width(binary),
+    )
+
+    assert_true(stats.get("centerlinedDenseJunctionHoles") == 1, f"dense outlined junction must be detected: {stats}")
+    assert_true(stats.get("centerlinedDenseJunctionBridges", 0) >= 2, f"real branches must be reconnected: {stats}")
+    assert_true(core.np.count_nonzero(fixed) < core.np.count_nonzero(skeleton), "outlined loop must collapse to a simpler centerline")
+
+
 def test_centerline_solidify_collapses_double_edge_bands():
     binary = core.np.zeros((70, 130), dtype=core.np.uint8)
     core.cv2.line(binary, (12, 28), (116, 28), 255, 1)
@@ -540,6 +627,75 @@ def test_centerline_straightens_long_wavy_frame_lines():
     assert_true(len(paths[0]["points"]) == 2, f"wavy frame line should become one segment: {paths[0]}")
     assert_true(abs(paths[0]["points"][0][1] - paths[0]["points"][1][1]) < 1e-6, f"horizontal frame line should be axis-flat: {paths[0]}")
     assert_true(len(paths[1]["points"]) == 5, "curved ornament path should stay untouched")
+
+
+def test_centerline_straightening_preserves_shared_branch_anchors():
+    left_anchor = [10.0, 20.6]
+    right_anchor = [110.0, 20.1]
+    branch = {
+        "id": "branch",
+        "points": [left_anchor, [30, 19.8], [50, 20.4], [70, 19.7], [90, 20.3], right_anchor],
+        "closed": False,
+        "length": 100.0,
+        "removed": False,
+    }
+    left_foot = {
+        "id": "left-foot",
+        "points": [[2, 8], left_anchor],
+        "closed": False,
+        "length": 15.0,
+        "removed": False,
+    }
+    right_foot = {
+        "id": "right-foot",
+        "points": [right_anchor, [118, 8]],
+        "closed": False,
+        "length": 15.0,
+        "removed": False,
+    }
+
+    paths, stats = core.straighten_centerline_paths(
+        [branch, left_foot, right_foot],
+        stroke_width=2.0,
+        source_width=140,
+        source_height=80,
+    )
+
+    assert_true(len(paths[0]["points"]) == 2, "shared branch should still be simplified to one segment")
+    assert_true(paths[0]["points"][0] == left_anchor, f"left graph anchor moved: {paths[0]}")
+    assert_true(paths[0]["points"][-1] == right_anchor, f"right graph anchor moved: {paths[0]}")
+    assert_true(paths[0]["points"][0] == paths[1]["points"][-1], "left foot and branch must remain continuous")
+    assert_true(paths[0]["points"][-1] == paths[2]["points"][0], "right foot and branch must remain continuous")
+    assert_true(stats.get("preservedStraightenedJunctionAnchors") == 2, f"shared anchors must be reported: {stats}")
+
+
+def test_axis_flattening_preserves_shared_open_endpoint_anchor():
+    anchor = [0.0, 0.7]
+    horizontal = {
+        "id": "horizontal",
+        "points": [anchor, [25, -0.3], [50, 0.2], [75, -0.2], [100, 0.3]],
+        "closed": False,
+        "length": 100.0,
+        "removed": False,
+    }
+    attached = {
+        "id": "attached",
+        "points": [[-8, -12], anchor],
+        "closed": False,
+        "length": 15.0,
+        "removed": False,
+    }
+
+    paths, stats = core.flatten_axis_aligned_centerline_runs(
+        [horizontal, attached],
+        stroke_width=2.0,
+        source_width=140,
+        source_height=80,
+    )
+
+    assert_true(paths[0]["points"][0] == anchor, f"axis cleanup moved a shared graph anchor: {paths[0]}")
+    assert_true(paths[0]["points"][0] == paths[1]["points"][-1], "axis cleanup disconnected the attached path")
+    assert_true(stats.get("preservedAxisJunctionAnchors", 0) >= 1, f"preserved axis anchor must be reported: {stats}")
 
 
 def test_centerline_flattens_axis_runs_inside_closed_frame():
@@ -2223,6 +2379,314 @@ def test_vector_cut_builders_apply_outer_and_hole_kerf():
         assert_true(abs(svg_widths[1] - 30.2) < 0.02, f"SVG outer contour should grow by kerf: {svg_widths}")
 
 
+def semantic_branch_motif_paths():
+    paths = [
+        {"id": "trunk", "points": [[0, 0], [100, 0]], "closed": False, "operation": "engrave_line"},
+        {"id": "stem", "points": [[50, 0], [50, 20]], "closed": False, "operation": "engrave_line"},
+    ]
+    for index, offset in enumerate((-8, -4, 0, 4, 8), 1):
+        paths.append(
+            {
+                "id": f"loop-{index}",
+                "points": [[50, 20], [48 + offset, 25], [50 + offset, 31], [52 + offset, 25]],
+                "closed": True,
+                "operation": "engrave_line",
+            }
+        )
+    return paths
+
+
+def transformed_vector_paths(paths, scale=1.0, angle_degrees=0.0):
+    angle = math.radians(angle_degrees)
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    return [
+        {
+            **path,
+            "points": [
+                [scale * (point[0] * cosine - point[1] * sine), scale * (point[0] * sine + point[1] * cosine)]
+                for point in path["points"]
+            ],
+        }
+        for path in paths
+    ]
+
+
+def test_attributed_graph_finds_compact_motif_and_splits_true_t_junction():
+    for scale, angle in ((1, 0), (2, 15), (4, 45)):
+        model = core.build_vector_topology(
+            transformed_vector_paths(semantic_branch_motif_paths(), scale, angle),
+            120 * scale,
+            120 * scale,
+            stroke_width=2 * scale,
+        )
+        graph = model["vectorGraph"]
+        trunk_edges = [edge for edge in graph["edges"] if edge["lineage"]["legacyPathId"] == "trunk"]
+        assert_true(len(trunk_edges) == 2, f"true endpoint-on-trunk junction must split at {scale}x/{angle}deg: {trunk_edges}")
+        assert_true(len(graph["articulationNodeIds"]) >= 1, f"branch gate must survive {scale}x/{angle}deg")
+        assert_true(len(model["objectProposals"]) == 1, f"one compact motif expected at {scale}x/{angle}deg: {model['objectProposals']}")
+        proposal = model["objectProposals"][0]
+        proposal_lineages = {
+            next(edge for edge in graph["edges"] if edge["id"] == edge_id)["lineage"]["legacyPathId"]
+            for edge_id in proposal["edgeIds"]
+        }
+        assert_true("stem" in proposal_lineages, "motif proposal should include its stem")
+        assert_true("trunk" not in proposal_lineages, "motif proposal must not capture the main trunk")
+        assert_true(proposal["name"].startswith("Kompakt motif"), "automatic names must remain structural")
+
+
+def test_attributed_graph_does_not_join_near_separate_micro_strokes():
+    toe_paths = [
+        {"id": "toe-a", "points": [[0, 0], [5, 0]], "closed": False},
+        {"id": "toe-b", "points": [[2, 0.7], [2, 4]], "closed": False},
+    ]
+    for scale, angle in ((1, 0), (2, 15), (4, 45)):
+        model = core.build_vector_topology(
+            transformed_vector_paths(toe_paths, scale, angle),
+            10 * scale,
+            10 * scale,
+            stroke_width=2 * scale,
+        )
+        assert_true(len(model["vectorGraph"]["components"]) == 2, f"nearby toe strokes joined at {scale}x/{angle}deg")
+        assert_true(not model["vectorGraph"]["junctionRegions"], f"proximity created a junction at {scale}x/{angle}deg")
+        assert_true(model["topologyStats"]["autoRepairsApplied"] == 0, "P1 must not auto-apply uncertain gap repairs")
+
+
+def test_semantic_separation_validates_revision_and_expands_seed_to_proposal():
+    model = core.build_vector_topology(semantic_branch_motif_paths(), 100, 40, stroke_width=2)
+    proposal = model["objectProposals"][0]
+    result = core.analyze_vector_separation(
+        {
+            "vectorModel": model,
+            "graphRevision": model["vectorGraph"]["revision"],
+            "foregroundEdgeIds": [proposal["edgeIds"][0]],
+            "backgroundEdgeIds": [],
+        }
+    )
+    assert_true(result["proposalId"] == proposal["id"], f"a seed inside the motif should resolve to its structural proposal: {result}")
+    assert_true(set(result["foregroundEdgeIds"]) == set(proposal["edgeIds"]), "semantic analysis must return the complete motif edge set")
+    assert_true(result["cutGates"] == proposal["gateNodeIds"], "proposal gates must be preserved")
+    kept = core.analyze_vector_separation(
+        {
+            "vectorModel": model,
+            "graphRevision": model["vectorGraph"]["revision"],
+            "foregroundEdgeIds": [proposal["edgeIds"][0]],
+            "gateOverrides": {proposal["gateNodeIds"][0]: "keep"},
+        }
+    )
+    assert_true(proposal["gateNodeIds"][0] not in kept["cutGates"], "a kept gate must not remain in the cut set")
+    assert_true(len(kept["foregroundEdgeIds"]) > len(result["foregroundEdgeIds"]), "keeping the branch gate must expand the foreground partition")
+    assert_raises_contains(
+        lambda: core.analyze_vector_separation(
+            {
+                "vectorModel": model,
+                "graphRevision": model["vectorGraph"]["revision"] + 1,
+                "foregroundEdgeIds": [proposal["edgeIds"][0]],
+            }
+        ),
+        "revizyonu degisti",
+    )
+
+
+def vector_object_model_fixture():
+    return {
+        "vectorModelVersion": 2,
+        "sourceToDesign": {"matrix": [10, 0, 0, -10, 0, 100], "unit": "mm"},
+        "vectorGraph": {
+            "revision": 3,
+            "nodes": [
+                {"id": "n1", "position": [0, 5]},
+                {"id": "n2", "position": [10, 5]},
+            ],
+            "edges": [
+                {
+                    "id": "edge:branch",
+                    "startNodeId": "n1",
+                    "endNodeId": "n2",
+                    "points": [[0, 5], [10, 5]],
+                    "closed": False,
+                    "operation": "engrave_line",
+                    "pathData": {"warnings": []},
+                    "lineage": {
+                        "canonicalEdgeLineageId": "legacy:branch",
+                        "legacyPathId": "branch",
+                        "sourceInterval": [0, 1],
+                    },
+                }
+            ],
+        },
+        "vectorObjects": [
+            {
+                "id": "object:branch",
+                "name": "Branch",
+                "edgeRefs": [{"edgeId": "edge:branch", "ownership": "exclusive", "emit": True}],
+                "transform": [1, 0, 0, 1, 20, 0],
+                "operation": "engrave_line",
+                "createdBy": "user-rectangle-separation",
+            }
+        ],
+        "connections": [],
+        "occlusionMasks": [],
+    }
+
+
+def masked_vector_object_model_fixture():
+    return {
+        "vectorModelVersion": 2,
+        "operation": "engrave_line",
+        "sourceToDesign": {"matrix": [10, 0, 0, -10, 0, 100], "unit": "mm"},
+        "vectorGraph": {
+            "revision": 4,
+            "nodes": [
+                {"id": "n1", "position": [0, 5]},
+                {"id": "n2", "position": [10, 5]},
+                {"id": "n3", "position": [4, 4]},
+            ],
+            "edges": [
+                {
+                    "id": "edge:branch",
+                    "startNodeId": "n1",
+                    "endNodeId": "n2",
+                    "points": [[0, 5], [10, 5]],
+                    "closed": False,
+                    "operation": "engrave_line",
+                    "lineage": {"canonicalEdgeLineageId": "branch", "sourceInterval": [0, 1]},
+                },
+                {
+                    "id": "edge:flower",
+                    "startNodeId": "n3",
+                    "endNodeId": "n3",
+                    "points": [[4, 4], [6, 4], [6, 6], [4, 6]],
+                    "closed": True,
+                    "operation": "engrave_line",
+                    "lineage": {"canonicalEdgeLineageId": "flower", "sourceInterval": [0, 1]},
+                },
+            ],
+        },
+        "vectorObjects": [
+            {
+                "id": "object:base",
+                "operation": "engrave_line",
+                "edgeRefs": [{"edgeId": "edge:branch", "ownership": "exclusive", "emit": True}],
+                "transform": [1, 0, 0, 1, 0, 0],
+            },
+            {
+                "id": "object:flower",
+                "operation": "engrave_line",
+                "edgeRefs": [{"edgeId": "edge:flower", "ownership": "exclusive", "emit": True}],
+                "transform": [1, 0, 0, 1, 0, 0],
+            },
+        ],
+        "connections": [],
+        "occlusionMasks": [
+            {
+                "id": "mask:flower",
+                "mode": "mask-underlay",
+                "ownerObjectId": "object:flower",
+                "targetObjectIds": ["object:base"],
+                "polygonSource": [[4, 4], [6, 4], [6, 6], [4, 6]],
+            }
+        ],
+    }
+
+
+def test_vector_object_compiler_uses_canonical_model_not_stale_cache():
+    item = {
+        **vector_object_model_fixture(),
+        "operation": "engrave_line",
+        "vectorPaths": [{"id": "stale", "points": [[90, 90], [99, 99]], "closed": False}],
+    }
+    compiled = core.compile_vector_objects(item)
+    assert_true(len(compiled) == 1, f"one canonical edge should compile: {compiled}")
+    assert_true(compiled[0]["points"] == [[2.0, 5.0], [12.0, 5.0]], f"object transform should be resolved from canonical geometry: {compiled}")
+    assert_true(compiled[0]["provenance"]["graphRevision"] == 3, "compiled path must carry graph revision provenance")
+    assert_true(all(point[0] < 20 for point in compiled[0]["points"]), "stale cache coordinates must never leak into output")
+
+
+def test_vector_object_compiler_rejects_duplicate_exclusive_owner():
+    item = vector_object_model_fixture()
+    duplicate = copy.deepcopy(item["vectorObjects"][0])
+    duplicate["id"] = "object:duplicate"
+    item["vectorObjects"].append(duplicate)
+    assert_raises_contains(lambda: core.compile_vector_objects(item), "birden fazla bagimsiz")
+
+
+def test_vector_object_compiler_ignores_removed_or_ignored_object():
+    item = vector_object_model_fixture()
+    item["vectorObjects"][0]["operation"] = "ignore"
+    assert_true(core.compile_vector_objects(item) == [], "ignored object must emit no vector path")
+    item = vector_object_model_fixture()
+    item["vectorObjects"][0]["removed"] = True
+    assert_true(core.compile_vector_objects(item) == [], "removed object must emit no vector path")
+
+
+def test_vector_object_mask_underlay_removes_powered_branch_middle():
+    item = masked_vector_object_model_fixture()
+    compiled = core.compile_vector_objects(item)
+    branch = [path for path in compiled if path["edgeId"] == "edge:branch"]
+    assert_true(len(branch) == 2, f"mask-underlay must split the branch into two emitted fragments: {branch}")
+    assert_true(branch[0]["points"] == [[0.0, 5.0], [4.0, 5.0]], f"unexpected left mask fragment: {branch}")
+    assert_true(branch[1]["points"] == [[6.0, 5.0], [10.0, 5.0]], f"unexpected right mask fragment: {branch}")
+    assert_true(all(path["provenance"]["occlusionMaskApplied"] for path in branch), "mask provenance must be explicit")
+
+    item.update({
+        "path": "masked-vector",
+        "name": "masked-vector",
+        "x": 0,
+        "y": 0,
+        "width": 10,
+        "height": 10,
+        "sourceWidth": 10,
+        "sourceHeight": 10,
+        "power": 250,
+        "feed": 1800,
+    })
+    powered = core.powered_toolpaths_from_gcode(core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave"))
+    horizontal = [path for path in powered if len(path) >= 2 and all(abs(point[1] - 5.0) <= 0.01 for point in path)]
+    assert_true(not any(min(point[0] for point in path) < 5 < max(point[0] for point in path) for path in horizontal), "no powered branch may cross the masked motif center")
+
+
+def test_backend_enforces_pinned_and_shared_joint_anchors():
+    item = vector_object_model_fixture()
+    vector_object = item["vectorObjects"][0]
+    vector_object["transform"] = [1, 0, 0, 1, 20, 0]
+    vector_object["attachmentPolicy"] = "pinned"
+    vector_object["attachments"] = [{"id": "a1", "graphNodeId": "n1", "policy": "pinned"}]
+    assert_raises_contains(lambda: core.compile_vector_objects(item), "anchor kisitini")
+
+    item = vector_object_model_fixture()
+    vector_object = item["vectorObjects"][0]
+    vector_object["attachmentPolicy"] = "shared-joint"
+    vector_object["attachments"] = [
+        {"id": "a1", "graphNodeId": "n1", "policy": "shared-joint"},
+        {"id": "a2", "graphNodeId": "n2", "policy": "shared-joint"},
+    ]
+    vector_object["transform"] = [2, 0, 0, 2, 0, -50]
+    assert_raises_contains(lambda: core.compile_vector_objects(item), "shared-joint anchor kisitini")
+
+
+def test_v2_vector_gcode_has_no_ghost_path_from_stale_vector_paths():
+    item = {
+        **vector_object_model_fixture(),
+        "path": "v2-vector",
+        "name": "v2-vector",
+        "x": 0,
+        "y": 0,
+        "width": 10,
+        "height": 10,
+        "sourceWidth": 10,
+        "sourceHeight": 10,
+        "power": 250,
+        "feed": 1800,
+        "vectorPaths": [{"id": "stale", "points": [[90, 90], [99, 99]], "closed": False}],
+    }
+    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+    paths = core.powered_toolpaths_from_gcode(lines)
+    assert_true(len(paths) == 1, f"only the current canonical object should be powered: {paths}")
+    xs = [point[0] for point in paths[0]]
+    assert_true(min(xs) >= 1.999 and max(xs) <= 12.001, f"G-code must use moved object coordinates only: {paths}")
+
+
 def test_final_toolpath_validator_checks_segments_inside_custom_area():
     available_area = core.ClipRegion(
         [
@@ -2246,6 +2710,9 @@ def test_final_toolpath_validator_checks_segments_inside_custom_area():
 
 def main():
     tests = [
+        test_toolpath_optimizer_reduces_empty_travel_and_reverses_open_paths,
+        test_cut_toolpath_optimizer_keeps_outer_contour_last,
+        test_embedded_vector_builder_uses_optimized_path_order,
         test_kerf_offsets_outer_out_and_holes_in,
         test_kerf_handles_concave_part_without_degenerate_output,
         test_filter_keeps_auto_removed_paths,
@@ -2261,8 +2728,11 @@ def main():
         test_centerline_micro_hole_fill_removes_pixel_artifact_but_keeps_real_region,
         test_cad_centerline_preserves_dense_outlined_details,
         test_cad_centerline_smoothing_keeps_junction_anchors,
+        test_cad_centerline_collapses_small_outlined_junctions,
         test_centerline_solidify_collapses_double_edge_bands,
         test_centerline_straightens_long_wavy_frame_lines,
+        test_centerline_straightening_preserves_shared_branch_anchors,
+        test_axis_flattening_preserves_shared_open_endpoint_anchor,
         test_centerline_flattens_axis_runs_inside_closed_frame,
         test_centerline_polishes_curves_without_flattening_them,
         test_vtracer_mode_produces_laser_vector_paths,
@@ -2319,6 +2789,15 @@ def main():
         test_generate_excludes_vector_geometry_outside_declared_pattern_bounds,
         test_generate_excludes_toolpath_that_kerf_pushes_outside_bed,
         test_vector_cut_builders_apply_outer_and_hole_kerf,
+        test_attributed_graph_finds_compact_motif_and_splits_true_t_junction,
+        test_attributed_graph_does_not_join_near_separate_micro_strokes,
+        test_semantic_separation_validates_revision_and_expands_seed_to_proposal,
+        test_vector_object_compiler_uses_canonical_model_not_stale_cache,
+        test_vector_object_compiler_rejects_duplicate_exclusive_owner,
+        test_vector_object_compiler_ignores_removed_or_ignored_object,
+        test_vector_object_mask_underlay_removes_powered_branch_middle,
+        test_backend_enforces_pinned_and_shared_joint_anchors,
+        test_v2_vector_gcode_has_no_ghost_path_from_stale_vector_paths,
         test_final_toolpath_validator_checks_segments_inside_custom_area,
     ]
     for test in tests:
