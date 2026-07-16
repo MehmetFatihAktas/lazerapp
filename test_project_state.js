@@ -80,3 +80,38 @@ test("preferences are clamped to safe limits", () => {
   assert.equal(preferences.productTourVersion, 999);
   assert.equal(ProjectState.normalizePreferences({ productTourVersion: 4 }).productTourVersion, 4);
 });
+
+test("legacy projects migrate S values to percent and require profile verification", () => {
+  const migrated = ProjectState.migrateProject({
+    schema: "laser-editor-project-v3",
+    version: 3,
+    inputs: { cutPower: "1000", engravePower: "500" },
+    parts: [{ id: "p1", paths: [[[0, 0], [1, 0], [1, 1], [0, 0]]] }],
+    patterns: [{ power: 250, cutPower: 1000, vectorPaths: [{ powerOverride: 750 }] }],
+  });
+  assert.equal(migrated.schema, "laser-editor-project-v4");
+  assert.equal(migrated.version, 4);
+  assert.equal(migrated.inputs.cutPower, "100");
+  assert.equal(migrated.inputs.engravePower, "50");
+  assert.equal(migrated.patterns[0].power, 25);
+  assert.equal(migrated.patterns[0].cutPower, 100);
+  assert.equal(migrated.patterns[0].vectorPaths[0].powerOverride, 75);
+  assert.equal(migrated.machineProfile.maxS, 1000);
+  assert.equal(migrated.machineProfile.verified, false);
+  assert.equal(migrated.parts[0].sourceUnits.sourceUnit, "legacy-mm-assumed");
+  assert.equal(migrated.parts[0].geometrySnapshotVersion, 1);
+});
+
+test("machine profiles clamp focus safety limits", () => {
+  const profile = ProjectState.normalizeMachineProfile({
+    maxS: 255,
+    travelX: 500,
+    travelY: 300,
+    focus: { normalMaxPercent: 99, normalMaxMs: 999, expertMaxPercent: 99, expertMaxMs: 999 },
+  });
+  assert.equal(profile.maxS, 255);
+  assert.equal(profile.focus.normalMaxPercent, 3);
+  assert.equal(profile.focus.normalMaxMs, 100);
+  assert.equal(profile.focus.expertMaxPercent, 5);
+  assert.equal(profile.focus.expertMaxMs, 250);
+});

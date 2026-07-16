@@ -1,4 +1,5 @@
 import base64
+import json
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -136,6 +137,57 @@ def test_atomic_write_replaces_complete_project_file():
         assert not list(path.parent.glob(f".{path.name}.*.tmp"))
 
 
+def test_project_storage_removes_browser_source_paths():
+    sanitized = server.sanitize_project_for_storage(
+        {
+            "outputPath": "D:/jobs/job.nc",
+            "parts": [
+                {
+                    "id": "p1",
+                    "name": "part.dxf",
+                    "path": "D:/private/part.dxf",
+                    "sourcePath": "D:/private/part.dxf",
+                    "originalPath": "D:/private/part.dxf",
+                    "paths": [[[0, 0], [1, 0]]],
+                }
+            ],
+            "patterns": [
+                {
+                    "id": "v1",
+                    "name": "motif.svg",
+                    "path": "D:/private/motif.svg",
+                    "sourceHandle": "opaque",
+                    "vectorPaths": [{"points": [[0, 0], [1, 1]]}],
+                }
+            ],
+        }
+    )
+    assert sanitized["outputPath"] == ""
+    assert sanitized["parts"][0]["path"] == "part.dxf"
+    assert "sourcePath" not in sanitized["parts"][0]
+    assert sanitized["patterns"][0]["path"] == "motif.svg"
+    assert "sourceHandle" not in sanitized["patterns"][0]
+
+
+def test_recent_projects_are_server_side_and_use_opaque_ids():
+    with TemporaryDirectory() as directory:
+        directory = Path(directory)
+        project_path = directory / "demo.laserjob.json"
+        project_path.write_text('{"schema":"laser-editor-project-v4"}', encoding="utf-8")
+        original_file = server.RECENT_PROJECTS_FILE
+        server.RECENT_PROJECTS_FILE = directory / "recent-projects.json"
+        try:
+            remembered = server.remember_recent_project(project_path, "Demo")
+            public = server.public_recent_projects()
+            assert public[0]["id"] == remembered["id"]
+            assert public[0]["id"] != str(project_path)
+            assert server.resolve_recent_project(public[0]["id"]) == project_path.resolve()
+            stored = json.loads(server.RECENT_PROJECTS_FILE.read_text(encoding="utf-8"))
+            assert stored[0]["path"] == str(project_path.resolve())
+        finally:
+            server.RECENT_PROJECTS_FILE = original_file
+
+
 def test_diagnostics_excludes_project_and_gcode_content():
     diagnostics = server.diagnostics_snapshot()
     assert diagnostics["app"]["version"] == server.APP_VERSION
@@ -176,6 +228,8 @@ def main():
         test_local_vector_crop_uses_top_left_normalized_coordinates,
         test_gcode_info_contains_stable_file_identity_and_safety,
         test_atomic_write_replaces_complete_project_file,
+        test_project_storage_removes_browser_source_paths,
+        test_recent_projects_are_server_side_and_use_opaque_ids,
         test_diagnostics_excludes_project_and_gcode_content,
         test_system_font_catalog_groups_faces_and_marks_thick_families,
     ]

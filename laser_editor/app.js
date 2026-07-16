@@ -11,6 +11,15 @@ if (!CalibrationGrid) throw new Error("Kalibrasyon modülü yüklenemedi.");
 const SelectionLayout = window.LaserSelectionLayout;
 if (!SelectionLayout) throw new Error("Hizalama modülü yüklenemedi.");
 const ProductTour = window.LaserProductTour;
+const API_TOKEN = document.querySelector('meta[name="laser-app-token"]')?.content || "";
+const API_ORIGIN = document.querySelector('meta[name="laser-app-origin"]')?.content || window.location.origin;
+
+function apiHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-LaserApp-Token": API_TOKEN,
+  };
+}
 if (!ProductTour) throw new Error("Ürün tanıtımı modülü yüklenemedi.");
 
 const canvas = document.getElementById("editorCanvas");
@@ -162,6 +171,7 @@ const refs = {
   allowRotate: document.getElementById("allowRotate"),
   cutFeed: document.getElementById("cutFeed"),
   cutPower: document.getElementById("cutPower"),
+  cutPowerMachineValue: document.getElementById("cutPowerMachineValue"),
   passes: document.getElementById("passes"),
   overcut: document.getElementById("overcut"),
   kerf: document.getElementById("kerf"),
@@ -172,6 +182,7 @@ const refs = {
   innerFirst: document.getElementById("innerFirst"),
   returnOrigin: document.getElementById("returnOrigin"),
   engravePower: document.getElementById("engravePower"),
+  engravePowerMachineValue: document.getElementById("engravePowerMachineValue"),
   engraveFeed: document.getElementById("engraveFeed"),
   lineStep: document.getElementById("lineStep"),
   threshold: document.getElementById("threshold"),
@@ -235,9 +246,17 @@ const refs = {
   machineFramePadding: document.getElementById("machineFramePadding"),
   machinePulsePower: document.getElementById("machinePulsePower"),
   machinePulseDuration: document.getElementById("machinePulseDuration"),
+  machineProfileMaxS: document.getElementById("machineProfileMaxS"),
+  machineProfileTravelX: document.getElementById("machineProfileTravelX"),
+  machineProfileTravelY: document.getElementById("machineProfileTravelY"),
+  machineProfileAirAssist: document.getElementById("machineProfileAirAssist"),
+  machineProfileStatus: document.getElementById("machineProfileStatus"),
+  machineSettingValidation: document.getElementById("machineSettingValidation"),
   machineCommand: document.getElementById("machineCommand"),
   machineLog: document.getElementById("machineLog"),
   sendGcodeToMachineBtn: document.getElementById("sendGcodeToMachineBtn"),
+  openExternalGcodeBtn: document.getElementById("openExternalGcodeBtn"),
+  previewOpenGcodeBtn: document.getElementById("previewOpenGcodeBtn"),
   drawAreaToolBtn: document.getElementById("drawAreaToolBtn"),
   finishAreaBtn: document.getElementById("finishAreaBtn"),
   clearAreaBtn: document.getElementById("clearAreaBtn"),
@@ -384,8 +403,23 @@ const state = {
     pointerId: null,
   },
   currentAnalysis: null,
+  machineProfile: ProjectState.normalizeMachineProfile({
+    ...ProjectState.LEGACY_MACHINE_PROFILE,
+    source: "default",
+    verified: false,
+  }),
   lastGeneratedRevision: null,
   lastGeneratedPath: "",
+  fileAccess: {
+    outputHandle: "",
+    artifactHandle: "",
+    artifactHash: "",
+    artifactInputHash: "",
+    artifactSourceRevision: null,
+    artifactExternal: false,
+    projectHandle: "",
+    projectWriteHandle: "",
+  },
   machine: {
     available: false,
     connected: false,
@@ -405,6 +439,7 @@ const state = {
   project: ProjectState.createSession({ name: "Adsız iş" }),
   preferences: ProjectState.normalizePreferences(),
   recentProjects: [],
+  legacyRecentProjects: [],
   recovery: {
     store: ProjectState.createRecoveryStore(),
     key: "active-project",
@@ -456,7 +491,8 @@ const state = {
 const SETTINGS_KEY = "laser-editor-settings-v3";
 const VECTOR_SETTINGS_VERSION = 10;
 const ENGRAVE_SETTINGS_VERSION = 1;
-const DEFAULT_ENGRAVE_POWER = 500;
+const POWER_SETTINGS_VERSION = 1;
+const DEFAULT_ENGRAVE_POWER = 50;
 const DEFAULT_ENGRAVE_FEED = 1800;
 const DEFAULT_ENGRAVE_LINE_STEP = 0.08;
 const CLIENT_SESSION_KEY = "laser-editor-client-id-v1";
@@ -491,6 +527,8 @@ const NATIVE_DIALOG_BUTTON_IDS = [
   "chooseOutputBtn",
   "generateBtn",
   "generateBtn2",
+  "openExternalGcodeBtn",
+  "previewOpenGcodeBtn",
 ];
 
 const TEXT_FONT_PRESETS = [
@@ -949,6 +987,16 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizedPowerPercent(value, fallback = 0) {
+  const parsed = Number(value);
+  return clamp(Number.isFinite(parsed) ? parsed : fallback, 0, 100);
+}
+
+function machineSFromPercent(percent, profile = state.machineProfile) {
+  const maxS = Math.max(1, Number(profile?.maxS) || 1000);
+  return Math.round(normalizedPowerPercent(percent) / 100 * maxS);
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -1385,7 +1433,7 @@ async function loadSystemFonts(preferredValue = "") {
     refs.textFontLoading.textContent = "Bilgisayardaki fontlar taranıyor…";
   }
   try {
-    const response = await fetch("/api/system-fonts");
+    const response = await fetch("/api/system-fonts", { headers: apiHeaders() });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || "Sistem fontları okunamadı.");
     state.systemFonts = (data.fonts || [])
@@ -1778,17 +1826,16 @@ function loadProjectPreferences() {
   state.preferences = ProjectState.normalizePreferences(
     readLocalJson(ProjectState.STORAGE_KEYS.preferences, ProjectState.DEFAULT_PREFERENCES)
   );
-  state.recentProjects = ProjectState.normalizeRecentProjects(
+  state.legacyRecentProjects = ProjectState.normalizeRecentProjects(
     readLocalJson(ProjectState.STORAGE_KEYS.recentProjects, []),
     state.preferences.maxRecentProjects
   );
+  state.recentProjects = [];
 }
 
 function saveProjectPreferences() {
   state.preferences = ProjectState.normalizePreferences(state.preferences);
-  state.recentProjects = ProjectState.normalizeRecentProjects(state.recentProjects, state.preferences.maxRecentProjects);
   writeLocalJson(ProjectState.STORAGE_KEYS.preferences, state.preferences);
-  writeLocalJson(ProjectState.STORAGE_KEYS.recentProjects, state.recentProjects);
 }
 
 function updateProjectChrome() {
@@ -1801,8 +1848,35 @@ function updateProjectChrome() {
 function markProjectDirty(action = "Değişiklik") {
   if (undoRestoring) return;
   state.project = ProjectState.markDirty(state.project, action);
+  clearArtifactAccess();
+  clearMachinePreview();
   updateProjectChrome();
   scheduleProjectAutosave();
+}
+
+function clearArtifactAccess() {
+  state.fileAccess.artifactHandle = "";
+  state.fileAccess.artifactHash = "";
+  state.fileAccess.artifactInputHash = "";
+  state.fileAccess.artifactSourceRevision = null;
+  state.fileAccess.artifactExternal = false;
+  state.lastGeneratedRevision = null;
+  state.lastGeneratedPath = "";
+}
+
+function applyArtifactResult(result, options = {}) {
+  const displayPath = result?.displayPath || result?.outputPath || "";
+  state.fileAccess.outputHandle = "";
+  state.fileAccess.artifactHandle = result?.artifactHandle || "";
+  state.fileAccess.artifactHash = result?.fileHash || "";
+  state.fileAccess.artifactInputHash = result?.inputHash || "";
+  state.fileAccess.artifactSourceRevision = Number.isFinite(Number(result?.sourceRevision))
+    ? Number(result.sourceRevision)
+    : state.project.revision;
+  state.fileAccess.artifactExternal = Boolean(options.external);
+  state.lastGeneratedRevision = state.project.revision;
+  state.lastGeneratedPath = displayPath;
+  if (refs.outputPath) refs.outputPath.value = displayPath;
 }
 
 function recoveryMetadata(snapshot) {
@@ -1885,19 +1959,20 @@ async function loadRecoveryCandidate() {
   if (state.recovery.snapshot && !projectHasContent()) openProjectHub();
 }
 
-function addCurrentProjectToRecent(path = state.project.path) {
-  if (!path) return;
-  state.recentProjects = ProjectState.upsertRecentProject(
-    state.recentProjects,
-    {
-      ...state.project,
-      path,
-      counts: projectCounts(),
-    },
-    state.preferences.maxRecentProjects
-  );
-  saveProjectPreferences();
+async function refreshServerRecentProjects() {
+  try {
+    const data = await apiGet("/api/recent-projects");
+    state.recentProjects = Array.isArray(data.projects)
+      ? data.projects.slice(0, state.preferences.maxRecentProjects)
+      : [];
+  } catch (error) {
+    console.warn("Son projeler alınamadı:", error);
+  }
   renderRecentProjects();
+}
+
+function addCurrentProjectToRecent() {
+  void refreshServerRecentProjects();
 }
 
 function formatRecentTime(value) {
@@ -1908,21 +1983,37 @@ function formatRecentTime(value) {
 
 function renderRecentProjects() {
   if (!refs.recentProjectsList) return;
-  refs.recentProjectsList.innerHTML = state.recentProjects.map((project) => {
-    const counts = project.counts;
-    const meta = [counts ? `${Number(counts.totalObjects || 0)} nesne` : "", formatRecentTime(project.openedAt)].filter(Boolean).join(" · ");
-    return `<button class="recent-project-card" data-recent-project="${escapeHtml(project.path)}">
+  const serverCards = state.recentProjects.map((project) => {
+    const meta = formatRecentTime(project.openedAt || project.modifiedAt);
+    return `<button class="recent-project-card" data-recent-project-id="${escapeHtml(project.id)}">
       <span class="recent-project-main">
         <strong>${escapeHtml(project.name)}</strong>
-        <span class="recent-project-path">${escapeHtml(project.path)}</span>
+        <span class="recent-project-path">${escapeHtml(project.displayPath || "")}</span>
         <span class="recent-project-meta">${escapeHtml(meta)}</span>
       </span>
       <span class="recent-project-open">Aç</span>
     </button>`;
-  }).join("");
-  refs.recentProjectsEmpty?.classList.toggle("hidden", state.recentProjects.length > 0);
-  refs.recentProjectsList.querySelectorAll("[data-recent-project]").forEach((button) => {
-    button.addEventListener("click", () => openProject({ path: button.dataset.recentProject }));
+  });
+  const legacyCards = state.legacyRecentProjects.map((project, index) => `
+    <button class="recent-project-card legacy" data-legacy-recent-index="${index}">
+      <span class="recent-project-main">
+        <strong>${escapeHtml(project.name || "Eski proje kaydı")}</strong>
+        <span class="recent-project-path">${escapeHtml(project.path || "")}</span>
+        <span class="recent-project-meta">Tarayıcıdaki eski kayıt; dosyayı yeniden seçin.</span>
+      </span>
+      <span class="recent-project-open">Yeniden yetkilendir</span>
+    </button>
+  `);
+  refs.recentProjectsList.innerHTML = [...serverCards, ...legacyCards].join("");
+  refs.recentProjectsEmpty?.classList.toggle("hidden", serverCards.length + legacyCards.length > 0);
+  refs.recentProjectsList.querySelectorAll("[data-recent-project-id]").forEach((button) => {
+    button.addEventListener("click", () => openProject({ recentId: button.dataset.recentProjectId }));
+  });
+  refs.recentProjectsList.querySelectorAll("[data-legacy-recent-index]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const index = Number(button.dataset.legacyRecentIndex);
+      await openProject({ legacyIndex: index });
+    });
   });
 }
 
@@ -2124,10 +2215,10 @@ const PRODUCT_TOUR_STEPS = [
     title: "Her işlem için üretim parametrelerini ayrı yönetin",
     description: "Kesim ve kazıma değerleri birbirine karışmaz; G-code derleyicisi nesne işlemini ve güvenlik sırasını korur.",
     features: [
-      "S0–S1000 güç, F hızı, pass, kerf, overcut ve kontrollü boş hareket hızı.",
+      "%0–100 güç; makine profilindeki $30 değerine göre salt okunur gerçek S karşılığı.",
       "M4 dinamik güç, hava desteği ve delme beklemesi.",
       "İç detayları önce, dış konturu en son kesme ve mikro köprü desteği.",
-      "Malzeme profilleri ve bağımsız güç/hız kalibrasyon matrisi.",
+      "Doğrulanmış maxS, hareket sınırları, malzeme profilleri ve bağımsız güç/hız kalibrasyon matrisi.",
     ],
     prepare: () => activateRibbonTab("kesim"),
     target: '.ribbon-panel[data-tab="kesim"]',
@@ -2151,8 +2242,8 @@ const PRODUCT_TOUR_STEPS = [
     description: "Canvas görünümü yerine normalize edilmiş üretim modeli kullanılır; aynı sınır kontrolleri dosya yazılırken çekirdekte yeniden uygulanır.",
     features: [
       "Tabla ve kalan malzeme sınırı, aktif işlem ve yol bütünlüğü denetimi.",
-      "Kesim/kazıma sırası, M4/S0 güvenliği ve dosya sonunda lazer kapatma.",
-      "Dosya kimliği, güç/hız aralığı, süre ve mesafe raporu.",
+      "Kesim/kazıma sırası, G21/G90/G94, M4 ve dosya sonunda açık M5/S0 kapanışı.",
+      "Proje revision, kaynak fingerprint, artifact hash, güç/hız aralığı, süre ve mesafe raporu.",
     ],
     prepare: () => activateRibbonTab("cikti"),
     target: ".right-panel",
@@ -2163,9 +2254,9 @@ const PRODUCT_TOUR_STEPS = [
     description: "Önizleme ve cihaz aşamaları tasarımdan ayrıdır; operatör gönderilecek dosyayı ve makinenin durumunu açıkça görür.",
     features: [
       "Kesim, kazıma ve boş hareket katmanları; oynat, duraklat ve zaman çizelgesi.",
-      "Anlık XY konumu, tahmini süre, yol mesafesi ve harici dosya hash uyarısı.",
-      "GRBL seri bağlantı, çerçeve gezdirme, iş sıfırı, jog ve canlı override.",
-      "Çalışan iş sırasında tehlikeli komut kilidi, alarm ve acil durdurma takibi.",
+      "Anlık XY konumu, tahmini süre, yol mesafesi ve harici dosya hash doğrulaması.",
+      "GRBL $30/$32/$130/$131 ile profil eşleştirme; artifact sınırından lazer kapalı çerçeve.",
+      "Basılı tutulan watchdog odak testi ve her iş sonunda zorunlu M5/S0 kapanışı.",
     ],
     target: '.workflow-tab[data-workspace-mode="preview"]',
   },
@@ -2334,8 +2425,8 @@ function renderSupportInfo() {
 async function loadSupportInfo() {
   try {
     const [capabilityResponse, diagnosticsResponse] = await Promise.all([
-      fetch("/api/capabilities"),
-      fetch("/api/diagnostics"),
+      fetch("/api/capabilities", { headers: apiHeaders() }),
+      fetch("/api/diagnostics", { headers: apiHeaders() }),
     ]);
     const capabilityData = await capabilityResponse.json();
     const diagnosticsData = await diagnosticsResponse.json();
@@ -2394,6 +2485,16 @@ function resetEditorState() {
   state.customFonts = [];
   state.lastGeneratedRevision = null;
   state.lastGeneratedPath = "";
+  state.fileAccess = {
+    outputHandle: "",
+    artifactHandle: "",
+    artifactHash: "",
+    artifactInputHash: "",
+    artifactSourceRevision: null,
+    artifactExternal: false,
+    projectHandle: "",
+    projectWriteHandle: "",
+  };
   state.selected = null;
   state.selectedItems = [];
   state.selectedVectorPaths = [];
@@ -2475,6 +2576,17 @@ function loadUiSettings() {
       saved.engraveSettingsVersion = ENGRAVE_SETTINGS_VERSION;
       migratedEngraveDefaults = true;
     }
+    if (saved.powerSettingsVersion !== POWER_SETTINGS_VERSION) {
+      for (const id of ["cutPower", "engravePower", "calibrationMinPower", "calibrationMaxPower", "machinePulsePower"]) {
+        if (id === "engravePower" && migratedEngraveDefaults) continue;
+        if (saved[id] === undefined || !refs[id]) continue;
+        const migrated = normalizedPowerPercent(Number(saved[id]) / 10);
+        refs[id].value = String(migrated);
+        saved[id] = String(migrated);
+      }
+      saved.powerSettingsVersion = POWER_SETTINGS_VERSION;
+      migratedEngraveDefaults = true;
+    }
     if (
       saved.textSettingsVersion !== TEXT_SETTINGS_VERSION
       && (!saved.textFont || saved.textFont === "laser-single")
@@ -2508,6 +2620,7 @@ function saveUiSettings() {
     canvasSelectionMode: state.canvasSelectionMode,
     vectorSettingsVersion: VECTOR_SETTINGS_VERSION,
     engraveSettingsVersion: ENGRAVE_SETTINGS_VERSION,
+    powerSettingsVersion: POWER_SETTINGS_VERSION,
     textSettingsVersion: TEXT_SETTINGS_VERSION,
   };
   for (const id of persistedInputIds) {
@@ -2519,13 +2632,14 @@ function saveUiSettings() {
 }
 
 function enforceAirAssistDefaults() {
+  const supported = Boolean(state.machineProfile?.airAssist?.supported);
   if (refs.airAssist) {
-    refs.airAssist.checked = true;
-    refs.airAssist.disabled = true;
+    if (!supported) refs.airAssist.checked = false;
+    refs.airAssist.disabled = !supported;
   }
   if (refs.airAssistCommand) {
-    refs.airAssistCommand.value = "M8";
-    refs.airAssistCommand.disabled = true;
+    refs.airAssistCommand.value = state.machineProfile?.airAssist?.onCommand || "M8";
+    refs.airAssistCommand.disabled = !supported;
   }
 }
 
@@ -2553,28 +2667,28 @@ const BUILTIN_PROFILES = [
     id: "builtin-white-mdf-fill",
     name: "Beyaz MDF - Koyu Dolgulu Yazı",
     builtin: true,
-    values: { cutFeed: 350, cutPower: 1000, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: DEFAULT_ENGRAVE_POWER, engraveFeed: DEFAULT_ENGRAVE_FEED, lineStep: DEFAULT_ENGRAVE_LINE_STEP, threshold: 140 },
+    values: { cutFeed: 350, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: DEFAULT_ENGRAVE_POWER, engraveFeed: DEFAULT_ENGRAVE_FEED, lineStep: DEFAULT_ENGRAVE_LINE_STEP, threshold: 140 },
     laserCmd: "M4",
   },
   {
     id: "builtin-kontrplak-3",
     name: "3mm Kontrplak",
     builtin: true,
-    values: { cutFeed: 500, cutPower: 1000, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: 250, engraveFeed: 1800, lineStep: 0.35, threshold: 140 },
+    values: { cutFeed: 500, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: 25, engraveFeed: 1800, lineStep: 0.35, threshold: 140 },
     laserCmd: "M4",
   },
   {
     id: "builtin-mdf-3",
     name: "3mm MDF",
     builtin: true,
-    values: { cutFeed: 350, cutPower: 1000, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: 300, engraveFeed: 1600, lineStep: 0.35, threshold: 140 },
+    values: { cutFeed: 350, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: 30, engraveFeed: 1600, lineStep: 0.35, threshold: 140 },
     laserCmd: "M4",
   },
   {
     id: "builtin-karton",
     name: "Karton / Mukavva",
     builtin: true,
-    values: { cutFeed: 1500, cutPower: 600, passes: 1, overcut: 0.5, kerf: 0.1, travelFeed: 3000, pierceDelay: 0, engravePower: 150, engraveFeed: 2500, lineStep: 0.35, threshold: 140 },
+    values: { cutFeed: 1500, cutPower: 60, passes: 1, overcut: 0.5, kerf: 0.1, travelFeed: 3000, pierceDelay: 0, engravePower: 15, engraveFeed: 2500, lineStep: 0.35, threshold: 140 },
     laserCmd: "M4",
   },
 ];
@@ -2582,7 +2696,18 @@ const BUILTIN_PROFILES = [
 function loadCustomProfiles() {
   try {
     const parsed = JSON.parse(localStorage.getItem(MATERIAL_PROFILES_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
+    return (Array.isArray(parsed) ? parsed : []).map((profile) => {
+      if (profile.powerModel === "percent-v1") return profile;
+      return {
+        ...profile,
+        powerModel: "percent-v1",
+        values: {
+          ...(profile.values || {}),
+          cutPower: normalizedPowerPercent(Number(profile.values?.cutPower || 0) / 10),
+          engravePower: normalizedPowerPercent(Number(profile.values?.engravePower || 0) / 10),
+        },
+      };
+    });
   } catch {
     return [];
   }
@@ -2629,7 +2754,7 @@ function applyMaterialProfile() {
   }
   const hint = document.getElementById("profileHint");
   if (hint) {
-    hint.textContent = `"${profile.name}" uygulandı: kesim F${profile.values.cutFeed} S${profile.values.cutPower}, kazıma F${profile.values.engraveFeed} S${profile.values.engravePower}, tarama ${profile.values.lineStep} mm.`;
+    hint.textContent = `"${profile.name}" uygulandı: kesim F${profile.values.cutFeed} %${profile.values.cutPower}, kazıma F${profile.values.engraveFeed} %${profile.values.engravePower}, tarama ${profile.values.lineStep} mm.`;
   }
   updateUiFromAnalysis(computeJobAnalysis());
   setStatus(`Malzeme profili uygulandı: ${profile.name}`);
@@ -2645,7 +2770,7 @@ function saveMaterialProfile() {
   }
   const custom = loadCustomProfiles();
   const id = `custom-${Date.now()}`;
-  custom.push({ id, name: name.trim().slice(0, 60), values, laserCmd: state.laserCmd });
+  custom.push({ id, name: name.trim().slice(0, 60), values, laserCmd: state.laserCmd, powerModel: "percent-v1" });
   saveCustomProfiles(custom);
   renderProfileSelect(id);
   setStatus(`Profil kaydedildi: ${name.trim()}`);
@@ -2784,16 +2909,18 @@ function getSettings() {
     quantity: Math.max(1, Math.round(mm("quantity", 1))),
     allowRotate: Boolean(refs.allowRotate?.checked),
     feed: mm("cutFeed", 500),
-    power: clamp(Math.round(mm("cutPower", 1000)), 0, 1000),
+    power: clamp(Number(mm("cutPower", 100)), 0, 100),
+    powerPercent: clamp(Number(mm("cutPower", 100)), 0, 100),
     passes: Math.max(1, Math.round(mm("passes", 1))),
     overcut: Math.max(0, mm("overcut", 0.8)),
     kerf: Math.min(1, Math.max(0, mm("kerf", 0))),
     travelFeed: Math.max(1, mm("travelFeed", 3000)),
     pierceDelay: Math.max(0, mm("pierceDelay", 0)),
-    airAssist: true,
-    airAssistCommand: "M8",
+    airAssist: Boolean(state.machineProfile.airAssist?.supported && refs.airAssist?.checked),
+    airAssistCommand: state.machineProfile.airAssist?.onCommand || "M8",
     availableArea: materialAreaPayload(),
-    engravePower: clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000),
+    engravePower: clamp(Number(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 100),
+    engravePowerPercent: clamp(Number(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 100),
     engraveFeed: Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED)),
     lineStep: Math.max(0.05, mm("lineStep", DEFAULT_ENGRAVE_LINE_STEP)),
     laserCmd: state.laserCmd,
@@ -2868,11 +2995,11 @@ function applyAutoVectorPreset() {
 }
 
 function apiRequestUsesNativeDialog(path, payload = {}) {
-  if (["/api/open-dxf", "/api/save-gcode-dialog"].includes(path)) return true;
+  if (["/api/open-dxf", "/api/open-gcode", "/api/reauthorize-source", "/api/save-gcode-dialog"].includes(path)) return true;
   if (["/api/open-image", "/api/open-raster-image", "/api/vectorize-image", "/api/open-project"].includes(path)) {
-    return !payload.path && !payload.dataUrl;
+    return !payload.sourceHandle && !payload.projectHandle && !payload.dataUrl;
   }
-  if (["/api/save-vector-svg", "/api/save-project"].includes(path)) return !payload.outputPath;
+  if (["/api/save-vector-svg", "/api/save-project"].includes(path)) return !payload.outputHandle;
   return false;
 }
 
@@ -2909,7 +3036,7 @@ async function api(path, payload = {}) {
   try {
     const response = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(),
       body: JSON.stringify(payload),
     });
     const data = await response.json();
@@ -2923,6 +3050,18 @@ async function api(path, payload = {}) {
       setNativeDialogButtonsLocked(false);
     }
   }
+}
+
+async function apiGet(path) {
+  const response = await fetch(path, {
+    method: "GET",
+    headers: { "X-LaserApp-Token": API_TOKEN },
+  });
+  const data = await response.json();
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || "İşlem tamamlanamadı.");
+  }
+  return data;
 }
 
 function defaultImageAdjustments() {
@@ -3277,10 +3416,10 @@ async function applyImageMask(pattern, sourcePoints) {
 
 async function restoreSelectedImageOriginal() {
   const pattern = selectedRasterPattern();
-  const path = pattern?.originalPath || pattern?.sourcePath;
-  if (!pattern || !path) return;
+  const sourceHandle = pattern?.sourceHandle || "";
+  if (!pattern || !sourceHandle) return;
   pushUndo("Görsel orijinaline dön");
-  const data = await api("/api/open-raster-image", { path });
+  const data = await api("/api/open-raster-image", { sourceHandle });
   if (!data.image) return;
   pattern.sourceWidth = data.image.sourceWidth || data.image.width || pattern.sourceWidth;
   pattern.sourceHeight = data.image.sourceHeight || data.image.height || pattern.sourceHeight;
@@ -3454,7 +3593,7 @@ function sendClientPing() {
   const payload = clientLifecyclePayload();
   fetch("/api/client/ping", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(),
     body: payload,
     keepalive: true,
   }).catch(() => {});
@@ -3462,13 +3601,9 @@ function sendClientPing() {
 
 function sendClientClose() {
   const payload = clientLifecyclePayload();
-  if (navigator.sendBeacon) {
-    navigator.sendBeacon("/api/client/close", new Blob([payload], { type: "application/json" }));
-    return;
-  }
   fetch("/api/client/close", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(),
     body: payload,
     keepalive: true,
   }).catch(() => {});
@@ -3623,6 +3758,105 @@ function syncMachineTabFromHash() {
   setMachineTabOpen(location.hash === "#machine", false);
 }
 
+function updatePowerMachineReadouts() {
+  if (refs.cutPowerMachineValue) refs.cutPowerMachineValue.textContent = `S${machineSFromPercent(mm("cutPower", 100))}`;
+  if (refs.engravePowerMachineValue) refs.engravePowerMachineValue.textContent = `S${machineSFromPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER))}`;
+}
+
+function machineProfileConnectedIssues(machine = state.machine) {
+  if (!machine.connected) return [];
+  const settings = machine.settings || {};
+  const issues = [];
+  if (Number(settings["32"]) !== 1) issues.push("$32=1 degil");
+  if (!Number.isFinite(Number(settings["30"]))) issues.push("$30 okunamadi");
+  else if (Math.abs(Number(settings["30"]) - Number(state.machineProfile.maxS)) > 1e-6) issues.push(`$30=${settings["30"]}, profil ${state.machineProfile.maxS}`);
+  if (!Number.isFinite(Number(settings["130"]))) issues.push("$130 okunamadi");
+  else if (Math.abs(Number(settings["130"]) - Number(state.machineProfile.travelX)) > 1e-6) issues.push(`$130=${settings["130"]}, profil ${state.machineProfile.travelX}`);
+  if (!Number.isFinite(Number(settings["131"]))) issues.push("$131 okunamadi");
+  else if (Math.abs(Number(settings["131"]) - Number(state.machineProfile.travelY)) > 1e-6) issues.push(`$131=${settings["131"]}, profil ${state.machineProfile.travelY}`);
+  return issues;
+}
+
+function syncMachineProfileUi() {
+  const profile = state.machineProfile;
+  if (refs.machineProfileMaxS && document.activeElement !== refs.machineProfileMaxS) refs.machineProfileMaxS.value = String(profile.maxS);
+  if (refs.machineProfileTravelX && document.activeElement !== refs.machineProfileTravelX) refs.machineProfileTravelX.value = String(profile.travelX);
+  if (refs.machineProfileTravelY && document.activeElement !== refs.machineProfileTravelY) refs.machineProfileTravelY.value = String(profile.travelY);
+  if (refs.machineProfileAirAssist) refs.machineProfileAirAssist.checked = Boolean(profile.airAssist?.supported);
+  const issues = machineProfileConnectedIssues();
+  if (refs.machineProfileStatus) {
+    refs.machineProfileStatus.textContent = issues.length
+      ? `Makine uyusmazligi: ${issues.join(" · ")}`
+      : profile.verified
+        ? `${profile.name} · S0-${profile.maxS} · ${profile.travelX} × ${profile.travelY} mm`
+        : "Dogrulama gerekli";
+    refs.machineProfileStatus.classList.toggle("danger", issues.length > 0);
+  }
+  if (refs.machineSettingValidation) {
+    const settings = state.machine.settings || {};
+    const rows = [
+      ["$30", settings["30"], profile.maxS],
+      ["$32", settings["32"], 1],
+      ["$130", settings["130"], profile.travelX],
+      ["$131", settings["131"], profile.travelY],
+    ];
+    refs.machineSettingValidation.innerHTML = rows.map(([key, actual, expected]) => {
+      const known = Number.isFinite(Number(actual));
+      const matches = known && Math.abs(Number(actual) - Number(expected)) <= 1e-6;
+      const stateClass = !state.machine.connected ? "pending" : matches ? "ok" : "danger";
+      const actualText = known ? Number(actual).toString() : "okunmadı";
+      return `<span class="${stateClass}"><b>${key}</b><em>${actualText}</em><small>beklenen ${expected}</small></span>`;
+    }).join("");
+  }
+  enforceAirAssistDefaults();
+  updatePowerMachineReadouts();
+}
+
+function verifyMachineProfileFromInputs() {
+  const next = ProjectState.normalizeMachineProfile({
+    ...state.machineProfile,
+    maxS: refs.machineProfileMaxS?.value,
+    travelX: refs.machineProfileTravelX?.value,
+    travelY: refs.machineProfileTravelY?.value,
+    airAssist: {
+      ...(state.machineProfile.airAssist || {}),
+      supported: Boolean(refs.machineProfileAirAssist?.checked),
+    },
+    verified: true,
+    verifiedAt: new Date().toISOString(),
+    source: "manual",
+  });
+  if (!window.confirm(`Makine profili dogrulansin mi?\nMaks S: ${next.maxS}\nAlan: ${next.travelX} x ${next.travelY} mm`)) return;
+  state.machineProfile = next;
+  markProjectDirty("Makine profili dogrulandi");
+  syncMachineProfileUi();
+  setStatus("Makine profili dogrulandi.", "ok");
+}
+
+function syncMachineProfileFromConnectedMachine() {
+  const settings = state.machine.settings || {};
+  if (!state.machine.connected || !["30", "32", "130", "131"].every((key) => Number.isFinite(Number(settings[key])))) {
+    setStatus("Makine $30/$32/$130/$131 ayarlari okunamadi.", "danger");
+    return;
+  }
+  if (Number(settings["32"]) !== 1) {
+    setStatus("Makine profili dogrulanamadi: $32=1 olmali.", "danger");
+    return;
+  }
+  state.machineProfile = ProjectState.normalizeMachineProfile({
+    ...state.machineProfile,
+    maxS: Number(settings["30"]),
+    travelX: Number(settings["130"]),
+    travelY: Number(settings["131"]),
+    verified: true,
+    verifiedAt: new Date().toISOString(),
+    source: "connected-machine",
+  });
+  markProjectDirty("Makine profili makineden guncellendi");
+  syncMachineProfileUi();
+  setStatus("Makine profili $30/$130/$131 degerlerinden guncellendi.", "ok");
+}
+
 function applyMachineSnapshot(machine) {
   if (!machine) return;
   const previousMachine = state.machine;
@@ -3634,6 +3868,7 @@ function applyMachineSnapshot(machine) {
     log: machine.log || [],
   };
   captureMachineActivity(previousMachine, state.machine);
+  syncMachineProfileUi();
   renderMachinePanel();
   renderWorkflowProgress();
 }
@@ -3674,6 +3909,7 @@ function renderMachinePanel() {
   const status = machine.lastStatus || {};
   const connected = Boolean(machine.connected);
   const activeJob = machineJobActive(job);
+  const profileReady = Boolean(state.machineProfile.verified && machineProfileConnectedIssues(machine).length === 0);
   const warnings = machineLaserModeWarnings(machine);
   const jobText = job.running
     ? `Gönderim: ${Number(job.sent || 0)} / ${Number(job.total || 0)}`
@@ -3690,7 +3926,8 @@ function renderMachinePanel() {
   document.getElementById("autoConnectMachineBtn").disabled = connected || machine.available === false;
   document.getElementById("disconnectMachineBtn").disabled = !connected;
   document.getElementById("machineStatusBtn").disabled = !connected;
-  document.getElementById("sendGcodeToMachineBtn").disabled = !connected || activeJob || !refs.outputPath?.value;
+  document.getElementById("sendGcodeToMachineBtn").disabled =
+    !connected || activeJob || !profileReady || !state.fileAccess.artifactHandle || state.lastGeneratedRevision !== state.project.revision;
   document.getElementById("sendMachineCommandBtn").disabled = !connected || activeJob;
   document.getElementById("machineFrameBtn").disabled = !connected || activeJob;
   document.getElementById("setMachineOriginBtn").disabled = !connected || activeJob;
@@ -3715,6 +3952,7 @@ function renderMachinePanel() {
     drawProductionPreview();
   }
   updateProduceFlowMachineState();
+  syncMachineProfileUi();
 }
 
 function renderMachineOverrides(status) {
@@ -3913,6 +4151,9 @@ function renderProductionPreviewInfo() {
     ) {
       level = "danger";
       message = `G-code sınırı ${bed().width.toFixed(1)} × ${bed().height.toFixed(1)} mm tabla dışına taşıyor.`;
+    } else if (state.fileAccess.artifactExternal) {
+      level = "warn";
+      message = `Harici G-code güvenlik analizinden geçti. Dosya kimliği: ${String(preview.fileHash || "yok").slice(0, 12)}${preview.fileHash ? "…" : ""}. Tasarımla eşleşmesini operatör doğrulamalı.`;
     } else if (generatedMatchesPath && analysis.criticalCount) {
       level = "danger";
       message = analysis.warnings.find((item) => item.level === "critical")?.title || "Kritik üretim sorunu var.";
@@ -3935,7 +4176,7 @@ function renderProductionPreviewInfo() {
 
   const connected = Boolean(state.machine.connected);
   const running = machineJobActive();
-  const hasPath = Boolean(path);
+  const hasPath = Boolean(path && state.fileAccess.artifactHandle && state.lastGeneratedRevision === state.project.revision);
   const frameButton = document.getElementById("previewFrameBtn");
   const sendButton = document.getElementById("previewSendBtn");
   if (frameButton) frameButton.disabled = !connected || running || !hasPath;
@@ -4113,14 +4354,15 @@ async function setProductionPreviewTabOpen(open, syncWorkflow = true) {
 
 async function loadMachinePreview(showErrors = true) {
   const path = refs.outputPath?.value?.trim() || "";
-  if (!path) {
+  const artifactHandle = state.fileAccess.artifactHandle;
+  if (!path || !artifactHandle) {
     clearMachinePreview();
     if (showErrors) setStatus("Önce G-code çıktı yolu gerekli.", "warn");
     return;
   }
   try {
     stopProductionPlayback();
-    const data = await api("/api/machine/gcode-info", { path });
+    const data = await api("/api/machine/gcode-info", { artifactHandle });
     state.machine.preview = data.info || null;
     state.machine.previewPath = path;
     state.productionPreview.progress = null;
@@ -4363,16 +4605,17 @@ function activeMachineJobBounds(analysis) {
 
 async function frameMachineJob() {
   if (!ensureMachineIdleForCommand("Cerceve hareketi")) return;
-  const analysis = computeJobAnalysis();
-  updateUiFromAnalysis(analysis);
-  if (!analysis.canGenerate) {
-    const first = analysis.warnings.find((item) => item.level === "critical");
-    setStatus(`Çerçeve gezdirilemez: ${first?.title || "kritik sorun var"}.`);
+  const artifactHandle = state.fileAccess.artifactHandle;
+  if (!artifactHandle || state.lastGeneratedRevision !== state.project.revision) {
+    setStatus("Çerçeve için önce güncel ve doğrulanmış bir G-code oluşturun veya açın.", "danger");
     return;
   }
-  const bounds = activeMachineJobBounds(analysis);
+  if (!state.machine.preview || state.machine.previewPath !== state.lastGeneratedPath) {
+    await loadMachinePreview(false);
+  }
+  const bounds = state.machine.preview?.bounds || null;
   if (!bounds) {
-    setStatus("Çerçeve için aktif iş sınırı bulunamadı.");
+    setStatus("G-code sınırı çözümlenemedi; çerçeve hareketi engellendi.", "danger");
     return;
   }
   const feed = Math.max(1, Number(refs.machineFrameFeed?.value) || 3000);
@@ -4382,7 +4625,13 @@ async function frameMachineJob() {
   const message = `Lazer kapalı çerçeve hareketi başlatılacak.\nAlan: ${width.toFixed(1)} × ${height.toFixed(1)} mm\nHız: F${feed.toFixed(0)}\n\nDevam edilsin mi?`;
   if (!window.confirm(message)) return;
   try {
-    const data = await api("/api/machine/frame", { bounds, feed, padding, confirmed: true });
+    const data = await api("/api/machine/frame", {
+      artifactHandle,
+      expectedHash: state.fileAccess.artifactHash,
+      feed,
+      padding,
+      confirmed: true,
+    });
     applyMachineSnapshot(data.machine);
     setStatus("Çerçeve hareketi tamamlandı.");
   } catch (error) {
@@ -4405,20 +4654,34 @@ async function setMachineOrigin(clear = false) {
   }
 }
 
-async function focusPulse() {
-  if (!ensureMachineIdleForCommand("Odak atimi")) return;
-  const power = clamp(Math.round(Number(refs.machinePulsePower?.value) || 10), 1, 200);
-  const durationMs = clamp(Math.round(Number(refs.machinePulseDuration?.value) || 80), 1, 1000);
-  if (refs.machinePulsePower) refs.machinePulsePower.value = power;
-  if (refs.machinePulseDuration) refs.machinePulseDuration.value = durationMs;
-  const message = `Odak/test atımı yapılacak.\nGüç: S${power}\nSüre: ${durationMs} ms\n\nLazer kısa süre yanacak. Devam edilsin mi?`;
+let focusPressActive = false;
+
+async function startFocusPress(event) {
+  if (focusPressActive || !ensureMachineIdleForCommand("Odak atimi")) return;
+  const powerPercent = clamp(Number(refs.machinePulsePower?.value) || 1, 0.1, 3);
+  if (refs.machinePulsePower) refs.machinePulsePower.value = powerPercent;
+  const message = `Odak lazeri basili tuttugunuz surece calisacak.\nGuc: %${powerPercent} (S${machineSFromPercent(powerPercent)})\nSunucu 100 ms sonra otomatik kapatir.\n\nDevam edilsin mi?`;
   if (!window.confirm(message)) return;
   try {
-    const data = await api("/api/machine/focus-pulse", { power, durationMs, confirmed: true });
+    event?.currentTarget?.setPointerCapture?.(event.pointerId);
+    const data = await api("/api/machine/focus-start", { powerPercent, expert: false, confirmed: true });
+    focusPressActive = true;
     applyMachineSnapshot(data.machine);
-    setStatus(`Odak atımı tamamlandı: S${power}, ${durationMs} ms.`);
+    setStatus(`Odak lazeri acildi: %${powerPercent}. Birakinca kapanir.`);
   } catch (error) {
-    setStatus(error.message);
+    setStatus(error.message, "danger");
+  }
+}
+
+async function stopFocusPress() {
+  if (!focusPressActive) return;
+  focusPressActive = false;
+  try {
+    const data = await api("/api/machine/focus-stop", {});
+    applyMachineSnapshot(data.machine);
+    setStatus("Odak lazeri kapatildi.");
+  } catch (error) {
+    setStatus(error.message, "danger");
   }
 }
 
@@ -4426,10 +4689,17 @@ async function sendMachineCommand() {
   if (!ensureMachineIdleForCommand("Tek komut")) return;
   const command = refs.machineCommand?.value.trim() || "";
   if (!command) return;
-  const mayFireLaser = /\bM0?[34]\b/i.test(command) || /\bS[1-9]\d*/i.test(command);
-  if (mayFireLaser && !window.confirm("Bu komut lazeri yakabilir. Gönderilsin mi?")) return;
+  const settingCommand = /^\$\d+\s*=\s*-?\d+(?:\.\d+)?$/i.test(command);
+  const settingConfirmed = settingCommand
+    ? window.confirm("Bu komut kalici GRBL ayarini degistirecek. Deger dogrulandi mi?")
+    : false;
+  if (settingCommand && !settingConfirmed) return;
   try {
-    const data = await api("/api/machine/command", { command });
+    const data = await api("/api/machine/command", {
+      command,
+      expert: state.preferences.userMode === "advanced",
+      settingConfirmed,
+    });
     applyMachineSnapshot(data.machine);
     setStatus(`Komut gönderildi: ${command}`);
   } catch (error) {
@@ -4440,16 +4710,46 @@ async function sendMachineCommand() {
 async function sendGcodeToMachine() {
   if (!ensureMachineIdleForCommand("G-code gonderimi")) return;
   const path = refs.outputPath?.value.trim() || "";
-  if (!path) {
+  const artifactHandle = state.fileAccess.artifactHandle;
+  if (!path || !artifactHandle || state.lastGeneratedRevision !== state.project.revision) {
     setStatus("Makineye göndermek için önce G-code dosyası seçin veya oluşturun.");
     return;
   }
-  const message = `G-code dosyası doğrudan makineye gönderilecek:\n${path}\n\nLazer ve eksen hareketleri başlayabilir. Devam edilsin mi?`;
+  let machinePreflight;
+  if (state.fileAccess.artifactExternal) {
+    machinePreflight = {
+      status: "ready",
+      inputHash: state.fileAccess.artifactInputHash,
+    };
+  } else {
+    try {
+      const checked = await runAuthoritativePreflight({ requireMachine: true });
+      machinePreflight = checked.preflight;
+    } catch (error) {
+      setStatus(error.message, "danger");
+      return;
+    }
+  }
+  if (!machinePreflight || machinePreflight.status !== "ready") {
+    setStatus(machinePreflight?.blockers?.[0]?.message || "Makine on kontrolu basarisiz.", "danger");
+    return;
+  }
+  const externalWarning = state.fileAccess.artifactExternal
+    ? "\n\nBu harici dosyanın mevcut tasarımla eşleşmesini operatör doğrulamalıdır."
+    : "";
+  const message = `G-code dosyası doğrudan makineye gönderilecek:\n${path}${externalWarning}\n\nLazer ve eksen hareketleri başlayabilir. Devam edilsin mi?`;
   if (!window.confirm(message)) return;
   try {
     // Onizleme + kalan sure gostergesi icin isi gondermeden dosyayi coz.
     if (state.machine.previewPath !== path) await loadMachinePreview(false);
-    const data = await api("/api/machine/send-gcode", { path, confirmed: true });
+    const data = await api("/api/machine/send-gcode", {
+      artifactHandle,
+      expectedHash: state.fileAccess.artifactHash,
+      expectedInputHash: state.fileAccess.artifactInputHash || machinePreflight.inputHash,
+      sourceRevision: state.fileAccess.artifactSourceRevision ?? state.project.revision,
+      machineProfile: clonePlain(state.machineProfile),
+      confirmed: true,
+    });
     recordProductionHistory("sent", { totalLines: data.machine?.job?.total || state.machine.preview?.lineCount || 0 });
     applyMachineSnapshot(data.machine);
     setStatus("G-code gönderimi başladı.");
@@ -8579,9 +8879,9 @@ function patternUsesCustomProcess(pattern) {
 
 function enablePatternProcessOverride(pattern) {
   if (!pattern || patternUsesCustomProcess(pattern)) return;
-  const cutPower = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
+  const cutPower = normalizedPowerPercent(mm("cutPower", 100), 100);
   const cutFeed = Math.max(1, mm("cutFeed", 500));
-  const engravePower = clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000);
+  const engravePower = normalizedPowerPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER);
   const engraveFeed = Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED));
   pattern.cutPower = cutPower;
   pattern.cutFeed = cutFeed;
@@ -8596,17 +8896,17 @@ function enablePatternProcessOverride(pattern) {
 function vectorEntryDefaultPower(entry) {
   const operation = vectorPathOperation(entry.vectorPath, entry.pattern);
   if (operation === "cut") {
-    const globalPower = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
+    const globalPower = normalizedPowerPercent(mm("cutPower", 100), 100);
     if (!patternUsesCustomProcess(entry.pattern)) return globalPower;
     const fallback = patternOperation(entry.pattern) === "cut" ? entry.pattern?.power : globalPower;
     const value = Number(entry.pattern?.cutPower ?? fallback);
-    return clamp(Math.round(Number.isFinite(value) ? value : globalPower), 0, 1000);
+    return normalizedPowerPercent(Number.isFinite(value) ? value : globalPower, globalPower);
   }
-  const globalPower = clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000);
+  const globalPower = normalizedPowerPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER);
   if (!patternUsesCustomProcess(entry.pattern)) return globalPower;
   const fallback = patternOperation(entry.pattern) !== "cut" ? entry.pattern?.power : globalPower;
   const value = Number(entry.pattern?.engravePower ?? fallback);
-  return clamp(Math.round(Number.isFinite(value) ? value : globalPower), 0, 1000);
+  return normalizedPowerPercent(Number.isFinite(value) ? value : globalPower, globalPower);
 }
 
 function vectorPowerOverrideSettings(entries = selectedVectorOperationEntries()) {
@@ -8627,8 +8927,8 @@ function vectorPowerOverrideSettings(entries = selectedVectorOperationEntries())
   return {
     enabled: allOverride,
     mixed: anyOverride && (!allOverride || commonOverride === null),
-    power: clamp(Math.round(commonOverride ?? commonInherited ?? inherited[0] ?? mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000),
-    inheritedLabel: commonInherited === null ? "işleme göre" : `S${commonInherited}`,
+    power: normalizedPowerPercent(commonOverride ?? commonInherited ?? inherited[0] ?? mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER),
+    inheritedLabel: commonInherited === null ? "işleme göre" : `%${commonInherited}`,
   };
 }
 
@@ -8643,7 +8943,7 @@ function vectorPowerOverrideHtml(entries) {
       <input id="vectorSelectionPowerOverrideEnabled" type="checkbox" ${settings.enabled ? "checked" : ""} />
       <span>Bu kontur grubu için özel güç kullan</span>
     </label>
-    <label>Güç S <input id="vectorSelectionPowerOverride" type="number" min="0" max="1000" step="10" value="${settings.power}" ${settings.enabled ? "" : "disabled"} /></label>
+    <label>Güç % <input id="vectorSelectionPowerOverride" type="number" min="0" max="100" step="1" value="${settings.power}" ${settings.enabled ? "" : "disabled"} /></label>
   </div>`;
 }
 
@@ -8651,7 +8951,7 @@ function applyVectorPowerOverride(entries, enabled, rawPower) {
   const validEntries = expandVectorPowerEntries(entries)
     .filter((entry) => entry?.pattern && entry.vectorPath && !entry.vectorPath.removed);
   if (!validEntries.length) return false;
-  const power = clamp(Math.round(Number(rawPower) || 0), 0, 1000);
+  const power = normalizedPowerPercent(rawPower);
   pushUndo(enabled ? "Kontur gücü" : "Kontur gücünü varsayılana döndür");
   for (const entry of validEntries) {
     if (enabled) entry.vectorPath.powerOverride = power;
@@ -8663,7 +8963,7 @@ function applyVectorPowerOverride(entries, enabled, rawPower) {
   draw();
   setStatus(
     enabled
-      ? `${validEntries.length} kontur için özel lazer gücü S${power} uygulandı.`
+      ? `${validEntries.length} kontur için özel lazer gücü %${power} uygulandı.`
       : `${validEntries.length} kontur Kesim & Kazıma varsayılan gücüne döndü.`,
     "ok"
   );
@@ -8683,7 +8983,7 @@ function bindVectorPowerOverride(entries) {
   };
   enabled.addEventListener("change", apply);
   input.addEventListener("change", () => {
-    input.value = String(clamp(Math.round(Number(input.value) || 0), 0, 1000));
+    input.value = String(normalizedPowerPercent(input.value));
     if (enabled.checked) apply();
   });
 }
@@ -9021,13 +9321,13 @@ function setPatternOperationDefaults(pattern, operation) {
     }
   }
   if (nextOperation === "cut") {
-    pattern.power = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
+    pattern.power = normalizedPowerPercent(mm("cutPower", 100), 100);
     pattern.feed = Math.max(1, mm("cutFeed", 500));
     pattern.cutPower = pattern.power;
     pattern.cutFeed = pattern.feed;
     pattern.vectorEngraveMode = "contour";
   } else if (nextOperation === "engrave_line" || nextOperation === "engrave_fill") {
-    pattern.power = clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000);
+    pattern.power = normalizedPowerPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER);
     pattern.feed = Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED));
     pattern.engravePower = pattern.power;
     pattern.engraveFeed = pattern.feed;
@@ -9046,7 +9346,7 @@ function setPatternOperationDefaults(pattern, operation) {
 }
 
 function wholeTextFillSettings(pattern) {
-  const defaultPower = clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000);
+  const defaultPower = normalizedPowerPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER);
   const defaultFeed = Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED));
   if (!patternUsesCustomProcess(pattern)) {
     return {
@@ -9057,7 +9357,7 @@ function wholeTextFillSettings(pattern) {
   }
   const overallOperation = patternOperation(pattern);
   return {
-    power: clamp(Math.round(Number(pattern?.engravePower ?? (overallOperation === "cut" ? defaultPower : pattern?.power ?? defaultPower))), 0, 1000),
+    power: normalizedPowerPercent(pattern?.engravePower ?? (overallOperation === "cut" ? defaultPower : pattern?.power ?? defaultPower), defaultPower),
     feed: Math.max(1, Number(pattern?.engraveFeed ?? (overallOperation === "cut" ? defaultFeed : pattern?.feed ?? defaultFeed))),
     lineStep: textFillLineStep(pattern),
   };
@@ -9083,7 +9383,7 @@ function wholeTextFillActionHtml(pattern) {
       <span>Bütün harf gövdelerini tek bileşik alan yapar; üst üste binen harfleri birleştirir, A/O/B iç boşluklarını korur.</span>
     </div>
     <div class="text-fill-settings">
-      <label>Güç S <input id="wholeTextFillPower" type="number" min="0" max="1000" step="10" value="${settings.power}" /></label>
+      <label>Güç % <input id="wholeTextFillPower" type="number" min="0" max="100" step="1" value="${settings.power}" /></label>
       <label>Hız F <input id="wholeTextFillFeed" type="number" min="1" step="50" value="${settings.feed}" /></label>
       <label>Tarama aralığı <span class="unit-input"><input id="wholeTextFillStep" type="number" min="0.05" max="1" step="0.01" value="${settings.lineStep.toFixed(2)}" /><b>mm</b></span></label>
     </div>
@@ -9096,7 +9396,7 @@ async function applyWholeTextFill(pattern, options = {}) {
   let textPattern = editableTextPattern(pattern);
   if (!textPattern) return false;
   const defaults = wholeTextFillSettings(textPattern);
-  const power = clamp(Math.round(Number(options.power ?? document.getElementById("wholeTextFillPower")?.value ?? defaults.power)), 0, 1000);
+  const power = normalizedPowerPercent(options.power ?? document.getElementById("wholeTextFillPower")?.value ?? defaults.power, defaults.power);
   const feed = Math.max(1, Number(options.feed ?? document.getElementById("wholeTextFillFeed")?.value ?? defaults.feed));
   const lineStep = clamp(Number(options.lineStep ?? document.getElementById("wholeTextFillStep")?.value ?? defaults.lineStep), 0.05, 1);
   let undoCaptured = false;
@@ -9131,7 +9431,7 @@ async function applyWholeTextFill(pattern, options = {}) {
   textPattern.engravePower = power;
   textPattern.engraveFeed = feed;
   textPattern.processOverride = patternUsesCustomProcess(textPattern)
-    || power !== clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000)
+    || power !== normalizedPowerPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER)
     || feed !== Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED));
   textPattern.lineStep = lineStep;
   textPattern.vectorStats = { ...(textPattern.vectorStats || {}), filledTraceInvert: false };
@@ -9150,7 +9450,7 @@ async function applyWholeTextFill(pattern, options = {}) {
   }
   select("pattern", textPattern.id);
   updateJobAnalysisNow();
-  setStatus(`Tüm yazı kalın kazımaya alındı: ${lineStep.toFixed(2)} mm tarama, S${power}, F${feed}.`, "ok");
+  setStatus(`Tüm yazı kalın kazımaya alındı: ${lineStep.toFixed(2)} mm tarama, %${power} (S${machineSFromPercent(power)}), F${feed}.`, "ok");
   return true;
 }
 
@@ -9168,9 +9468,9 @@ function setCadLineArtDefaults(pattern) {
   pattern.cadLineArt = true;
   pattern.regionClassificationMode = pattern.regionClassificationMode || "exterior-cut";
   pattern.cutRegionSeeds = clonePlain(pattern.cutRegionSeeds || []);
-  pattern.cutPower = clamp(Math.round(Number(pattern.cutPower ?? mm("cutPower", 1000))), 0, 1000);
+  pattern.cutPower = normalizedPowerPercent(pattern.cutPower ?? mm("cutPower", 100), 100);
   pattern.cutFeed = Math.max(1, Number(pattern.cutFeed ?? mm("cutFeed", 500)));
-  pattern.engravePower = clamp(Math.round(Number(pattern.engravePower ?? mm("engravePower", DEFAULT_ENGRAVE_POWER))), 0, 1000);
+  pattern.engravePower = normalizedPowerPercent(pattern.engravePower ?? mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER);
   pattern.engraveFeed = Math.max(1, Number(pattern.engraveFeed ?? mm("engraveFeed", DEFAULT_ENGRAVE_FEED)));
   pattern.power = pattern.engravePower;
   pattern.feed = pattern.engraveFeed;
@@ -9736,7 +10036,7 @@ function renderPatternPanel(pattern) {
           <label>Çizgi <input data-pattern="lineStep" type="number" min="0.05" step="0.05" value="${pattern.lineStep}" /></label>
           ${
             rasterMode === "grayscale"
-              ? `<label>Min güç S <input data-pattern="powerMin" type="number" min="0" max="1000" step="10" value="${Number(pattern.powerMin || 0)}" /></label>
+              ? `<label>Min güç % <input data-pattern="powerMin" type="number" min="0" max="100" step="1" value="${Number(pattern.powerMin || 0)}" /></label>
                  <label>Gamma <input data-pattern="gamma" type="number" min="0.2" max="4" step="0.1" value="${Number(pattern.gamma || 1).toFixed(1)}" /></label>`
               : `<label>Eşik <input data-pattern="threshold" type="number" min="0" max="255" step="1" value="${pattern.threshold}" /></label>`
           }`
@@ -9921,16 +10221,16 @@ function renderPatternPanel(pattern) {
       </div>`
     : "";
   const customProcess = patternUsesCustomProcess(pattern);
-  const cutPowerValue = customProcess ? Number(pattern.cutPower ?? pattern.power ?? mm("cutPower", 1000)) : mm("cutPower", 1000);
+  const cutPowerValue = customProcess ? Number(pattern.cutPower ?? pattern.power ?? mm("cutPower", 100)) : mm("cutPower", 100);
   const cutFeedValue = customProcess ? Number(pattern.cutFeed ?? pattern.feed ?? mm("cutFeed", 500)) : mm("cutFeed", 500);
   const engravePowerValue = customProcess ? Number(pattern.engravePower ?? pattern.power ?? mm("engravePower", DEFAULT_ENGRAVE_POWER)) : mm("engravePower", DEFAULT_ENGRAVE_POWER);
   const engraveFeedValue = customProcess ? Number(pattern.engraveFeed ?? pattern.feed ?? mm("engraveFeed", DEFAULT_ENGRAVE_FEED)) : mm("engraveFeed", DEFAULT_ENGRAVE_FEED);
   const processControls = cadLineArt
-    ? `<label>Kesim gücü S <input data-pattern="cutPower" type="number" min="0" max="1000" step="10" value="${cutPowerValue}" /></label>
+    ? `<label>Kesim gücü % <input data-pattern="cutPower" type="number" min="0" max="100" step="1" value="${cutPowerValue}" /></label>
        <label>Kesim hızı F <input data-pattern="cutFeed" type="number" min="1" step="50" value="${cutFeedValue}" /></label>
-       <label>Kazıma gücü S <input data-pattern="engravePower" type="number" min="0" max="1000" step="10" value="${engravePowerValue}" /></label>
+       <label>Kazıma gücü % <input data-pattern="engravePower" type="number" min="0" max="100" step="1" value="${engravePowerValue}" /></label>
        <label>Kazıma hızı F <input data-pattern="engraveFeed" type="number" min="1" step="50" value="${engraveFeedValue}" /></label>`
-    : `<label>${operation === "cut" ? "Kesim gücü S" : "Kazıma gücü S"} <input data-pattern="power" type="number" min="0" max="1000" step="10" value="${operation === "cut" ? cutPowerValue : engravePowerValue}" /></label>
+    : `<label>${operation === "cut" ? "Kesim gücü %" : "Kazıma gücü %"} <input data-pattern="power" type="number" min="0" max="100" step="1" value="${operation === "cut" ? cutPowerValue : engravePowerValue}" /></label>
        <label>${operation === "cut" ? "Kesim hızı F" : "Kazıma hızı F"} <input data-pattern="feed" type="number" min="1" step="50" value="${operation === "cut" ? cutFeedValue : engraveFeedValue}" /></label>`;
   refs.selectionPanel.innerHTML = `
     <div class="property-title"><strong>${escapeHtml(pattern.name || "Desen")}</strong><span data-pattern-geometry-summary>${kindText} · ${patternOperationDisplayLabel(pattern)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm${multiSelectionText}</span></div>
@@ -10551,7 +10851,7 @@ function bindPatternPanel(pattern) {
         pattern[key] = value;
       }
       if (["power", "powerMin", "cutPower", "engravePower"].includes(key)) {
-        pattern[key] = clamp(Math.round(pattern[key]), 0, 1000);
+        pattern[key] = normalizedPowerPercent(pattern[key]);
       }
       if (["feed", "cutFeed", "engraveFeed"].includes(key)) pattern[key] = Math.max(1, pattern[key]);
       if (key === "power") {
@@ -10956,7 +11256,7 @@ function cutSuitabilityIssuesForPattern(pattern, kerf = Math.min(1, Math.max(0, 
   if (openCutPaths.length) {
     const largestGap = Math.max(...openCutPaths.map((item) => item.gap));
     issues.push({
-      level: "warning",
+      level: "critical",
       title: "Kesimde açık vektör konturu var",
       body: `${pattern.name || "Desen"} içinde ${openCutPaths.length} açık kesim konturu var. En büyük uç açıklığı ${largestGap.toFixed(2)} mm; parça tam kopmayabilir veya beklenmeyen çizgi kesilebilir.`,
       action: "Deseni seç",
@@ -11148,12 +11448,29 @@ function computeJobAnalysis() {
       action: "Tabla ölçüsünü düzelt",
     });
   }
+  if (!state.machineProfile?.verified || Number(state.machineProfile?.maxS) <= 0) {
+    warnings.push({
+      level: "critical",
+      title: "Makine profili dogrulanmadi",
+      body: "Guc yuzdesini gercek S degerine cevirmek icin maxS ve hareket sinirlari dogrulanmali.",
+      action: "Cihaz profilini ac",
+      target: "machine-profile",
+    });
+  } else if (b.width > Number(state.machineProfile.travelX) + 1e-6 || b.height > Number(state.machineProfile.travelY) + 1e-6) {
+    warnings.push({
+      level: "critical",
+      title: "Tabla makine sinirini asiyor",
+      body: `Tabla ${b.width.toFixed(1)} x ${b.height.toFixed(1)} mm; profil ${Number(state.machineProfile.travelX).toFixed(1)} x ${Number(state.machineProfile.travelY).toFixed(1)} mm.`,
+      action: "Cihaz profilini ac",
+      target: "machine-profile",
+    });
+  }
   const outsideCount = outsidePlacements.length + outsidePatterns.length;
   if (outsideCount) {
     warnings.push({
-      level: "warning",
+      level: "critical",
       title: `${outsideCount} nesne üretim alanı dışında`,
-      body: "Bu nesnelerin tamamı G-code dışında bırakılacak; yalnız tablaya tamamen sığan nesneler üretilecek.",
+      body: "Aktif nesneler otomatik atlanmaz. Tablaya taşıyın veya açıkça Yok say/Park yapın.",
       action: "Dıştakileri göster",
       target: "outside",
     });
@@ -11288,7 +11605,7 @@ function layoutStatusBody(status, analysis) {
   if (status === "güncel") return "Parçalar mevcut tabla ve boşluk ayarlarına göre yerleştirildi.";
   if (status === "manuel") return "Bazı parçalar elle taşındı. Otomatik yerleşim tekrar çalışırsa bu konumlar değişebilir.";
   if (status === "ayarlar_değişti") return "Tabla ölçüsü, boşluk veya DXF adedi değişti. Mevcut yerleşim eski ayarlara göre.";
-  if (status === "dışarıda") return `${analysis.outsidePlacements.length + analysis.outsidePatterns.length} nesne üretim dışında bırakılacak; içeridekilerle G-code oluşturulabilir.`;
+  if (status === "dışarıda") return `${analysis.outsidePlacements.length + analysis.outsidePatterns.length} aktif nesne dışarıda; G-code için taşıyın veya Yok say/Park yapın.`;
   if (status === "sığmıyor") return `${analysis.oversizedParts[0]?.name || "Parça"} aktif tabla alanından büyük ve G-code'a dahil edilmeyecek.`;
   return "Parçaları tabla üzerine yerleştirmek için Otomatik Yerleştir’e basın.";
 }
@@ -11514,6 +11831,11 @@ function handleWarningAction(warning) {
     zoomToOutside();
     return;
   }
+  if (warning.target === "machine-profile") {
+    setWorkspaceMode("device");
+    document.getElementById("machineProfileCard")?.scrollIntoView({ block: "nearest" });
+    return;
+  }
   if (warning.target === "pattern-boundary" || warning.target === "cut-suitability") {
     if (warning.fix === "micro-tabs" && warning.patternId) {
       const pattern = patternById(warning.patternId);
@@ -11538,6 +11860,11 @@ function handleWarningAction(warning) {
 
 function focusWarning(warning) {
   if (!warning) return;
+  if (warning.target === "machine-profile") {
+    setWorkspaceMode("device");
+    document.getElementById("machineProfileCard")?.scrollIntoView({ block: "nearest" });
+    return;
+  }
   if (warning.target === "pattern-boundary" || warning.target === "cut-suitability") {
     if (warning.patternId) select("pattern", warning.patternId);
     return;
@@ -11983,11 +12310,29 @@ function optimizedAppendPartsToLayout(parts) {
 async function addDxfs() {
   try {
     setStatus("DXF seçiliyor...");
-    const data = await api("/api/open-dxf", {
+    let data = await api("/api/open-dxf", {
       tolerance: 0.25,
       joinTolerance: 0.05,
       innerFirst: refs.innerFirst.checked,
     });
+    if (data.requiresUnitChoice) {
+      const summary = (data.files || []).map((file) => {
+        const candidates = Object.fromEntries((file.candidates || []).map((item) => [item.unit, item]));
+        return `${file.name}\nmm: ${Number(candidates.mm?.width || 0).toFixed(2)} x ${Number(candidates.mm?.height || 0).toFixed(2)}\ncm: ${Number(candidates.cm?.width || 0).toFixed(2)} x ${Number(candidates.cm?.height || 0).toFixed(2)}\ninch: ${Number(candidates.inch?.width || 0).toFixed(2)} x ${Number(candidates.inch?.height || 0).toFixed(2)} mm`;
+      }).join("\n\n");
+      const unitOverride = String(window.prompt(`DXF birimsiz. Kaynak birimini yazin: mm, cm veya inch\n\n${summary}`, "mm") || "").trim().toLowerCase();
+      if (!["mm", "cm", "inch"].includes(unitOverride)) {
+        setStatus("DXF birimi secilmedi.", "warn");
+        return;
+      }
+      data = await api("/api/load-dxf-paths", {
+        sourceHandles: data.sourceHandles || [],
+        unitOverride,
+        tolerance: 0.25,
+        joinTolerance: 0.05,
+        innerFirst: refs.innerFirst.checked,
+      });
+    }
     if (!data.parts.length) {
       setStatus("DXF seçilmedi.");
       return;
@@ -12033,6 +12378,15 @@ async function addImage() {
       setStatus("Desen seçilmedi.");
       return;
     }
+    if (
+      data.image.requiresPhysicalSizeConfirmation
+      && !window.confirm(
+        `SVG fiziksel olcu icermiyor. 96 DPI tahmini kullanilacak:\n${Number(data.image.width || 0).toFixed(2)} x ${Number(data.image.height || 0).toFixed(2)} mm\n\nBu olcuyla ice aktarilsin mi?`
+      )
+    ) {
+      setStatus("SVG fiziksel olcusu onaylanmadi.", "warn");
+      return;
+    }
     pushUndo("Desen ekle");
     const image = new Image();
     image.src = data.image.dataUrl;
@@ -12063,10 +12417,10 @@ async function addImage() {
 
 async function preparePhotoEngrave(options = {}) {
   const replacePattern = options.replacePattern || null;
-  const sourcePath = options.path || replacePattern?.sourcePath || replacePattern?.originalPath || null;
+  const sourceHandle = options.sourceHandle || replacePattern?.sourceHandle || "";
   try {
     setStatus(replacePattern ? "Foto gravür yeniden hazırlanıyor..." : "Foto gravür için raster görsel seçiliyor...");
-    const data = await api("/api/open-raster-image", sourcePath ? { path: sourcePath } : {});
+    const data = await api("/api/open-raster-image", sourceHandle ? { sourceHandle } : {});
     if (!data.image) {
       setStatus("Fotoğraf seçilmedi.");
       return;
@@ -12093,7 +12447,7 @@ async function preparePhotoEngrave(options = {}) {
       photoEngrave: true,
       vectorPreset: professionalMode.id,
       vectorProductMode: professionalMode.productMode,
-      power: clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000),
+      power: normalizedPowerPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER),
       powerMin: 0,
       feed: Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED)),
       lineStep: 0.2,
@@ -12126,6 +12480,8 @@ async function preparePhotoEngrave(options = {}) {
       Object.assign(replacePattern, prepared, previousPlacement, photoDefaults, {
         sourcePath: data.image.path,
         originalPath: data.image.path,
+        sourceHandle: data.image.sourceHandle || "",
+        sourceFingerprint: data.image.sourceFingerprint || null,
         name: data.image.name || replacePattern.name,
       });
       select("pattern", replacePattern.id);
@@ -12155,10 +12511,11 @@ async function vectorizePhoto(options = {}) {
     return;
   }
   const replacePattern = options.replacePattern || null;
-  const sourcePath = options.path || replacePattern?.sourcePath || replacePattern?.originalPath || null;
+  const sourceHandle = options.sourceHandle || replacePattern?.sourceHandle || "";
   try {
     setStatus(replacePattern ? "Vektör yeniden işleniyor..." : "Fotoğraf vektörleştiriliyor...");
-    const request = { ...(options.settings || getVectorSettings()), path: sourcePath };
+    const request = { ...(options.settings || getVectorSettings()) };
+    if (sourceHandle) request.sourceHandle = sourceHandle;
     if (options.dataUrl) request.dataUrl = options.dataUrl;
     const data = await api("/api/vectorize-image", request);
     if (!data.vector) {
@@ -12206,6 +12563,8 @@ async function vectorizePhoto(options = {}) {
       Object.assign(replacePattern, pattern, previous, {
         sourcePath: vector.sourcePath,
         originalPath: vector.sourcePath,
+        sourceHandle: vector.sourceHandle || "",
+        sourceFingerprint: vector.sourceFingerprint || null,
         name: vector.name || replacePattern.name,
         sourceWidth: vector.sourceWidth || replacePattern.sourceWidth,
         sourceHeight: vector.sourceHeight || replacePattern.sourceHeight,
@@ -12430,20 +12789,19 @@ async function revectorizeSelectedRegion(pattern, entries, region) {
   if (professionalMode.rasterPhoto) {
     throw new Error("Yerel kontur yeniden işleme için bir vektör modu seçin; foto gravür modu raster üretir.");
   }
-  const sourcePath = pattern.sourcePath || pattern.originalPath || "";
+  const sourceHandle = pattern.sourceHandle || "";
   const request = {
     ...getVectorSettings(),
-    path: sourcePath,
     cropNormalized: crop.normalized,
     cropPaddingPixels: 12,
     name: pattern.name,
   };
-  if (!sourcePath || String(sourcePath).startsWith("generated:")) {
+  if (sourceHandle) request.sourceHandle = sourceHandle;
+  else {
     const previewSource = state.images.get(pattern.id)?.src || "";
     if (!String(previewSource).startsWith("data:image/")) {
       throw new Error("Bu vektörün kaynak fotoğrafı bulunamadı; yerel yeniden işleme yapılamıyor.");
     }
-    delete request.path;
     request.dataUrl = previewSource;
   }
 
@@ -12585,7 +12943,7 @@ function createPatternForPlacement(id, imageData, placement) {
     width,
     height,
     rotation: 0,
-    power: clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000),
+    power: normalizedPowerPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER), DEFAULT_ENGRAVE_POWER),
     feed: Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED)),
     lineStep: Math.max(0.05, mm("lineStep", DEFAULT_ENGRAVE_LINE_STEP)),
     threshold: clamp(Math.round(mm("threshold", 140)), 0, 255),
@@ -12595,6 +12953,8 @@ function createPatternForPlacement(id, imageData, placement) {
     bidirectional: imageData.bidirectional !== false,
     photoEngrave: Boolean(imageData.photoEngrave),
     sourcePath: imageData.sourcePath || imageData.path,
+    sourceHandle: imageData.sourceHandle || "",
+    sourceFingerprint: imageData.sourceFingerprint || null,
     sourceWidth: imageData.sourceWidth || imageData.width || width,
     sourceHeight: imageData.sourceHeight || imageData.height || height,
     originalWidth: imageData.originalWidth || imageData.width || width,
@@ -12619,6 +12979,8 @@ function createVectorPatternForPlacement(id, vector, placement) {
     {
       path: vector.sourcePath,
       originalPath: vector.sourcePath,
+      sourceHandle: vector.sourceHandle,
+      sourceFingerprint: vector.sourceFingerprint,
       kind: "vector",
       name: vector.name || "vectorized.svg",
       width: vector.sourceWidth || vector.preview?.width || 100,
@@ -12631,6 +12993,8 @@ function createVectorPatternForPlacement(id, vector, placement) {
     ...pattern,
     kind: "vector",
     sourcePath: vector.sourcePath,
+    sourceHandle: vector.sourceHandle || "",
+    sourceFingerprint: vector.sourceFingerprint || null,
     sourceWidth: vector.sourceWidth || vector.preview?.width || 100,
     sourceHeight: vector.sourceHeight || vector.preview?.height || 100,
     originalWidth: vector.originalWidth || vector.preview?.width || vector.sourceWidth || 100,
@@ -12934,7 +13298,7 @@ function renderCalibrationSummary() {
   refs.calibrationSummary.classList.toggle("danger", result.errors.length > 0);
   refs.calibrationSummary.textContent = result.errors.length
     ? result.errors.join(" ")
-    : `${result.columns} × ${result.rows} = ${result.cells.length} ${operation} karesi · ${result.width.toFixed(1)} × ${result.height.toFixed(1)} mm · S${result.powers.join("/")} · F${result.feeds.join("/")}`;
+    : `${result.columns} × ${result.rows} = ${result.cells.length} ${operation} karesi · ${result.width.toFixed(1)} × ${result.height.toFixed(1)} mm · %${result.powers.join("/")} · F${result.feeds.join("/")}`;
   const button = document.getElementById("addCalibrationBtn");
   if (button) button.disabled = result.errors.length > 0;
   return result;
@@ -13012,7 +13376,7 @@ function addCalibrationPlateUnsafe() {
   for (const cell of result.cells) {
     const geometry = geometryLib.buildShape("rect", { width: cell.width, height: cell.height, radius: 0.8, operation });
     const pattern = createGeneratedVectorPattern(geometry, {
-      name: `Kalibrasyon S${cell.power} F${cell.feed}`,
+      name: `Kalibrasyon %${cell.power} F${cell.feed}`,
       operation,
       sourceKey: `generated:calibration:${groupId}:cell:${cell.row}:${cell.column}`,
       metadata: { ...commonMetadata, row: cell.row, column: cell.column, power: cell.power, feed: cell.feed },
@@ -13025,9 +13389,9 @@ function addCalibrationPlateUnsafe() {
   const labelPower = Math.min(180, Math.max(30, result.powers[0]));
   const labelFeed = Math.max(1500, result.feeds.at(-1));
   result.powers.forEach((power, column) => {
-    const geometry = geometryLib.buildText(`S${power}`, { height: 3, tracking: 0.15 });
+    const geometry = geometryLib.buildText(`%${power}`, { height: 3, tracking: 0.15 });
     const pattern = createGeneratedVectorPattern(geometry, {
-      name: `Güç etiketi S${power}`,
+      name: `Güç etiketi %${power}`,
       operation: "engrave_line",
       sourceKey: `generated:calibration:${groupId}:power:${column}`,
       metadata: { ...commonMetadata, label: "power", value: power },
@@ -14008,7 +14372,7 @@ function createAlignedCutCopyFromSelectedVectorPath() {
   const settings = getSettings();
   copy.operation = "cut";
   copy.name = `${pattern.name || "Desen"} hizalı kesim konturu`;
-  copy.power = Number(pattern.cutPower ?? settings.power ?? 1000);
+  copy.power = Number(pattern.cutPower ?? settings.power ?? 100);
   copy.feed = Number(pattern.cutFeed ?? settings.feed ?? 500);
   for (const path of copy.vectorPaths || []) {
     path.operation = "cut";
@@ -14329,7 +14693,7 @@ async function saveSelectedVectorSvg() {
       setStatus("SVG kaydedilmedi.");
       return;
     }
-    setStatus(`SVG kaydedildi: ${data.saved.outputPath}`);
+    setStatus(`SVG kaydedildi: ${data.saved.displayPath || data.saved.outputPath}`);
   } catch (error) {
     setStatus(error.message);
   }
@@ -15811,17 +16175,93 @@ async function chooseOutput(options = {}) {
     const data = await api("/api/save-gcode-dialog", {
       defaultName: options.defaultName || gcodeDefaultName(),
     });
-    if (data.path) {
-      pushUndo("Cikti yolu");
-      refs.outputPath.value = data.path;
+    if (data.outputHandle && data.displayPath) {
+      state.fileAccess.outputHandle = data.outputHandle;
+      clearArtifactAccess();
+      refs.outputPath.value = data.displayPath;
       clearMachinePreview();
       updateSummary();
-      return data.path;
+      return data.displayPath;
     }
     return "";
   } catch (error) {
     setStatus(error.message, "warn");
     return "";
+  }
+}
+
+async function openExternalGcode() {
+  if (!state.machineProfile?.verified) {
+    setStatus("Harici G-code doğrulaması için önce makine profilini doğrulayın.", "danger");
+    setWorkspaceMode("device");
+    return;
+  }
+  try {
+    setStatus("Harici G-code seçiliyor...");
+    const data = await api("/api/open-gcode", {
+      machineProfile: clonePlain(state.machineProfile),
+      sourceRevision: state.project.revision,
+    });
+    const selected = data.gcode;
+    if (!selected) {
+      setStatus("Harici G-code seçilmedi.", "info");
+      return;
+    }
+
+    clearArtifactAccess();
+    if (refs.outputPath) refs.outputPath.value = selected.displayPath || "";
+    state.machine.preview = selected.analysis || null;
+    state.machine.previewPath = selected.displayPath || "";
+    state.productionPreview.progress = null;
+    renderMachinePreviewInfo();
+    drawMachinePreview();
+    renderProductionPreviewInfo();
+    drawProductionPreview();
+
+    if (selected.artifactHandle) {
+      applyArtifactResult(selected, { external: true });
+      setStatus("Harici G-code güvenlik kontrolünden geçti.", "ok");
+      updateSummary(`\nHarici G-code: ${selected.displayPath}\nDosya kimliği: ${String(selected.fileHash || "").slice(0, 16)}`);
+      renderMachinePanel();
+      return;
+    }
+
+    const first = selected.analysis?.blockers?.[0];
+    if (!selected.safeCopyAvailable) {
+      setStatus(first?.message || "Harici G-code makine güvenlik kontrolünden geçemedi.", "danger");
+      renderMachinePanel();
+      return;
+    }
+
+    const createCopy = window.confirm(
+      "Bu dosyada yalnızca açık M5/S0 güvenli kapanışı eksik.\n\n"
+      + "Özgün dosyaya dokunmadan yeni bir güvenli kopya oluşturulsun mu?"
+    );
+    if (!createCopy) {
+      setStatus("Harici dosya yalnızca önizlendi; Frame ve Gönder kapalı.", "warn");
+      return;
+    }
+    const filename = String(selected.displayPath || "").split(/[\\/]/).pop() || "external.nc";
+    const stem = filename.replace(/\.(nc|gcode)$/i, "") || "external";
+    const target = await api("/api/save-gcode-dialog", { defaultName: `${stem}_safe.nc` });
+    if (!target.outputHandle) {
+      setStatus("Güvenli kopya oluşturma iptal edildi.", "info");
+      return;
+    }
+    const copied = await api("/api/create-safe-gcode-copy", {
+      sourceHandle: selected.sourceHandle,
+      outputHandle: target.outputHandle,
+      machineProfile: clonePlain(state.machineProfile),
+      sourceRevision: state.project.revision,
+    });
+    applyArtifactResult(copied.result, { external: true });
+    clearMachinePreview();
+    await loadMachinePreview(false);
+    setStatus("M5/S0 eklenmiş güvenli kopya hazır.", "ok");
+    updateSummary(`\nGüvenli harici G-code: ${copied.result.displayPath}`);
+    renderMachinePanel();
+  } catch (error) {
+    setStatus(error.message, "danger");
   }
 }
 
@@ -15855,9 +16295,17 @@ function projectPayload(options = {}) {
     name: state.project.name || "Adsız iş",
     savedAt: options.autosave ? state.project.lastSavedAt : new Date().toISOString(),
     project: clonePlain(state.project),
-    parts: clonePlain(state.parts),
+    parts: state.parts.map((part) => {
+      const payload = clonePartPayload(part);
+      delete payload.sourceHandle;
+      return payload;
+    }),
     placements: clonePlain(state.placements),
-    patterns: state.patterns.map((pattern) => clonePatternPayload(pattern)),
+    patterns: state.patterns.map((pattern) => {
+      const payload = clonePatternPayload(pattern);
+      delete payload.sourceHandle;
+      return payload;
+    }),
     customFonts: clonePlain(state.customFonts),
     selected: state.selected ? clonePlain(state.selected) : null,
     selectedItems: clonePlain(state.selectedItems || []),
@@ -15865,6 +16313,7 @@ function projectPayload(options = {}) {
     vectorSelectionRegion: state.vectorSelectionRegion ? clonePlain(state.vectorSelectionRegion) : null,
     layout: clonePlain(state.layout),
     materialArea: clonePlain(state.materialArea),
+    machineProfile: clonePlain(state.machineProfile),
     laserCmd: state.laserCmd,
     engraveSettingsVersion: ENGRAVE_SETTINGS_VERSION,
     inputs: undoInputSnapshot(),
@@ -15875,9 +16324,11 @@ function projectPayload(options = {}) {
 }
 
 function restoreProject(project, options = {}) {
-  if (!project || !["laser-editor-project-v1", "laser-editor-project-v2", ProjectState.PROJECT_SCHEMA].includes(project.schema)) {
+  const legacyProject = project && project.schema !== ProjectState.PROJECT_SCHEMA;
+  if (!project || !["laser-editor-project-v1", "laser-editor-project-v2", "laser-editor-project-v3", ProjectState.PROJECT_SCHEMA].includes(project.schema)) {
     throw new Error("Bu dosya Lazer İş Editörü proje dosyası değil.");
   }
+  project = ProjectState.migrateProject(project);
   state.parts = clonePlain(project.parts || []);
   state.placements = clonePlain(project.placements || []);
   state.patterns = (project.patterns || []).map((pattern) => clonePatternPayload({
@@ -15886,6 +16337,16 @@ function restoreProject(project, options = {}) {
   }));
   state.lastGeneratedRevision = null;
   state.lastGeneratedPath = "";
+  state.fileAccess = {
+    outputHandle: "",
+    artifactHandle: "",
+    artifactHash: "",
+    artifactInputHash: "",
+    artifactSourceRevision: null,
+    artifactExternal: false,
+    projectHandle: "",
+    projectWriteHandle: "",
+  };
   ensureStateEntityIdentities();
   const migrateProjectEngraveDefaults = Number(project.engraveSettingsVersion) !== ENGRAVE_SETTINGS_VERSION;
   let normalizedTextPatternCount = 0;
@@ -15907,6 +16368,7 @@ function restoreProject(project, options = {}) {
   rebuildVectorPathSelectionKeys();
   state.layout = clonePlain(project.layout || state.layout);
   state.materialArea = normalizeMaterialArea(project.materialArea || {});
+  state.machineProfile = ProjectState.normalizeMachineProfile(project.machineProfile);
   state.laserCmd = project.laserCmd || state.laserCmd;
   const restoredSession = options.session || project.project || {};
   const restoredPath = options.path || restoredSession.path || "";
@@ -15921,8 +16383,8 @@ function restoreProject(project, options = {}) {
     dirty: Boolean(options.recovery),
     lastSavedAt: restoredSession.lastSavedAt || project.savedAt || null,
   });
-  if ((normalizedTextPatternCount || migratedTextFillPatternCount || migrateProjectEngraveDefaults) && !options.recovery) {
-    const reason = migrateProjectEngraveDefaults || migratedTextFillPatternCount
+  if ((legacyProject || normalizedTextPatternCount || migratedTextFillPatternCount || migrateProjectEngraveDefaults) && !options.recovery) {
+    const reason = legacyProject ? "Proje v4 yuzde guc modeline tasindi" : migrateProjectEngraveDefaults || migratedTextFillPatternCount
       ? "Kazıma varsayılanları güncellendi"
       : "Metin seçim kutusu düzeltildi";
     state.project = ProjectState.markDirty(state.project, reason);
@@ -15955,21 +16417,23 @@ async function saveProject(options = {}) {
     const data = await api("/api/save-project", {
       project: projectPayload(),
       defaultName: projectDefaultName(),
-      outputPath: saveAs ? "" : state.project.path,
+      outputHandle: saveAs ? "" : state.fileAccess.projectWriteHandle,
     });
     if (!data.saved) {
       setStatus("Proje kaydedilmedi.");
       return;
     }
     state.project = ProjectState.markSaved(state.project, {
-      path: data.saved.outputPath,
-      name: ProjectState.projectNameFromPath(data.saved.outputPath, state.project.name),
+      path: data.saved.displayPath,
+      name: ProjectState.projectNameFromPath(data.saved.displayPath, state.project.name),
     });
-    addCurrentProjectToRecent(data.saved.outputPath);
+    state.fileAccess.projectHandle = data.saved.projectHandle || "";
+    state.fileAccess.projectWriteHandle = data.saved.outputHandle || "";
+    addCurrentProjectToRecent(data.saved.displayPath);
     await clearProjectRecovery();
     updateProjectChrome();
     closeProjectInfo();
-    setStatus(`Proje kaydedildi: ${data.saved.outputPath}`, "ok");
+    setStatus(`Proje kaydedildi: ${data.saved.displayPath}`, "ok");
   } catch (error) {
     setStatus(error.message, "danger");
   }
@@ -15981,44 +16445,67 @@ async function openProject(options = {}) {
     if (!proceed) return;
   }
   try {
-    const path = options.path || "";
-    const data = await api("/api/open-project", path ? { path } : {});
+    const path = "";
+    const data = options.recentId
+      ? await api("/api/open-recent-project", { recentId: options.recentId })
+      : await api("/api/open-project", options.projectHandle ? { projectHandle: options.projectHandle } : {});
     if (!data.project) {
       setStatus("Proje seçilmedi.");
       return;
     }
-    restoreProject(data.project, { path: data.path || path });
-    addCurrentProjectToRecent(data.path || path);
-    await clearProjectRecovery();
-    setStatus(`Proje açıldı: ${data.path || data.project.name || ""}`);
-  } catch (error) {
-    if (options.path) {
-      state.recentProjects = state.recentProjects.filter((item) => ProjectState.normalizeSource(item.path) !== ProjectState.normalizeSource(options.path));
-      saveProjectPreferences();
-      renderRecentProjects();
+    const displayPath = data.displayPath || path;
+    restoreProject(data.project, { path: displayPath });
+    state.fileAccess.projectHandle = data.projectHandle || "";
+    state.fileAccess.projectWriteHandle = "";
+    if (Number.isInteger(options.legacyIndex)) {
+      state.legacyRecentProjects.splice(options.legacyIndex, 1);
+      writeLocalJson(ProjectState.STORAGE_KEYS.recentProjects, state.legacyRecentProjects);
     }
+    addCurrentProjectToRecent(displayPath);
+    await clearProjectRecovery();
+    setStatus(`Proje açıldı: ${displayPath || data.project.name || ""}`);
+  } catch (error) {
+    if (options.recentId) void refreshServerRecentProjects();
     setStatus(error.message, "danger");
   }
 }
 
 async function convertOutputToCut() {
   const path = refs.outputPath?.value.trim() || "";
-  if (!path) {
+  const sourceArtifactHandle = state.fileAccess.artifactHandle;
+  if (!path || !sourceArtifactHandle) {
     setStatus("Önce kazıma olarak oluşan G-code dosyasını Çıktı Seç ile seçin.", "warn");
     return;
   }
-  const cutPower = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
+  const cutPower = normalizedPowerPercent(mm("cutPower", 100), 100);
   const cutFeed = Math.max(1, mm("cutFeed", 500));
-  const message = `Bu işlem mevcut G-code içindeki vektör/SVG kazıma bloklarını kesime çevirir.\n\nS${cutPower}, F${cutFeed.toFixed(0)} kullanılacak.\nOrijinal dosya korunur, yeni _cut.nc dosyası yazılır.\n\nDevam edilsin mi?`;
+  const message = `Bu işlem mevcut G-code içindeki vektör/SVG kazıma bloklarını kesime çevirir.\n\n%${cutPower} (S${machineSFromPercent(cutPower)}), F${cutFeed.toFixed(0)} kullanılacak.\nOrijinal dosya korunur, yeni _cut.nc dosyası yazılır.\n\nDevam edilsin mi?`;
   if (!window.confirm(message)) return;
   try {
     setStatus("G-code kesime çevriliyor...");
-    const data = await api("/api/convert-gcode-to-cut", { path, cutPower, cutFeed });
+    const artifactInputHash = state.fileAccess.artifactInputHash
+      || (await runAuthoritativePreflight()).preflight?.inputHash
+      || "";
+    const artifactSourceRevision = state.fileAccess.artifactSourceRevision ?? state.project.revision;
+    const artifactWasExternal = state.fileAccess.artifactExternal;
+    const stem = path.split(/[\\/]/).pop()?.replace(/\.(nc|gcode)$/i, "") || "laser_job";
+    const target = await api("/api/save-gcode-dialog", { defaultName: `${stem}_cut.nc` });
+    if (!target.outputHandle) {
+      setStatus("G-code kesime cevirme iptal edildi.", "info");
+      return;
+    }
+    const data = await api("/api/convert-gcode-to-cut", {
+      artifactHandle: sourceArtifactHandle,
+      outputHandle: target.outputHandle,
+      cutPower,
+      cutFeed,
+      machineProfile: clonePlain(state.machineProfile),
+      inputHash: artifactInputHash,
+      sourceRevision: artifactSourceRevision,
+    });
     const result = data.result;
     pushUndo("G-code kesim dosyasi");
-    refs.outputPath.value = result.outputPath;
-    state.lastGeneratedRevision = state.project.revision;
-    state.lastGeneratedPath = result.outputPath;
+    applyArtifactResult(result, { external: artifactWasExternal });
     clearMachinePreview();
     saveUiSettings();
     await loadMachinePreview(false);
@@ -16031,6 +16518,243 @@ async function convertOutputToCut() {
   } catch (error) {
     setStatus(error.message, "danger");
   }
+}
+
+function buildProductionStatePayload(analysis, options = {}) {
+  const settings = getSettings();
+  return {
+    parts: state.parts.map((part) => clonePartPayload(part)),
+    placements: state.placements.map((placement) => ({
+      ...placement,
+      operation: placementOperation(placement),
+    })),
+    patterns: state.patterns.map((pattern) => {
+      const payloadPattern = clonePatternPayload(pattern);
+      payloadPattern.operation = patternOperation(pattern);
+      if (!patternUsesCustomProcess(pattern)) {
+        payloadPattern.cutPower = settings.power;
+        payloadPattern.cutFeed = settings.feed;
+        payloadPattern.engravePower = settings.engravePower;
+        payloadPattern.engraveFeed = settings.engraveFeed;
+        const cutPattern = patternOperation(pattern) === "cut";
+        payloadPattern.power = cutPattern ? settings.power : settings.engravePower;
+        payloadPattern.feed = cutPattern ? settings.feed : settings.engraveFeed;
+      }
+      const editedRaster = pattern.kind === "raster" ? state.images.get(pattern.id) : null;
+      if (editedRaster?.src?.startsWith("data:image/")) payloadPattern.dataUrl = editedRaster.src;
+      return payloadPattern;
+    }),
+    settings,
+    machineProfile: clonePlain(state.machineProfile),
+    project: { id: state.project.id, revision: state.project.revision },
+    ...options,
+  };
+}
+
+function sourceItemForBlocker(blocker) {
+  if (blocker?.itemType === "part") return partById(blocker.itemId);
+  if (blocker?.itemType === "pattern") return patternById(blocker.itemId);
+  return null;
+}
+
+function chooseDxfUnitFromCandidates(candidates = []) {
+  const byUnit = Object.fromEntries(candidates.map((item) => [item.unit, item]));
+  const summary = ["mm", "cm", "inch"].map((unit) => {
+    const candidate = byUnit[unit] || {};
+    return `${unit}: ${Number(candidate.width || 0).toFixed(2)} × ${Number(candidate.height || 0).toFixed(2)} mm`;
+  }).join("\n");
+  const selected = String(window.prompt(`DXF birimsiz. Kaynak birimini yazın: mm, cm veya inch\n\n${summary}`, "mm") || "")
+    .trim()
+    .toLowerCase();
+  return ["mm", "cm", "inch"].includes(selected) ? selected : "";
+}
+
+function useEmbeddedSourceSnapshot(item) {
+  item.sourceHandle = "";
+  item.sourceResolution = "snapshot";
+  markProjectDirty("Kayıtlı kaynak geometrisi seçildi");
+}
+
+async function reloadPatternAuthorizedSource(pattern, sourceHandle, candidate) {
+  if (pattern.kind === "vector" && pattern.vectorSettings?.mode !== "svg-direct") {
+    await vectorizePhoto({
+      replacePattern: pattern,
+      sourceHandle,
+      settings: pattern.vectorSettings || getVectorSettings(),
+    });
+    pattern.sourceResolution = "reload";
+    return;
+  }
+  if (pattern.kind === "raster") {
+    const data = await api("/api/open-raster-image", { sourceHandle });
+    if (!data.image) throw new Error("Yeniden seçilen raster kaynak okunamadı.");
+    pushUndo("Raster kaynağı yeniden yükle");
+    const image = new Image();
+    image.src = data.image.dataUrl;
+    state.images.set(pattern.id, image);
+    imageAdjustmentBases.set(pattern.id, data.image.dataUrl);
+    image.addEventListener("load", draw, { once: true });
+    Object.assign(pattern, {
+      path: data.image.path,
+      originalPath: data.image.path,
+      sourcePath: data.image.path,
+      sourceHandle: data.image.sourceHandle || sourceHandle,
+      sourceFingerprint: data.image.sourceFingerprint || candidate?.fingerprint || null,
+      sourceWidth: data.image.width || pattern.sourceWidth,
+      sourceHeight: data.image.height || pattern.sourceHeight,
+      originalWidth: data.image.width || pattern.originalWidth,
+      originalHeight: data.image.height || pattern.originalHeight,
+      sourceResolution: "reload",
+    });
+    markProjectDirty("Raster kaynağı yeniden yüklendi");
+    draw();
+    return;
+  }
+
+  const data = await api("/api/open-image", { sourceHandle });
+  if (!data.image) throw new Error("Yeniden seçilen SVG kaynağı okunamadı.");
+  pushUndo("SVG kaynağı yeniden yükle");
+  const image = new Image();
+  image.src = data.image.dataUrl || "";
+  state.images.set(pattern.id, image);
+  imageAdjustmentBases.set(pattern.id, data.image.dataUrl || "");
+  image.addEventListener("load", draw, { once: true });
+  resetPatternVectorModel(pattern);
+  Object.assign(pattern, {
+    path: data.image.path,
+    originalPath: data.image.originalPath || data.image.path,
+    sourcePath: data.image.sourcePath || data.image.path,
+    sourceHandle: data.image.sourceHandle || sourceHandle,
+    sourceFingerprint: data.image.sourceFingerprint || candidate?.fingerprint || null,
+    kind: data.image.kind || pattern.kind,
+    sourceWidth: data.image.width || pattern.sourceWidth,
+    sourceHeight: data.image.height || pattern.sourceHeight,
+    originalWidth: data.image.width || pattern.originalWidth,
+    originalHeight: data.image.height || pattern.originalHeight,
+    vectorPaths: cloneVectorPaths(data.image.vectorPaths || []),
+    originalVectorPaths: cloneVectorPaths(data.image.vectorPaths || []),
+    cleanStats: data.image.cleanStats || null,
+    sourceResolution: "reload",
+  });
+  ensurePatternVectorModel(pattern);
+  markProjectDirty("SVG kaynağı yeniden yüklendi");
+  draw();
+}
+
+async function resolveSourcePreflightBlocker(blocker) {
+  const item = sourceItemForBlocker(blocker);
+  if (!item) return false;
+  const name = item.name || item.id || "kaynak";
+  const reauthorize = window.confirm(
+    `${name} için kaynak dosya doğrulaması gerekiyor.\n\n`
+    + "Tamam: dosyayı native pencereden yeniden seç\n"
+    + "İptal: projeye gömülü kayıtlı geometriyi kullan"
+  );
+  if (!reauthorize) {
+    useEmbeddedSourceSnapshot(item);
+    return true;
+  }
+
+  const response = await api("/api/reauthorize-source", {
+    itemType: blocker.itemType,
+    expectedFingerprint: item.sourceFingerprint || {},
+    unitOverride: item.sourceUnits?.unitless ? item.sourceUnits?.override : "",
+    tolerance: 0.25,
+    joinTolerance: 0.05,
+    innerFirst: Boolean(refs.innerFirst?.checked),
+  });
+  const source = response.source;
+  if (!source) return false;
+  let candidate = source.candidate;
+  if (blocker.itemType === "part" && source.requiresUnitChoice) {
+    const unitOverride = chooseDxfUnitFromCandidates(source.unitCandidates || []);
+    if (!unitOverride) return false;
+    const loaded = await api("/api/load-dxf-paths", {
+      sourceHandles: [source.sourceHandle],
+      unitOverride,
+      tolerance: 0.25,
+      joinTolerance: 0.05,
+      innerFirst: Boolean(refs.innerFirst?.checked),
+    });
+    candidate = loaded.parts?.[0] || null;
+    source.fingerprint = candidate?.sourceFingerprint || source.fingerprint;
+    source.hashMatches = String(item.sourceFingerprint?.sha256 || "") === String(source.fingerprint?.sha256 || "");
+  }
+  if (source.hashMatches) {
+    item.sourceHandle = source.sourceHandle;
+    item.sourceResolution = "verified";
+    setStatus(`${name} kaynağı yeniden doğrulandı.`, "ok");
+    return true;
+  }
+
+  const oldWidth = Number(item.width || item.sourceWidth || 0);
+  const oldHeight = Number(item.height || item.sourceHeight || 0);
+  const newWidth = Number(candidate?.width || 0);
+  const newHeight = Number(candidate?.height || 0);
+  const comparison = `Kayıtlı: ${oldWidth.toFixed(2)} × ${oldHeight.toFixed(2)} mm\n`
+    + `Yeni kaynak: ${newWidth.toFixed(2)} × ${newHeight.toFixed(2)}${blocker.itemType === "part" ? " mm" : ""}\n`
+    + `Boyut farkı: ${(newWidth - oldWidth).toFixed(2)} × ${(newHeight - oldHeight).toFixed(2)}`;
+  const reload = window.confirm(
+    `${name} diskte değişmiş.\n\n${comparison}\n\n`
+    + "Tamam: yeni kaynağı ve geometrisini yükle\n"
+    + "İptal: kayıtlı geometriyi kullan"
+  );
+  if (!reload) {
+    useEmbeddedSourceSnapshot(item);
+    return true;
+  }
+
+  if (blocker.itemType === "part") {
+    if (!candidate) throw new Error("Yeni DXF geometrisi okunamadı.");
+    const identity = {
+      id: item.id,
+      quantity: item.quantity,
+      entityId: item.entityId,
+      instanceId: item.instanceId,
+    };
+    pushUndo("DXF kaynağı yeniden yükle");
+    Object.assign(item, candidate, identity, {
+      sourceHandle: candidate.sourceHandle || source.sourceHandle,
+      sourceFingerprint: candidate.sourceFingerprint || source.fingerprint,
+      sourceResolution: "reload",
+    });
+    markProjectDirty("DXF kaynağı yeniden yüklendi");
+    draw();
+  } else {
+    await reloadPatternAuthorizedSource(item, source.sourceHandle, source);
+  }
+  return true;
+}
+
+async function resolveSourcePreflightBlockers(preflight) {
+  const sourceCodes = new Set([
+    "source_reauthorization_required",
+    "source_authorization_invalid",
+    "source_fingerprint_mismatch",
+  ]);
+  const blockers = (preflight?.blockers || []).filter((item) => sourceCodes.has(item.code));
+  const visited = new Set();
+  let changed = false;
+  for (const blocker of blockers) {
+    const key = `${blocker.itemType}:${blocker.itemId}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    changed = await resolveSourcePreflightBlocker(blocker) || changed;
+  }
+  return changed;
+}
+
+async function runAuthoritativePreflight(options = {}) {
+  prepareVectorModelsForOutput();
+  const analysis = computeJobAnalysis();
+  updateUiFromAnalysis(analysis);
+  if (!analysis.canGenerate) return { analysis, preflight: null };
+  const payload = buildProductionStatePayload(analysis, { requireMachine: Boolean(options.requireMachine) });
+  const data = await api("/api/preflight", payload);
+  if (options.resolveSources !== false && await resolveSourcePreflightBlockers(data.preflight)) {
+    return runAuthoritativePreflight({ ...options, resolveSources: false });
+  }
+  return { analysis, preflight: data.preflight, payload };
 }
 
 function setGcodeGenerationBusy(busy) {
@@ -16049,13 +16773,17 @@ async function generateGcode() {
   gcodeGenerationActive = true;
   setGcodeGenerationBusy(true);
   try {
-    prepareVectorModelsForOutput();
-    const analysis = computeJobAnalysis();
-    updateUiFromAnalysis(analysis);
+    const { analysis, preflight, payload: preflightPayload } = await runAuthoritativePreflight();
     setGcodeGenerationBusy(true);
     if (!analysis.canGenerate) {
       const first = analysis.warnings.find((item) => item.level === "critical");
       setStatus(`G-code oluşturulamaz: ${first?.title || "kritik sorun var"}.`, "danger");
+      refs.preflightPanel?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (!preflight || preflight.status !== "ready") {
+      const first = preflight?.blockers?.[0];
+      setStatus(`G-code olusturulamaz: ${first?.message || "sunucu on kontrolu basarisiz"}.`, "danger");
       refs.preflightPanel?.scrollIntoView({ block: "nearest" });
       return;
     }
@@ -16065,50 +16793,18 @@ async function generateGcode() {
       return;
     }
     setStatus("G-code oluşturuluyor...");
-    const productionPlacementIds = new Set(analysis.productionPlacements.map((item) => item.placement.id));
-    const productionPatternIds = new Set(analysis.productionPatterns.map((item) => item.pattern.id));
-    const settings = getSettings();
     const payload = {
-      parts: state.parts.map((part) => clonePartPayload(part)),
-      placements: state.placements.map((placement) => ({
-        ...placement,
-        operation: productionPlacementIds.has(placement.id) ? placementOperation(placement) : "ignore",
-      })),
-      patterns: state.patterns.map((pattern) => {
-        const payloadPattern = clonePatternPayload(pattern);
-        payloadPattern.operation = productionPatternIds.has(pattern.id) ? patternOperation(pattern) : "ignore";
-        if (!patternUsesCustomProcess(pattern)) {
-          payloadPattern.cutPower = settings.power;
-          payloadPattern.cutFeed = settings.feed;
-          payloadPattern.engravePower = settings.engravePower;
-          payloadPattern.engraveFeed = settings.engraveFeed;
-          const cutPattern = patternOperation(pattern) === "cut";
-          payloadPattern.power = cutPattern ? settings.power : settings.engravePower;
-          payloadPattern.feed = cutPattern ? settings.feed : settings.engraveFeed;
-        }
-        const editedRaster = pattern.kind === "raster" ? state.images.get(pattern.id) : null;
-        if (editedRaster?.src?.startsWith("data:image/")) payloadPattern.dataUrl = editedRaster.src;
-        return payloadPattern;
-      }),
-      settings,
-      outputPath,
+      ...preflightPayload,
+      requireMachine: undefined,
+      outputHandle: state.fileAccess.outputHandle,
       overwriteConfirmed: true,
     };
     const data = await api("/api/generate", payload);
     const result = data.result;
-    state.lastGeneratedRevision = state.project.revision;
-    state.lastGeneratedPath = outputPath;
-    result.excludedObjectCount = analysis.excludedOutsideCount + Number(result.excludedObjectCount || 0);
-    setStatus(
-      result.excludedObjectCount
-        ? `G-code hazır. Üretim alanı dışındaki ${result.excludedObjectCount} nesne dahil edilmedi.`
-        : "G-code hazır.",
-      result.excludedObjectCount ? "warn" : "ok"
-    );
+    applyArtifactResult(result);
+    setStatus("G-code hazır.", "ok");
     updateSummary(
-      `\nKesim alanı: ${result.cutWidth.toFixed(2)} x ${result.cutHeight.toFixed(2)} mm\nSatır: ${result.lineCount}${
-        result.excludedObjectCount ? `\nÜretim dışı: ${result.excludedObjectCount} nesne` : ""
-      }`
+      `\nKesim alanı: ${result.cutWidth.toFixed(2)} x ${result.cutHeight.toFixed(2)} mm\nSatır: ${result.lineCount}`
     );
     await loadMachinePreview(false);
     recordProductionHistory("generated", { message: "G-code uygulamada oluşturuldu." });
@@ -16521,11 +17217,17 @@ function bindControls() {
   });
   document.getElementById("restoreRecoveryBtn")?.addEventListener("click", restoreRecoveryProject);
   document.getElementById("discardRecoveryBtn")?.addEventListener("click", discardRecoveryProject);
-  document.getElementById("clearRecentProjectsBtn")?.addEventListener("click", () => {
-    state.recentProjects = [];
-    saveProjectPreferences();
-    renderRecentProjects();
-    setStatus("Son proje listesi temizlendi.");
+  document.getElementById("clearRecentProjectsBtn")?.addEventListener("click", async () => {
+    try {
+      await api("/api/clear-recent-projects", {});
+      state.recentProjects = [];
+      state.legacyRecentProjects = [];
+      localStorage.removeItem(ProjectState.STORAGE_KEYS.recentProjects);
+      renderRecentProjects();
+      setStatus("Son proje listesi temizlendi.");
+    } catch (error) {
+      setStatus(error.message, "danger");
+    }
   });
   document.getElementById("chooseOutputBtn").addEventListener("click", chooseOutput);
   document.getElementById("convertOutputToCutBtn")?.addEventListener("click", convertOutputToCut);
@@ -16587,6 +17289,7 @@ function bindControls() {
   document.getElementById("refreshProductionPreviewBtn")?.addEventListener("click", () => loadMachinePreview(true));
   document.getElementById("fitProductionPreviewBtn")?.addEventListener("click", drawProductionPreview);
   document.getElementById("previewGenerateBtn")?.addEventListener("click", generateGcode);
+  refs.previewOpenGcodeBtn?.addEventListener("click", openExternalGcode);
   document.getElementById("previewFrameBtn")?.addEventListener("click", frameMachineJob);
   document.getElementById("previewSendBtn")?.addEventListener("click", sendGcodeToMachine);
   document.getElementById("previewDeviceBtn")?.addEventListener("click", () => setWorkspaceMode("device"));
@@ -16608,8 +17311,30 @@ function bindControls() {
   document.getElementById("connectMachineBtn")?.addEventListener("click", connectMachine);
   document.getElementById("disconnectMachineBtn")?.addEventListener("click", disconnectMachine);
   document.getElementById("machineStatusBtn")?.addEventListener("click", () => refreshMachineStatus(true));
+  document.getElementById("verifyMachineProfileBtn")?.addEventListener("click", verifyMachineProfileFromInputs);
+  document.getElementById("syncMachineProfileBtn")?.addEventListener("click", syncMachineProfileFromConnectedMachine);
+  [refs.machineProfileMaxS, refs.machineProfileTravelX, refs.machineProfileTravelY, refs.machineProfileAirAssist]
+    .filter(Boolean)
+    .forEach((input) => input.addEventListener("input", () => {
+      state.machineProfile = ProjectState.normalizeMachineProfile({
+        ...state.machineProfile,
+        maxS: refs.machineProfileMaxS?.value,
+        travelX: refs.machineProfileTravelX?.value,
+        travelY: refs.machineProfileTravelY?.value,
+        airAssist: {
+          ...(state.machineProfile.airAssist || {}),
+          supported: Boolean(refs.machineProfileAirAssist?.checked),
+        },
+        verified: false,
+        verifiedAt: null,
+        source: "manual-pending",
+      });
+      markProjectDirty("Makine profili degisti");
+      syncMachineProfileUi();
+    }));
   document.getElementById("sendMachineCommandBtn")?.addEventListener("click", sendMachineCommand);
   document.getElementById("sendGcodeToMachineBtn")?.addEventListener("click", sendGcodeToMachine);
+  refs.openExternalGcodeBtn?.addEventListener("click", openExternalGcode);
   document.getElementById("machinePreviewBtn")?.addEventListener("click", () => loadMachinePreview(true));
   document.querySelectorAll("[data-flow-close]").forEach((el) => el.addEventListener("click", closeProduceFlow));
   refs.dxfQuantityForm?.addEventListener("submit", submitDxfQuantityDialog);
@@ -16719,7 +17444,12 @@ function bindControls() {
   document.getElementById("machineFrameBtn")?.addEventListener("click", frameMachineJob);
   document.getElementById("setMachineOriginBtn")?.addEventListener("click", () => setMachineOrigin(false));
   document.getElementById("clearMachineOriginBtn")?.addEventListener("click", () => setMachineOrigin(true));
-  document.getElementById("focusPulseBtn")?.addEventListener("click", focusPulse);
+  const focusButton = document.getElementById("focusPulseBtn");
+  focusButton?.addEventListener("pointerdown", startFocusPress);
+  focusButton?.addEventListener("pointerup", stopFocusPress);
+  focusButton?.addEventListener("pointercancel", stopFocusPress);
+  focusButton?.addEventListener("lostpointercapture", stopFocusPress);
+  window.addEventListener("blur", stopFocusPress);
   document.querySelectorAll("[data-machine-action]").forEach((button) => {
     button.addEventListener("click", () => machineControl(button.dataset.machineAction));
   });
@@ -16729,10 +17459,20 @@ function bindControls() {
       jogMachine(axis, Number(direction));
     });
   });
-  refs.preflightBtn?.addEventListener("click", () => {
-    updateUiFromAnalysis(computeJobAnalysis());
-    refs.preflightPanel?.scrollIntoView({ block: "nearest" });
-    setStatus("G-code ön kontrolü güncellendi.");
+  refs.preflightBtn?.addEventListener("click", async () => {
+    try {
+      const { analysis, preflight } = await runAuthoritativePreflight();
+      refs.preflightPanel?.scrollIntoView({ block: "nearest" });
+      if (!analysis.canGenerate) {
+        setStatus("On kontrol yerel kritik sorunlar buldu.", "danger");
+      } else if (preflight?.status !== "ready") {
+        setStatus(preflight?.blockers?.[0]?.message || "Sunucu on kontrolu basarisiz.", "danger");
+      } else {
+        setStatus(`On kontrol gecti. Girdi: ${String(preflight.inputHash || "").slice(0, 12)}...`, "ok");
+      }
+    } catch (error) {
+      setStatus(error.message, "danger");
+    }
   });
   document.getElementById("clearPartsBtn").addEventListener("click", clearParts);
   document.getElementById("centerBtn").addEventListener("click", centerSelectedPattern);
@@ -16809,12 +17549,14 @@ function bindControls() {
 
   ["cutPower", "cutFeed", "engravePower", "engraveFeed"].forEach((id) => {
     refs[id]?.addEventListener("input", () => {
+      if (id === "cutPower" || id === "engravePower") updatePowerMachineReadouts();
       if (["pattern", "vectorPath", "vectorObject"].includes(state.selected?.type)) updateSelectionPanel();
     });
   });
   ["cutPower", "engravePower"].forEach((id) => {
     refs[id]?.addEventListener("change", () => {
-      refs[id].value = clamp(Math.round(mm(id, 0)), 0, 1000);
+      refs[id].value = normalizedPowerPercent(mm(id, 0));
+      updatePowerMachineReadouts();
       if (["pattern", "vectorPath", "vectorObject"].includes(state.selected?.type)) updateSelectionPanel();
     });
   });
@@ -16858,6 +17600,7 @@ renderTextFontOptions(preferredStartupFont);
 void loadSystemFonts(preferredStartupFont);
 state.layout.appliedSettings = layoutSettingsSnapshot();
 syncLaserButtons();
+syncMachineProfileUi();
 startClientLifecycleTracking();
 bindControls();
 syncImageEditUi();
@@ -16872,14 +17615,15 @@ updateSummary();
 updateProjectChrome();
 renderWorkflowProgress();
 renderRecentProjects();
+const recentProjectsReady = refreshServerRecentProjects();
 renderMachinePanel();
 refreshMachinePorts({ silent: true });
 refreshMachineStatus(false, { silent: true });
 startMachinePolling();
 syncMachineTabFromHash();
-loadRecoveryCandidate().then(async () => {
-  if (!state.recovery.snapshot && state.preferences.reopenLastProject && !projectHasContent() && state.recentProjects[0]?.path) {
-    await openProject({ path: state.recentProjects[0].path });
+Promise.all([loadRecoveryCandidate(), recentProjectsReady]).then(async () => {
+  if (!state.recovery.snapshot && state.preferences.reopenLastProject && !projectHasContent() && state.recentProjects[0]?.id) {
+    await openProject({ recentId: state.recentProjects[0].id });
   }
 }).finally(scheduleAutomaticProductTour);
 window.addEventListener("beforeunload", (event) => {

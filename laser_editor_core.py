@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import io
+import json
 import math
 import mimetypes
 import re
@@ -75,6 +77,30 @@ class RasterPattern:
 
 
 @dataclass
+class PreflightResult:
+    status: str
+    blockers: list[dict[str, Any]]
+    warnings: list[dict[str, Any]]
+    project_id: str
+    revision: int
+    input_hash: str
+    machine_profile_id: str
+    max_s: float
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "blockers": self.blockers,
+            "warnings": self.warnings,
+            "projectId": self.project_id,
+            "revision": self.revision,
+            "inputHash": self.input_hash,
+            "machineProfileId": self.machine_profile_id,
+            "maxS": self.max_s,
+        }
+
+
+@dataclass
 class ClipRegion:
     polygons: list[list[Point]]
     margin: float = 0.0
@@ -110,10 +136,22 @@ def normalize_paths(paths: list[list[Point]]) -> tuple[list[list[Point]], float,
     return normalized, max_x - min_x, max_y - min_y
 
 
-def load_part(path: Path, part_id: str, tolerance: float, join_tolerance: float, inner_first: bool) -> LoadedPart:
+def load_part(
+    path: Path,
+    part_id: str,
+    tolerance: float,
+    join_tolerance: float,
+    inner_first: bool,
+    unit_override: str | None = "mm",
+) -> LoadedPart:
     if not path.exists():
         raise ValueError(f"DXF bulunamadi: {path}")
-    paths, unsupported, _supported_count = converter.convert_dxf_paths(path, tolerance, join_tolerance)
+    paths, unsupported, _supported_count = converter.convert_dxf_paths(
+        path,
+        tolerance,
+        join_tolerance,
+        unit_override=unit_override,
+    )
     if not paths:
         raise ValueError(f"DXF icinde desteklenen cizgi yok: {path.name}")
     if inner_first:
@@ -846,28 +884,111 @@ def open_pattern_image(path: Path):
         return image.convert("L")
 
 
+SVG_LENGTH_TO_MM = {
+    "mm": 1.0,
+    "cm": 10.0,
+    "in": 25.4,
+    "pt": 25.4 / 72.0,
+    "pc": 25.4 / 6.0,
+    "px": 25.4 / 96.0,
+    "": 25.4 / 96.0,
+}
+
+
 def parse_svg_length(value: str | None) -> float | None:
     if not value:
         return None
-    match = re.match(r"\s*([-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)", value)
+    match = re.fullmatch(
+        r"\s*([-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)\s*(mm|cm|in|pt|pc|px)?\s*",
+        str(value),
+        flags=re.IGNORECASE,
+    )
     if not match:
         return None
-    return float(match.group(1))
+    unit = str(match.group(2) or "").lower()
+    return float(match.group(1)) * SVG_LENGTH_TO_MM[unit]
+
+
+def svg_viewbox_values(root: ET.Element) -> tuple[float, float, float, float] | None:
+    view_box = root.get("viewBox")
+    if not view_box:
+        return None
+    values = [float(item) for item in re.findall(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?", view_box)]
+    if len(values) == 4 and values[2] > 0 and values[3] > 0:
+        return values[0], values[1], values[2], values[3]
+    return None
+
+
+def svg_physical_info(path: Path) -> dict[str, Any]:
+    root = ET.parse(path).getroot()
+    view_box = svg_viewbox_values(root)
+    width_value = root.get("width")
+    height_value = root.get("height")
+    width_mm = parse_svg_length(width_value)
+    height_mm = parse_svg_length(height_value)
+    width_has_unit = bool(re.search(r"(mm|cm|in|pt|pc|px)\s*$", str(width_value or ""), flags=re.IGNORECASE))
+    height_has_unit = bool(re.search(r"(mm|cm|in|pt|pc|px)\s*$", str(height_value or ""), flags=re.IGNORECASE))
+    physical_specified = width_has_unit and height_has_unit
+
+    if view_box is None:
+        fallback_width = width_mm or 100.0 * SVG_LENGTH_TO_MM["px"]
+        fallback_height = height_mm or 100.0 * SVG_LENGTH_TO_MM["px"]
+        view_box = (0.0, 0.0, fallback_width / SVG_LENGTH_TO_MM["px"], fallback_height / SVG_LENGTH_TO_MM["px"])
+    vb_width = float(view_box[2])
+    vb_height = float(view_box[3])
+    if width_mm is None and height_mm is None:
+        width_mm = vb_width * SVG_LENGTH_TO_MM["px"]
+        height_mm = vb_height * SVG_LENGTH_TO_MM["px"]
+    elif width_mm is None:
+        width_mm = float(height_mm) * vb_width / vb_height
+    elif height_mm is None:
+        height_mm = float(width_mm) * vb_height / vb_width
+
+    scale_x = float(width_mm) / vb_width
+    scale_y = float(height_mm) / vb_height
+    preserve = str(root.get("preserveAspectRatio") or "xMidYMid meet").strip()
+    if not preserve.lower().startswith("none"):
+        uniform = max(scale_x, scale_y) if "slice" in preserve.lower() else min(scale_x, scale_y)
+        scale_x = uniform
+        scale_y = uniform
+    return {
+        "viewBox": view_box,
+        "widthMm": float(width_mm),
+        "heightMm": float(height_mm),
+        "scaleX": scale_x,
+        "scaleY": scale_y,
+        "preserveAspectRatio": preserve,
+        "physicalSpecified": physical_specified,
+        "estimatedAt96Dpi": not physical_specified,
+        "sourceWidth": width_value or "",
+        "sourceHeight": height_value or "",
+    }
 
 
 def svg_viewbox_and_size(path: Path) -> tuple[tuple[float, float, float, float], float, float]:
     root = ET.parse(path).getroot()
-    view_box = root.get("viewBox")
-    if view_box:
-        values = [float(item) for item in re.findall(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?", view_box)]
-        if len(values) == 4 and values[2] > 0 and values[3] > 0:
-            return (values[0], values[1], values[2], values[3]), values[2], values[3]
+    view_box = svg_viewbox_values(root)
+    info = svg_physical_info(path)
+    if view_box is None:
+        view_box = info["viewBox"]
+    return view_box, float(info["widthMm"]), float(info["heightMm"])
 
-    width = parse_svg_length(root.get("width")) or 100.0
-    height = parse_svg_length(root.get("height")) or 100.0
-    if width <= 0 or height <= 0:
-        width, height = 100.0, 100.0
-    return (0.0, 0.0, width, height), width, height
+
+def scale_vector_paths_to_mm(vector_paths: list[dict[str, Any]], scale_x: float, scale_y: float) -> list[dict[str, Any]]:
+    result = copy.deepcopy(vector_paths)
+    for item in result:
+        points = [
+            [float(point[0]) * scale_x, float(point[1]) * scale_y]
+            for point in (item.get("points") or [])
+            if isinstance(point, (list, tuple)) and len(point) >= 2
+        ]
+        item["points"] = points
+        if points:
+            min_x, min_y, max_x, max_y = _points_bbox(points)
+            item["bbox"] = [min_x, min_y, max_x, max_y]
+            measured = points + ([points[0]] if item.get("closed") and points[0] != points[-1] else [])
+            item["length"] = _polyline_length(measured)
+    return result
 
 
 def clean_svg_for_editor(path: Path) -> tuple[Path, dict[str, Any]]:
@@ -1034,8 +1155,13 @@ def image_payload(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ValueError(f"Gorsel bulunamadi: {path}")
     if path.suffix.lower() == ".svg":
+        physical = svg_physical_info(path)
         cleaned_path, stats = clean_svg_for_editor(path)
-        view_box, width, height = svg_viewbox_and_size(cleaned_path)
+        cleaned_root = ET.parse(cleaned_path).getroot()
+        cleaned_view_box = svg_viewbox_values(cleaned_root) or (0.0, 0.0, 100.0, 100.0)
+        width = float(cleaned_view_box[2]) * float(physical["scaleX"])
+        height = float(cleaned_view_box[3]) * float(physical["scaleY"])
+        view_box = (0.0, 0.0, width, height)
         vector_paths, vector_stats = svg_file_to_vector_paths(
             cleaned_path,
             min_length=1.0,
@@ -1062,6 +1188,11 @@ def image_payload(path: Path) -> dict[str, Any]:
                     "lightFillFallback": True,
                     "skippedLightFillFirstPass": int(vector_stats.get("skippedLightFill") or 0),
                 }
+        vector_paths = scale_vector_paths_to_mm(
+            vector_paths,
+            float(physical["scaleX"]),
+            float(physical["scaleY"]),
+        )
         mime = "image/svg+xml"
         data = base64.b64encode(cleaned_path.read_bytes()).decode("ascii")
         return {
@@ -1078,6 +1209,8 @@ def image_payload(path: Path) -> dict[str, Any]:
             "sourceHeight": height,
             "vectorPaths": vector_paths,
             "vectorStats": {"traceEngine": "svg", **vector_stats},
+            "physicalSize": physical,
+            "requiresPhysicalSizeConfirmation": bool(physical["estimatedAt96Dpi"]),
             "dataUrl": svg_preview_data_url(cleaned_path),
             "exportDataUrl": f"data:{mime};base64,{data}",
         }
@@ -6904,6 +7037,60 @@ def _int(value: Any, default: int = 0) -> int:
     return int(float(value))
 
 
+def power_percent(value: Any, default: float = 0.0) -> float:
+    try:
+        result = _float(value, default)
+    except (TypeError, ValueError):
+        result = float(default)
+    if not math.isfinite(result) or result < 0.0 or result > 100.0:
+        raise ValueError("Lazer gucu yuzde 0 ile 100 arasinda olmali.")
+    return result
+
+
+def power_percent_to_s(value: Any, max_s: float, default: float = 0.0) -> int:
+    percent = power_percent(value, default)
+    if not math.isfinite(float(max_s)) or float(max_s) <= 0:
+        raise ValueError("Makine profilinde maxS 0'dan buyuk olmali.")
+    return int(round(percent / 100.0 * float(max_s)))
+
+
+POWER_PAYLOAD_KEYS = {"power", "powerMin", "cutPower", "engravePower", "powerOverride"}
+
+
+def power_payload_to_machine_s(value: Any, max_s: float) -> Any:
+    if isinstance(value, list):
+        return [power_payload_to_machine_s(item, max_s) for item in value]
+    if not isinstance(value, dict):
+        return copy.deepcopy(value)
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in POWER_PAYLOAD_KEYS and item not in (None, ""):
+            result[key] = power_percent_to_s(item, max_s)
+        else:
+            result[key] = power_payload_to_machine_s(item, max_s)
+    return result
+
+
+def validated_machine_profile(state: dict[str, Any]) -> dict[str, Any]:
+    profile = state.get("machineProfile")
+    if not isinstance(profile, dict):
+        raise ValueError("G-code uretimi icin dogrulanmis makine profili gerekli.")
+    if not bool(profile.get("verified")):
+        raise ValueError("Makine profili dogrulanmadi. Uretimden once maxS ve hareket sinirlarini dogrulayin.")
+    max_s = _float(profile.get("maxS"), 0.0)
+    travel_x = _float(profile.get("travelX"), 0.0)
+    travel_y = _float(profile.get("travelY"), 0.0)
+    if max_s <= 0 or travel_x <= 0 or travel_y <= 0:
+        raise ValueError("Makine profilinde maxS, travelX ve travelY pozitif olmali.")
+    return {
+        **profile,
+        "id": str(profile.get("id") or "unknown"),
+        "maxS": max_s,
+        "travelX": travel_x,
+        "travelY": travel_y,
+    }
+
+
 def normalize_operation(value: Any, default: str = "engrave_line") -> str:
     operation = str(value or default).lower().replace("-", "_")
     if operation == "engrave":
@@ -6919,6 +7106,221 @@ def placement_boundary_margin(placement: dict[str, Any]) -> float:
 
 def placement_closes_boundary(placement: dict[str, Any]) -> bool:
     return bool(placement.get("clipCloseBoundary") or placement.get("boundaryClose"))
+
+
+def production_input_hash(state: dict[str, Any]) -> str:
+    canonical = {
+        "parts": state.get("parts") or [],
+        "placements": state.get("placements") or [],
+        "patterns": state.get("patterns") or [],
+        "settings": state.get("settings") or {},
+        "machineProfile": state.get("machineProfile") or {},
+        "project": state.get("project") or {},
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _preflight_issue(code: str, message: str, **details: Any) -> dict[str, Any]:
+    return {"code": code, "message": message, **details}
+
+
+def _pattern_preflight_operation(vector_path: dict[str, Any], fallback: str) -> str:
+    raw = str(vector_path.get("operation") or "").lower().replace("-", "_")
+    if fallback == "cut" and raw == "engrave":
+        return "cut"
+    return normalize_operation(raw, fallback)
+
+
+def preflight_state(
+    state: dict[str, Any],
+    *,
+    machine_snapshot: dict[str, Any] | None = None,
+    require_machine: bool = False,
+) -> PreflightResult:
+    blockers: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    project = state.get("project") if isinstance(state.get("project"), dict) else {}
+    project_id = str(project.get("id") or "")
+    revision = max(0, _int(project.get("revision"), 0))
+    input_hash = production_input_hash(state)
+    try:
+        profile = validated_machine_profile(state)
+    except ValueError as exc:
+        profile = {
+            "id": str((state.get("machineProfile") or {}).get("id") or "unknown"),
+            "maxS": _float((state.get("machineProfile") or {}).get("maxS"), 0.0),
+            "travelX": _float((state.get("machineProfile") or {}).get("travelX"), 0.0),
+            "travelY": _float((state.get("machineProfile") or {}).get("travelY"), 0.0),
+        }
+        blockers.append(_preflight_issue("machine_profile_invalid", str(exc)))
+
+    settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
+    bed_width = _float(settings.get("bedWidth"), 0.0)
+    bed_height = _float(settings.get("bedHeight"), 0.0)
+    margin = _float(settings.get("margin"), 0.0)
+    if bed_width <= 0 or bed_height <= 0 or margin < 0 or bed_width <= margin * 2 or bed_height <= margin * 2:
+        blockers.append(_preflight_issue("bed_invalid", "Tabla olcusu veya kenar payi gecersiz."))
+    elif (
+        float(profile.get("travelX") or 0) > 0
+        and float(profile.get("travelY") or 0) > 0
+        and (bed_width > float(profile["travelX"]) + 1e-6 or bed_height > float(profile["travelY"]) + 1e-6)
+    ):
+        blockers.append(_preflight_issue("bed_exceeds_machine", "Tabla olcusu makine hareket sinirlarini asiyor."))
+    try:
+        available_area = normalize_available_area(settings, max(0.0, margin))
+    except ValueError as exc:
+        available_area = None
+        blockers.append(_preflight_issue("available_area_invalid", str(exc)))
+
+    parts_by_id: dict[str, LoadedPart] = {}
+    for part_data in state.get("parts") or []:
+        part_id = str(part_data.get("id") or "")
+        try:
+            parts_by_id[part_id] = part_from_payload(part_data, part_id)
+        except ValueError as exc:
+            blockers.append(_preflight_issue("embedded_geometry_missing", str(exc), partId=part_id))
+
+    placements = state.get("placements") or []
+    placement_counts: dict[str, int] = {}
+    active_placement_ids: set[str] = set()
+    for placement in placements:
+        part_id = str(placement.get("partId") or "")
+        placement_counts[part_id] = placement_counts.get(part_id, 0) + 1
+        operation = normalize_operation(placement.get("operation"), "cut")
+        if operation == "ignore":
+            continue
+        active_placement_ids.add(str(placement.get("id") or ""))
+        part = parts_by_id.get(part_id)
+        if part is None:
+            blockers.append(_preflight_issue("part_missing", f"Yerlesimin parcasi bulunamadi: {part_id}."))
+            continue
+        transformed = transform_paths(part, placement)
+        if not bounds_fit_active_area(
+            transformed_bounds(transformed),
+            bed_width,
+            bed_height,
+            max(0.0, margin),
+            available_area,
+        ):
+            blockers.append(
+                _preflight_issue(
+                    "active_object_outside",
+                    f"Aktif parca uretim alaninin disinda: {part.name}.",
+                    placementId=str(placement.get("id") or ""),
+                )
+            )
+
+    for part_data in state.get("parts") or []:
+        part_id = str(part_data.get("id") or "")
+        requested = max(1, _int(part_data.get("quantity"), 1))
+        actual = placement_counts.get(part_id, 0)
+        if requested != actual:
+            blockers.append(
+                _preflight_issue(
+                    "quantity_mismatch",
+                    f"{part_data.get('name') or part_id}: istenen adet {requested}, yerlesimde {actual}.",
+                    partId=part_id,
+                )
+            )
+
+    for item in state.get("patterns") or []:
+        operation = normalize_operation(item.get("operation"), "engrave_line")
+        if operation == "ignore":
+            continue
+        parent_id = str(item.get("parentId") or "")
+        if parent_id and parent_id not in active_placement_ids:
+            blockers.append(
+                _preflight_issue(
+                    "pattern_parent_inactive",
+                    f"Desenin aktif bir DXF ebeveyni yok: {item.get('name') or item.get('id')}.",
+                    patternId=str(item.get("id") or ""),
+                )
+            )
+            continue
+        kind = str(item.get("kind") or "").lower()
+        fallback = "cut" if operation == "cut" else "engrave_fill" if operation == "engrave_fill" else "engrave_line"
+        has_embedded_vectors = kind == "vector" or (
+            kind == "svg" and (item.get("vectorPaths") or _int(item.get("vectorModelVersion"), 0) == 2)
+        )
+        if has_embedded_vectors and not embedded_vector_has_active_paths(item, fallback):
+            continue
+        pattern = RasterPattern(
+            path=Path(str(item.get("path") or item.get("name") or "embedded")),
+            x=_float(item.get("x")),
+            y=_float(item.get("y")),
+            width=_float(item.get("width")),
+            height=_float(item.get("height")),
+            rotation=_float(item.get("rotation")),
+            power=0,
+            feed=1,
+            line_step=max(0.05, _float(item.get("lineStep"), 0.35)),
+            threshold=_int(item.get("threshold"), 140),
+        )
+        if pattern.width <= 0 or pattern.height <= 0:
+            blockers.append(_preflight_issue("pattern_size_invalid", "Desen boyutu 0'dan buyuk olmali.", patternId=str(item.get("id") or "")))
+            continue
+        if not bounds_fit_active_area(
+            raster_pattern_bounds(pattern),
+            bed_width,
+            bed_height,
+            max(0.0, margin),
+            available_area,
+        ):
+            blockers.append(
+                _preflight_issue(
+                    "active_object_outside",
+                    f"Aktif desen uretim alaninin disinda: {item.get('name') or item.get('id')}.",
+                    patternId=str(item.get("id") or ""),
+                )
+            )
+        for vector_path in item.get("vectorPaths") or []:
+            if vector_path.get("removed"):
+                continue
+            path_operation = _pattern_preflight_operation(vector_path, fallback)
+            if path_operation == "cut" and not bool(vector_path.get("closed")):
+                blockers.append(
+                    _preflight_issue(
+                        "open_cut_contour",
+                        f"Acik kesim konturu kapali parca olusturmaz: {item.get('name') or item.get('id')}.",
+                        patternId=str(item.get("id") or ""),
+                        pathId=str(vector_path.get("id") or ""),
+                    )
+                )
+                break
+
+    if require_machine:
+        snapshot = machine_snapshot or {}
+        status = snapshot.get("lastStatus") if isinstance(snapshot.get("lastStatus"), dict) else {}
+        state_name = str(status.get("state") or "").split(":", 1)[0].lower()
+        age_ms = snapshot.get("statusAgeMs")
+        if not snapshot.get("connected"):
+            blockers.append(_preflight_issue("machine_disconnected", "Makine bagli degil."))
+        elif state_name != "idle" or age_ms is None or float(age_ms) > 2000:
+            blockers.append(_preflight_issue("machine_not_fresh_idle", "Makine son iki saniye icinde tam Idle olarak dogrulanmadi."))
+        machine_settings = snapshot.get("settings") if isinstance(snapshot.get("settings"), dict) else {}
+        try:
+            if float(machine_settings.get("32", 0)) != 1.0:
+                blockers.append(_preflight_issue("machine_laser_mode", "GRBL $32=1 olmali."))
+            if not math.isclose(float(machine_settings.get("30")), float(profile.get("maxS")), rel_tol=0.0, abs_tol=1e-6):
+                blockers.append(_preflight_issue("machine_max_s_mismatch", "GRBL $30 secili makine profiliyle uyusmuyor."))
+            if not math.isclose(float(machine_settings.get("130")), float(profile.get("travelX")), rel_tol=0.0, abs_tol=1e-6):
+                blockers.append(_preflight_issue("machine_x_limit_mismatch", "GRBL $130 secili makine profiliyle uyusmuyor."))
+            if not math.isclose(float(machine_settings.get("131")), float(profile.get("travelY")), rel_tol=0.0, abs_tol=1e-6):
+                blockers.append(_preflight_issue("machine_y_limit_mismatch", "GRBL $131 secili makine profiliyle uyusmuyor."))
+        except (TypeError, ValueError):
+            blockers.append(_preflight_issue("machine_settings_unknown", "GRBL $30/$32/$130/$131 ayarlari okunamadi."))
+
+    return PreflightResult(
+        status="blocked" if blockers else "ready",
+        blockers=blockers,
+        warnings=warnings,
+        project_id=project_id,
+        revision=revision,
+        input_hash=input_hash,
+        machine_profile_id=str(profile.get("id") or "unknown"),
+        max_s=float(profile.get("maxS") or 0.0),
+    )
 
 
 def part_fits_bed(part: LoadedPart, bed_width: float, bed_height: float, margin: float, allow_rotate: bool) -> bool:
@@ -7186,6 +7588,8 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     settings = state.get("settings", {})
     if not isinstance(settings, dict):
         raise ValueError("G-code ayarlari gecersiz.")
+    machine_profile = validated_machine_profile(state)
+    max_s = float(machine_profile["maxS"])
     missing_bed_settings = [
         key
         for key in ("bedWidth", "bedHeight")
@@ -7196,6 +7600,10 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     output_path = Path(state.get("outputPath") or "")
     if not output_path:
         raise ValueError("Cikti yolu secilmedi.")
+    preflight = preflight_state(state)
+    if preflight.blockers:
+        first = preflight.blockers[0]
+        raise ValueError(f"Uretim on kontrolu basarisiz [{first['code']}]: {first['message']}")
 
     tolerance = _float(settings.get("tolerance"), 0.25)
     join_tolerance = _float(settings.get("joinTolerance"), 0.05)
@@ -7203,21 +7611,10 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     parts_by_id: dict[str, LoadedPart] = {}
     for part_data in state.get("parts", []):
         part_id = str(part_data["id"])
-        path_text = str(part_data.get("path") or "")
-        source_path = Path(path_text) if path_text else None
-        if source_path and source_path.is_file():
-            parts_by_id[part_id] = load_part(
-                source_path,
-                part_id,
-                tolerance,
-                join_tolerance,
-                inner_first,
-            )
-        elif part_data.get("paths"):
+        if part_data.get("paths"):
             parts_by_id[part_id] = part_from_payload(part_data, part_id)
         else:
-            missing = source_path if source_path else part_data.get("name") or part_id
-            raise ValueError(f"DXF bulunamadi ve projede gomulu geometri yok: {missing}")
+            raise ValueError(f"Proje icinde gomulu DXF geometrisi yok: {part_data.get('name') or part_id}")
 
     bed_width = _float(settings.get("bedWidth"), 0.0)
     bed_height = _float(settings.get("bedHeight"), 0.0)
@@ -7226,11 +7623,17 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     available_area = normalize_available_area(settings, margin)
     if bed_width <= 0 or bed_height <= 0 or bed_width - margin * 2 <= 0 or bed_height - margin * 2 <= 0:
         raise ValueError("Tabla olcusu veya kenar payi gecersiz.")
+    if bed_width > float(machine_profile["travelX"]) + 1e-6 or bed_height > float(machine_profile["travelY"]) + 1e-6:
+        raise ValueError("Tabla olcusu makine profilindeki hareket sinirlarini asiyor.")
 
     travel_feed = _float(settings.get("travelFeed"), 3000.0)
     feed = _float(settings.get("feed"), 500.0)
-    power = _int(settings.get("power"), 1000)
-    engrave_power = _int(settings.get("engravePower"), 250)
+    power = power_percent_to_s(settings.get("powerPercent", settings.get("power")), max_s, 100.0)
+    engrave_power = power_percent_to_s(
+        settings.get("engravePowerPercent", settings.get("engravePower")),
+        max_s,
+        25.0,
+    )
     engrave_feed = _float(settings.get("engraveFeed"), 1800.0)
     converter.validate_power(engrave_power)
     laser_cmd = str(settings.get("laserCmd") or "M4").strip().upper()
@@ -7264,26 +7667,17 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             not part_fits_bed(part, bed_width, bed_height, margin, allow_rotate)
             or not bounds_fit_active_area(transformed_bounds(transformed), bed_width, bed_height, margin, available_area)
         ):
-            non_production_placement_ids.add(placement_id)
-            excluded_placement_ids.add(placement_id)
-            excluded_object_count += 1
-            continue
+            raise ValueError(f"Aktif parca uretim alaninin disinda: {part.name}")
         if operation == "cut":
             # Kerf telafisi yalniz KESIMDE ve yerlesim (parca) bazinda:
             # delik tespiti ayni parcanin yollari arasinda yapilmali.
             placement_paths = apply_kerf_to_paths(transformed, kerf)
             if not toolpaths_fit_generation_area(placement_paths, bed_width, bed_height, margin, available_area):
-                non_production_placement_ids.add(placement_id)
-                excluded_placement_ids.add(placement_id)
-                excluded_object_count += 1
-                continue
+                raise ValueError(f"Kerf sonrasi aktif parca uretim alaninin disina tasiyor: {part.name}")
             cut_paths.extend(placement_paths)
         else:
             if not toolpaths_fit_generation_area(transformed, bed_width, bed_height, margin, available_area):
-                non_production_placement_ids.add(placement_id)
-                excluded_placement_ids.add(placement_id)
-                excluded_object_count += 1
-                continue
+                raise ValueError(f"Aktif kazima parcasi uretim alaninin disinda: {part.name}")
             for path in optimize_toolpaths(
                 transformed,
                 start=(_float(placement.get("x")), _float(placement.get("y"))),
@@ -7299,9 +7693,8 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             "close": placement_closes_boundary(placement),
         }
 
-    for item in state.get("patterns", []):
-        if not item.get("path"):
-            continue
+    for raw_item in state.get("patterns", []):
+        item = power_payload_to_machine_s(raw_item, max_s)
         kind = str(item.get("kind") or "").lower()
         operation = normalize_operation(item.get("operation"), "engrave_line")
         if operation == "ignore":
@@ -7310,9 +7703,7 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         if parent_id and parent_id not in known_placement_ids:
             raise ValueError(f"Desenin bagli oldugu DXF parcasi bulunamadi: {item.get('name') or item.get('path')}")
         if parent_id in non_production_placement_ids:
-            if parent_id in excluded_placement_ids:
-                excluded_object_count += 1
-            continue
+            raise ValueError(f"Aktif desenin DXF ebeveyni uretime uygun degil: {item.get('name') or item.get('id')}")
         if kind not in {"svg", "vector"} and operation == "cut":
             operation = "engrave_fill"
         gcode_operation = "cut" if operation == "cut" else "engrave"
@@ -7320,12 +7711,21 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         has_embedded_vectors = kind == "vector" or (
             kind == "svg" and (item.get("vectorPaths") or _int(item.get("vectorModelVersion"), 0) == 2)
         )
+        if not item.get("path") and not has_embedded_vectors:
+            continue
         if has_embedded_vectors and not embedded_vector_has_active_paths(item, vector_fallback_operation):
             continue
-        default_pattern_power = power if operation == "cut" else 250
+        if has_embedded_vectors:
+            for vector_path in item.get("vectorPaths") or []:
+                if vector_path.get("removed"):
+                    continue
+                current_operation = _pattern_preflight_operation(vector_path, vector_fallback_operation)
+                if current_operation == "cut" and not bool(vector_path.get("closed")):
+                    raise ValueError(f"Acik kesim konturu var: {item.get('name') or item.get('id')}")
+        default_pattern_power = power if operation == "cut" else engrave_power
         default_pattern_feed = feed if operation == "cut" else 1800.0
         pattern = RasterPattern(
-            path=Path(item["path"]),
+            path=Path(str(item.get("path") or item.get("name") or "embedded-vector.svg")),
             x=_float(item.get("x")),
             y=_float(item.get("y")),
             width=_float(item.get("width")),
@@ -7404,8 +7804,7 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             margin,
             available_area,
         ):
-            excluded_object_count += 1
-            continue
+            raise ValueError(f"Aktif desen yolu uretim alaninin disina tasiyor: {item.get('name') or item.get('id')}")
         pattern_lines.extend(item_lines)
         active_output_count += 1
         generated_pattern_count += 1
@@ -7423,7 +7822,14 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     pierce_delay = _float(settings.get("pierceDelay"), 0.0)
     overcut = _float(settings.get("overcut"), 0.8)
     passes = max(1, _int(settings.get("passes"), 1))
-    air_assist_command = str(settings.get("airAssistCommand") or "M8").upper() if bool(settings.get("airAssist", False)) else None
+    air_assist_supported = bool((machine_profile.get("airAssist") or {}).get("supported"))
+    if bool(settings.get("airAssist", False)) and not air_assist_supported:
+        raise ValueError("Secili makine profili air assist desteklemiyor.")
+    air_assist_command = (
+        str((machine_profile.get("airAssist") or {}).get("onCommand") or settings.get("airAssistCommand") or "M8").upper()
+        if bool(settings.get("airAssist", False))
+        else None
+    )
 
     converter.write_gcode(
         output_path=output_path,
@@ -7451,6 +7857,8 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         "cutWidth": max_x - min_x,
         "cutHeight": max_y - min_y,
         "lineCount": len(output_path.read_text(encoding="utf-8").splitlines()),
+        "machineProfileId": machine_profile["id"],
+        "maxS": max_s,
     }
 
 

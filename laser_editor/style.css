@@ -1025,6 +1025,51 @@ details > .wide-action {
   margin: 10px 0;
 }
 
+.machine-setting-validation {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 9px 0;
+}
+
+.machine-setting-validation span {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 7px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.machine-setting-validation b {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.machine-setting-validation em {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-style: normal;
+  text-align: right;
+  text-overflow: ellipsis;
+}
+
+.machine-setting-validation small {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.machine-setting-validation .ok {
+  border-color: color-mix(in srgb, var(--success) 55%, var(--border));
+}
+
+.machine-setting-validation .danger {
+  border-color: color-mix(in srgb, var(--danger) 65%, var(--border));
+}
+
 .machine-jog {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2039,6 +2084,10 @@ details > .wide-action {
 .titlebar .brand p { margin: 1px 0 0; font-size: 11px; color: var(--text-muted); }
 .title-status { display: flex; gap: 6px; flex: 1; justify-content: center; flex-wrap: wrap; }
 .title-actions { display: flex; gap: 7px; }
+.title-actions > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .notification-button { position: relative; }
 .notification-badge {
   position: absolute;

@@ -211,15 +211,24 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
     max_x = max_y = float("-inf")
     uses_m3 = False
     uses_m4 = False
+    saw_m5 = False
+    saw_s0 = False
     active_operation = "laser"
     laser_powers: list[float] = []
     laser_feeds: list[float] = []
     explicit_units = False
     explicit_distance_mode = False
     explicit_feed_mode = False
+    has_g21 = False
+    has_g90 = False
+    has_g94 = False
     laser_move_count = 0
     arc_move_count = 0
     unsupported_coordinate_commands: set[str] = set()
+    unsupported_axis_words: set[str] = set()
+    unsupported_machine_commands: set[str] = set()
+    unsupported_words: set[str] = set()
+    commanded_powers: list[float] = []
 
     for index, raw in enumerate(lines):
         active_operation = gcode_operation_marker(raw, active_operation)
@@ -233,7 +242,10 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
             for letter, value_text in GCODE_WORD_RE.findall(line):
                 value = float(value_text)
                 if letter == "G":
-                    code = int(value)
+                    if abs(value - round(value)) > 1e-9:
+                        unsupported_coordinate_commands.add(f"G{value:g}")
+                        continue
+                    code = int(round(value))
                     if code in (0, 1, 2, 3):
                         motion = code
                         if code in (2, 3):
@@ -244,18 +256,23 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
                     elif code == 21:
                         unit_scale = 1.0
                         explicit_units = True
+                        has_g21 = True
                     elif code == 90:
                         absolute = True
                         explicit_distance_mode = True
+                        has_g90 = True
                     elif code == 91:
                         absolute = False
                         explicit_distance_mode = True
                     elif code == 94:
                         explicit_feed_mode = True
-                    elif code in (10, 92):
+                        has_g94 = True
+                    elif code == 92 and abs(value - 92.0) <= 1e-9:
                         coordinate_setting = True
-                    elif code in (28, 30, 53):
-                        unsupported_coordinate_commands.add(f"G{code}")
+                    elif code in {4, 17, 40, 49, 54, 80}:
+                        pass
+                    else:
+                        unsupported_coordinate_commands.add(f"G{value:g}")
                 elif letter == "M":
                     code = int(value)
                     if code in (3, 4):
@@ -264,14 +281,24 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
                         uses_m4 = uses_m4 or code == 4
                     elif code == 5:
                         laser_on = False
+                        saw_m5 = True
+                    elif code not in {7, 8, 9}:
+                        unsupported_machine_commands.add(f"M{value:g}")
                 elif letter == "F":
                     feed = max(1.0, value * unit_scale)
                 elif letter == "S":
                     power = value
+                    commanded_powers.append(value)
+                    if abs(value) <= 1e-9:
+                        saw_s0 = True
                 elif letter == "X":
                     target_x = value
                 elif letter == "Y":
                     target_y = value
+                elif letter in {"Z", "A", "B", "C", "U", "V", "W"}:
+                    unsupported_axis_words.add(letter)
+                elif letter in {"T", "H", "D", "E", "Q", "I", "J", "K", "R"}:
+                    unsupported_words.add(letter)
             if motion is not None:
                 modal_motion = motion
             if coordinate_setting:
@@ -325,13 +352,19 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
         safety_warnings.append("G94 ilerleme modu açıkça belirtilmemiş.")
     if uses_m3:
         safety_warnings.append("M3 sabit güç kullanılıyor; duraklama ve köşe yanığı riski ayrıca doğrulanmalı.")
-    final_laser_off = not laser_on or power <= 0
+    final_laser_off = saw_m5 and saw_s0 and not laser_on and power <= 0
     if cut_length > 0 and not final_laser_off:
         safety_warnings.append("Dosya sonunda M5/S0 ile lazerin kapandığı doğrulanamadı.")
     if arc_move_count:
         safety_warnings.append("G2/G3 yayları önizlemede kiriş olarak gösteriliyor; makinede gerçek yay hareketi oluşur.")
     if unsupported_coordinate_commands:
         safety_warnings.append(f"Önizleme, {', '.join(sorted(unsupported_coordinate_commands))} koordinat komutlarını yaklaşık gösterir.")
+    if unsupported_axis_words:
+        safety_warnings.append(f"2B önizleme, {', '.join(sorted(unsupported_axis_words))} eksen hareketlerini çözümlemez.")
+    if unsupported_machine_commands:
+        safety_warnings.append(f"Desteklenmeyen M komutları var: {', '.join(sorted(unsupported_machine_commands))}.")
+    if unsupported_words:
+        safety_warnings.append(f"Sınır analizinde desteklenmeyen alanlar var: {', '.join(sorted(unsupported_words))}.")
     return {
         "segments": segments,
         "bounds": {"minX": min_x, "minY": min_y, "maxX": max_x, "maxY": max_y,
@@ -352,9 +385,21 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
         "explicitUnits": explicit_units,
         "explicitDistanceMode": explicit_distance_mode,
         "explicitFeedMode": explicit_feed_mode,
+        "hasG21": has_g21,
+        "hasG90": has_g90,
+        "hasG94": has_g94,
         "finalLaserOff": final_laser_off,
         "laserMoveCount": laser_move_count,
         "arcMoveCount": arc_move_count,
+        "unresolvedArcCount": arc_move_count,
+        "unsupportedCoordinateCommands": sorted(unsupported_coordinate_commands),
+        "unsupportedAxisWords": sorted(unsupported_axis_words),
+        "unsupportedMachineCommands": sorted(unsupported_machine_commands),
+        "unsupportedWords": sorted(unsupported_words),
+        "commandedPowerRange": {
+            "min": min(commanded_powers) if commanded_powers else 0.0,
+            "max": max(commanded_powers) if commanded_powers else 0.0,
+        },
         "safetyWarnings": safety_warnings,
         "powerRange": {
             "min": min(laser_powers) if laser_powers else 0.0,
@@ -365,6 +410,69 @@ def analyze_gcode(lines: list[str], rapid_feed: float = 6000.0) -> dict[str, Any
             "max": max(laser_feeds) if laser_feeds else 0.0,
         },
     }
+
+
+def validate_gcode_for_machine(
+    lines: list[str],
+    *,
+    max_s: float,
+    travel_x: float | None = None,
+    travel_y: float | None = None,
+) -> dict[str, Any]:
+    info = analyze_gcode(lines)
+    blockers: list[dict[str, str]] = []
+
+    def block(code: str, message: str) -> None:
+        blockers.append({"code": code, "message": message})
+
+    if not info.get("hasG21") or info.get("unitMode") != "mm":
+        block("gcode_g21_required", "G-code acikca G21 milimetre modunu secmeli.")
+    if not info.get("hasG90"):
+        block("gcode_g90_required", "G-code acikca G90 mutlak koordinat modunu secmeli.")
+    if not info.get("hasG94"):
+        block("gcode_g94_required", "G-code acikca G94 mm/dakika ilerleme modunu secmeli.")
+    if not info.get("finalLaserOff"):
+        block("gcode_final_laser_off", "G-code sonunda M5 ve S0 ile lazer kapanisi dogrulanamadi.")
+    unsupported = info.get("unsupportedCoordinateCommands") or []
+    if unsupported:
+        block("gcode_unsupported_coordinates", f"Desteklenmeyen koordinat komutlari: {', '.join(unsupported)}.")
+    unsupported_axes = info.get("unsupportedAxisWords") or []
+    if unsupported_axes:
+        block("gcode_unsupported_axes", f"2B lazer isi icin desteklenmeyen eksenler: {', '.join(unsupported_axes)}.")
+    unsupported_m = info.get("unsupportedMachineCommands") or []
+    if unsupported_m:
+        block("gcode_unsupported_machine_commands", f"Desteklenmeyen M komutlari: {', '.join(unsupported_m)}.")
+    unsupported_words = info.get("unsupportedWords") or []
+    if unsupported_words:
+        block("gcode_unsupported_words", f"Sinir analizinde desteklenmeyen G-code alanlari: {', '.join(unsupported_words)}.")
+    if int(info.get("unresolvedArcCount") or 0) > 0:
+        block("gcode_unresolved_arc", "G2/G3 yaylari kesin sinir analizi yapilamadigi icin makineye gonderilemez.")
+    try:
+        normalized_max_s = float(max_s)
+    except (TypeError, ValueError):
+        normalized_max_s = 0.0
+    power_range = info.get("commandedPowerRange") or {}
+    min_power = float(power_range.get("min") or 0.0)
+    max_power = float(power_range.get("max") or 0.0)
+    if normalized_max_s <= 0:
+        block("machine_max_s_unknown", "Makine $30 maksimum guc ayari bilinmiyor.")
+    elif min_power < -1e-9 or max_power > normalized_max_s + 1e-9:
+        block(
+            "gcode_power_range",
+            f"G-code gucu S{min_power:g}..S{max_power:g}; makine siniri S0..S{normalized_max_s:g}.",
+        )
+    bounds = info.get("bounds") or {}
+    min_x = float(bounds.get("minX") or 0.0)
+    min_y = float(bounds.get("minY") or 0.0)
+    max_x = float(bounds.get("maxX") or 0.0)
+    max_y = float(bounds.get("maxY") or 0.0)
+    if min_x < -1e-6 or min_y < -1e-6:
+        block("gcode_negative_bounds", "G-code makine calisma sifirinin disina tasiyor.")
+    if travel_x is not None and float(travel_x) > 0 and max_x > float(travel_x) + 1e-6:
+        block("gcode_x_limit", f"G-code X{max_x:.3f}, makine X siniri {float(travel_x):.3f} mm.")
+    if travel_y is not None and float(travel_y) > 0 and max_y > float(travel_y) + 1e-6:
+        block("gcode_y_limit", f"G-code Y{max_y:.3f}, makine Y siniri {float(travel_y):.3f} mm.")
+    return {**info, "blockers": blockers, "safeForMachine": not blockers}
 
 
 def _parse_axis_values(value: str) -> list[float]:
@@ -414,6 +522,9 @@ class GrblController:
         self._paused = False
         self._settings: dict[str, float] = {}
         self._warnings: list[str] = []
+        self._last_status_at = 0.0
+        self._focus_timer: threading.Timer | None = None
+        self._focus_active = False
 
     def list_ports(self) -> dict[str, Any]:
         if not pyserial_available():
@@ -453,6 +564,7 @@ class GrblController:
             self._port = port
             self._baud = baud
             self._last_status = {}
+            self._last_status_at = 0.0
             self._settings = {}
             self._warnings = []
             self._log.clear()
@@ -470,6 +582,10 @@ class GrblController:
 
     def disconnect(self) -> dict[str, Any]:
         with self._lock:
+            if self._focus_timer is not None:
+                self._focus_timer.cancel()
+                self._focus_timer = None
+            self._focus_active = False
             self._abort_requested = True
             self._paused = False
             if self._serial is not None:
@@ -499,8 +615,11 @@ class GrblController:
                 "port": self._port,
                 "baud": self._baud,
                 "lastStatus": dict(self._last_status),
+                "lastStatusAt": self._last_status_at,
+                "statusAgeMs": round(max(0.0, time.monotonic() - self._last_status_at) * 1000) if self._last_status_at else None,
                 "settings": dict(self._settings),
                 "warnings": list(self._warnings),
+                "focus": {"active": self._focus_active},
                 "job": dict(self._job),
                 "log": list(self._log)[-80:],
             }
@@ -522,6 +641,7 @@ class GrblController:
                     if parsed:
                         with self._lock:
                             self._last_status = parsed
+                            self._last_status_at = time.monotonic()
                     continue
                 lower = line.lower()
                 if lower == "ok":
@@ -558,6 +678,7 @@ class GrblController:
                     parsed = parse_status_line(line)
                     with self._lock:
                         self._last_status = parsed
+                        self._last_status_at = time.monotonic()
                     self._append_log(f"< {line}")
                     break
                 self._append_log(f"< {line}")
@@ -654,6 +775,7 @@ class GrblController:
         feed = max(1.0, float(feed or 3000.0))
         padding = max(0.0, float(padding or 0.0))
         box = normalize_bounds(bounds, padding)
+        self._validate_machine_bounds(box)
         min_x = box["minX"]
         min_y = box["minY"]
         max_x = box["maxX"]
@@ -661,7 +783,9 @@ class GrblController:
         commands = [
             "M5",
             "S0",
+            "G21",
             "G90",
+            "G94",
             f"G0 X{min_x:.3f} Y{min_y:.3f}",
             f"G1 X{max_x:.3f} Y{min_y:.3f} F{feed:.0f}",
             f"G1 X{max_x:.3f} Y{max_y:.3f} F{feed:.0f}",
@@ -716,6 +840,60 @@ class GrblController:
         self._append_log(f"Odak atimi: S{power} / {duration_ms} ms")
         return self.snapshot()
 
+    def focus_start(self, power_percent: float, *, expert: bool = False, confirmed: bool = False) -> dict[str, Any]:
+        if not confirmed:
+            raise ValueError("Odak lazeri icin kullanici onayi gerekli.")
+        percent = float(power_percent or 0.0)
+        limit = 5.0 if expert else 3.0
+        watchdog_seconds = 0.25 if expert else 0.1
+        if percent <= 0 or percent > limit:
+            raise ValueError(f"Odak gucu bu modda %0 ile %{limit:g} arasinda olmali.")
+        self._ensure_operator_ready()
+        max_s, _travel_x, _travel_y = self._validate_laser_settings()
+        power_s = max(1, int(round(percent / 100.0 * max_s)))
+        with self._lock:
+            if self._focus_timer is not None:
+                self._focus_timer.cancel()
+                self._focus_timer = None
+        try:
+            self._send_command_wait("M5", timeout=2)
+            self._send_command_wait("S0", timeout=2)
+            self._send_command_wait(f"M3 S{power_s}", timeout=2)
+        except Exception:
+            self._safety_stop()
+            raise
+        with self._lock:
+            self._focus_active = True
+            timer = threading.Timer(watchdog_seconds, self._focus_watchdog_stop)
+            timer.daemon = True
+            self._focus_timer = timer
+            timer.start()
+        self._append_log(f"Odak basladi: %{percent:g} = S{power_s}; watchdog {watchdog_seconds * 1000:.0f} ms")
+        return self.snapshot()
+
+    def focus_stop(self) -> dict[str, Any]:
+        with self._lock:
+            timer = self._focus_timer
+            self._focus_timer = None
+        if timer is not None:
+            timer.cancel()
+        try:
+            self._shutdown_laser_or_raise()
+        except Exception:
+            self._safety_stop()
+            raise
+        finally:
+            with self._lock:
+                self._focus_active = False
+        self._append_log("Odak lazeri kapatildi.")
+        return self.snapshot()
+
+    def _focus_watchdog_stop(self) -> None:
+        try:
+            self.focus_stop()
+        except Exception as exc:
+            self._append_log(f"GUVENLIK: odak watchdog kapanisi basarisiz: {exc}")
+
     def start_gcode(self, lines: list[str], confirmed: bool = False) -> dict[str, Any]:
         if not confirmed:
             raise ValueError("Makineye G-code gondermek icin kullanici onayi gerekli.")
@@ -727,8 +905,16 @@ class GrblController:
         clean_lines = [line for line in (clean_gcode_line(item) for item in lines) if line]
         if not clean_lines:
             raise ValueError("Gonderilecek G-code satiri yok.")
-        if gcode_uses_m3(clean_lines) and not self._laser_mode_enabled():
-            self._append_log("UYARI: G-code M3 kullaniyor; GRBL $32=1 degilse feed hold lazeri kapatmayabilir.")
+        max_s, travel_x, travel_y = self._validate_laser_settings()
+        preflight = validate_gcode_for_machine(
+            clean_lines,
+            max_s=max_s,
+            travel_x=travel_x,
+            travel_y=travel_y,
+        )
+        if preflight["blockers"]:
+            message = " ".join(str(item.get("message") or "") for item in preflight["blockers"])
+            raise ValueError(f"G-code makine guvenlik kontrolunden gecemedi: {message}")
         with self._lock:
             if self._job.get("running"):
                 raise ValueError("Makinede zaten calisan bir G-code gonderimi var.")
@@ -778,6 +964,7 @@ class GrblController:
                     else:
                         self._job["errors"] += 1
                         raise RuntimeError(response)
+            self._shutdown_laser_or_raise()
             with self._lock:
                 self._job["running"] = False
                 self._job["paused"] = False
@@ -785,21 +972,38 @@ class GrblController:
                 self._job["finishedAt"] = time.time()
             self._append_log("G-code gonderimi tamamlandi.")
         except Exception as exc:  # background worker boundary
-            self._safety_stop()
+            shutdown_error = None
+            try:
+                self._shutdown_laser_or_raise()
+            except Exception as stop_exc:
+                shutdown_error = stop_exc
+                self._safety_stop()
+            message = str(exc)
+            if shutdown_error is not None:
+                message = f"{message} Lazer kapanisi dogrulanamadi: {shutdown_error}"
             with self._lock:
                 self._job["running"] = False
                 self._job["paused"] = False
                 self._job["errors"] = int(self._job.get("errors") or 0) + 1
-                self._job["message"] = str(exc)
+                self._job["message"] = message
                 self._job["finishedAt"] = time.time()
-            self._append_log(f"HATA: {exc}")
+            self._append_log(f"HATA: {message}")
+
+    def _shutdown_laser_or_raise(self) -> None:
+        if not self._is_connected_unlocked():
+            raise ValueError("Lazer kapanisi icin makine bagli degil.")
+        first = self._send_command_wait("M5", timeout=2.0, allow_abort=False)
+        second = self._send_command_wait("S0", timeout=2.0, allow_abort=False)
+        if not first.startswith("ok") or not second.startswith("ok"):
+            raise RuntimeError(f"M5/S0 yaniti basarisiz: {first}, {second}")
+        self._append_log("GUVENLIK: M5 ve S0 dogrulandi.")
 
     def _safety_stop(self) -> None:
         """Is basarisiz bittiginde lazeri garantiye al: soft reset planlayiciyi
         bosaltir ve lazeri kapatir. M3 modunda duran kafa + acik lazer yangin
         riskidir; hata yolunda asla lazer acik birakilmaz."""
         try:
-            if self._is_connected_unlocked() and not self._abort_requested:
+            if self._is_connected_unlocked():
                 self._write_serial(b"\x18")
                 self._serial.flush()
                 self._append_log("GUVENLIK: soft reset gonderildi (lazer kapatildi).")
@@ -810,16 +1014,17 @@ class GrblController:
         self._ensure_no_active_job()
         try:
             self.query_status()
-        except Exception:
-            pass
+        except Exception as exc:
+            raise ValueError(f"Makine durumu dogrulanamadi: {exc}") from exc
         with self._lock:
-            state = str(self._last_status.get("state", "")).lower()
-        if state.startswith("alarm"):
-            raise ValueError("Makine ALARM durumunda. Once $X (kilit ac) veya $H (home) gerekli.")
-        if state.startswith("hold"):
-            raise ValueError("Makine duraklatilmis (Hold). Once ~ (devam) gonderin.")
-        if state.startswith("run"):
-            raise ValueError("Makine hareket halinde. Komut icin once durmasini bekleyin.")
+            state = str(self._last_status.get("state", ""))
+            status_age = time.monotonic() - self._last_status_at if self._last_status_at else float("inf")
+        normalized = state.split(":", 1)[0].strip().lower()
+        if status_age > 2.0:
+            raise ValueError("Makine durumu 2 saniyeden eski; hareket komutu engellendi.")
+        if normalized != "idle":
+            visible = state or "bilinmiyor"
+            raise ValueError(f"Makine tam Idle durumda degil ({visible}); hareket veya lazer komutu engellendi.")
 
     def _ensure_no_active_job(self) -> None:
         self._require_connected()
@@ -827,11 +1032,11 @@ class GrblController:
             if self._job.get("running") or self._job.get("paused"):
                 raise ValueError("Makinede calisan is varken bu komut gonderilemez.")
 
-    def _send_command_wait(self, command: str, timeout: float) -> str:
+    def _send_command_wait(self, command: str, timeout: float, allow_abort: bool = True) -> str:
         self._require_connected()
         with self._io_lock:
             with self._lock:
-                abortable_wait = bool(self._job.get("running"))
+                abortable_wait = bool(self._job.get("running")) and bool(allow_abort)
             self._append_log(f"> {command}")
             self._write_serial((command.strip() + "\n").encode("ascii", errors="ignore"))
             deadline = time.monotonic() + timeout
@@ -853,6 +1058,7 @@ class GrblController:
                     if parsed:
                         with self._lock:
                             self._last_status = parsed
+                            self._last_status_at = time.monotonic()
                     continue
                 lower = line.lower()
                 if lower == "ok" or lower.startswith("error") or lower.startswith("alarm"):
@@ -873,6 +1079,7 @@ class GrblController:
                 if parsed:
                     with self._lock:
                         self._last_status = parsed
+                        self._last_status_at = time.monotonic()
 
     def _readline(self) -> str:
         if self._serial is None:
@@ -916,12 +1123,45 @@ class GrblController:
             value = self._settings.get("32")
         return value == 1.0
 
+    def _required_setting(self, number: str, label: str) -> float:
+        with self._lock:
+            value = self._settings.get(str(number))
+        if value is None or not isfinite(float(value)):
+            raise ValueError(f"Makine {label} ayari (${number}) okunamadi.")
+        return float(value)
+
+    def _validate_machine_bounds(self, bounds: dict[str, Any]) -> None:
+        travel_x = self._required_setting("130", "X hareket siniri")
+        travel_y = self._required_setting("131", "Y hareket siniri")
+        box = normalize_bounds(bounds)
+        if box["minX"] < -1e-6 or box["minY"] < -1e-6:
+            raise ValueError("Hareket siniri makine sifirinin disina tasiyor.")
+        if box["maxX"] > travel_x + 1e-6:
+            raise ValueError(f"X siniri asiliyor: {box['maxX']:.3f} > ${130}={travel_x:.3f} mm.")
+        if box["maxY"] > travel_y + 1e-6:
+            raise ValueError(f"Y siniri asiliyor: {box['maxY']:.3f} > ${131}={travel_y:.3f} mm.")
+
+    def _validate_laser_settings(self) -> tuple[float, float, float]:
+        laser_mode = self._required_setting("32", "lazer modu")
+        if laser_mode != 1.0:
+            raise ValueError("Lazer isi icin GRBL $32=1 olmali.")
+        max_s = self._required_setting("30", "maksimum guc")
+        if max_s <= 0:
+            raise ValueError("GRBL $30 maksimum guc ayari 0'dan buyuk olmali.")
+        travel_x = self._required_setting("130", "X hareket siniri")
+        travel_y = self._required_setting("131", "Y hareket siniri")
+        return max_s, travel_x, travel_y
+
     def _machine_warnings(self) -> list[str]:
         warnings: list[str] = []
         if "32" not in self._settings:
             warnings.append("GRBL $32 ayari okunamadi; feed hold sirasinda lazer davranisini makinede dogrulayin.")
         elif self._settings.get("32") != 1.0:
             warnings.append("GRBL $32 lazer modu kapali gorunuyor; is gondermeden once $32=1 oldugunu dogrulayin.")
+        if float(self._settings.get("30") or 0.0) <= 0:
+            warnings.append("GRBL $30 maksimum guc ayari okunamadi veya gecersiz.")
+        if float(self._settings.get("130") or 0.0) <= 0 or float(self._settings.get("131") or 0.0) <= 0:
+            warnings.append("GRBL $130/$131 hareket sinirlari okunamadi veya gecersiz.")
         return warnings
 
     def _require_connected(self) -> None:

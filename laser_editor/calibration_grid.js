@@ -27,8 +27,8 @@
     const rows = clamp(Math.round(number(options.rows, 5)), 2, 10);
     const tile = clamp(number(options.tile, 12), 5, 50);
     const gap = clamp(number(options.gap, 3), 1, 20);
-    const minPower = clamp(Math.round(number(options.minPower, 200)), 0, 1000);
-    const maxPower = clamp(Math.round(number(options.maxPower, 1000)), 0, 1000);
+    const minPower = clamp(number(options.minPower, 20), 0, 100);
+    const maxPower = clamp(number(options.maxPower, 100), 0, 100);
     const minFeed = Math.max(1, Math.round(number(options.minFeed, 300)));
     const maxFeed = Math.max(1, Math.round(number(options.maxFeed, 1500)));
     const labelWidth = clamp(number(options.labelWidth, 18), 10, 40);

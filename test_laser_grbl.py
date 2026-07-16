@@ -116,6 +116,25 @@ def test_analyze_gcode_does_not_accept_earlier_m5_as_final_shutdown():
     )
 
 
+def test_machine_validation_blocks_unresolved_coordinate_modes_and_axes():
+    lines = [
+        "G21",
+        "G90",
+        "G94",
+        "G10 L2 P2 X10",
+        "G55",
+        "G38.2 X5 F100",
+        "M4 S0",
+        "G1 X10 Z2 F500",
+        "M5",
+        "S0",
+    ]
+    result = laser_grbl.validate_gcode_for_machine(lines, max_s=1000, travel_x=400, travel_y=400)
+    codes = {item["code"] for item in result["blockers"]}
+    assert_true("gcode_unsupported_coordinates" in codes, f"coordinate-system changes must block: {result}")
+    assert_true("gcode_unsupported_axes" in codes, f"unresolved Z motion must block: {result}")
+
+
 def test_usb_serial_port_scores_above_bluetooth():
     usb_score, usb_reason = laser_grbl.serial_port_score("COM7", "USB Seri Cihaz (COM7)", "USB VID:PID=303A:1001")
     bt_score, bt_reason = laser_grbl.serial_port_score("COM3", "Bluetooth bağlantısı üzerinden Standart Seri (COM3)", "BTHENUM\\TEST")
@@ -189,6 +208,7 @@ def controller_with_fake(fake):
     controller._serial = fake
     controller._port = "COM_TEST"
     controller._baud = 115200
+    controller._settings = {"30": 1000.0, "32": 1.0, "130": 400.0, "131": 400.0}
     return controller
 
 
@@ -201,18 +221,34 @@ def wait_for_job_done(controller, timeout=1.0):
     raise AssertionError("job did not finish")
 
 
-def test_gcode_error_sends_soft_reset():
+def test_gcode_error_sends_explicit_laser_shutdown():
+    fake = FakeSerial([
+        "<Idle|MPos:0.000,0.000,0.000|FS:0,0>\n",
+        "error:20\n",
+        "ok\n",
+        "ok\n",
+    ])
+    controller = controller_with_fake(fake)
+
+    controller.start_gcode(["G21", "G90", "G94", "M4 S0", "G1 X10 F500", "M5", "S0"], confirmed=True)
+    wait_for_job_done(controller, timeout=3.0)
+
+    commands = [item.decode("ascii", errors="ignore").strip() for item in fake.writes]
+    assert_true(commands[-2:] == ["M5", "S0"], f"failed G-code job must force M5/S0: {commands}")
+    assert_true(controller.snapshot()["job"]["errors"] >= 1, "job error should be recorded")
+
+
+def test_gcode_shutdown_failure_sends_soft_reset():
     fake = FakeSerial([
         "<Idle|MPos:0.000,0.000,0.000|FS:0,0>\n",
         "error:20\n",
     ])
     controller = controller_with_fake(fake)
 
-    controller.start_gcode(["G1 X10 F500"], confirmed=True)
-    wait_for_job_done(controller)
+    controller.start_gcode(["G21", "G90", "G94", "M4 S0", "G1 X10 F500", "M5", "S0"], confirmed=True)
+    wait_for_job_done(controller, timeout=6.0)
 
-    assert_true(b"\x18" in fake.writes, "failed G-code job must send soft reset")
-    assert_true(controller.snapshot()["job"]["errors"] >= 1, "job error should be recorded")
+    assert_true(b"\x18" in fake.writes, "unconfirmed M5/S0 shutdown must send soft reset")
 
 
 def test_disconnect_sends_soft_reset_before_close():
@@ -325,14 +361,14 @@ def test_abort_breaks_command_wait_without_timeout():
 
 
 def test_frame_bounds_sends_laser_off_rectangle():
-    fake = FakeSerial(["<Idle|MPos:0.000,0.000,0.000|FS:0,0>\n"] + ["ok\n"] * 10)
+    fake = FakeSerial(["<Idle|MPos:0.000,0.000,0.000|FS:0,0>\n"] + ["ok\n"] * 12)
     controller = controller_with_fake(fake)
 
     controller.frame_bounds({"minX": 1, "minY": 2, "maxX": 11, "maxY": 22}, feed=1500, padding=1, confirmed=True)
 
     commands = [item.decode("ascii", errors="ignore").strip() for item in fake.writes]
     assert_true(commands[0] == "?", "frame should preflight status")
-    assert_true(commands[1:4] == ["M5", "S0", "G90"], f"frame must force laser off first: {commands}")
+    assert_true(commands[1:6] == ["M5", "S0", "G21", "G90", "G94"], f"frame must force safe modal header: {commands}")
     assert_true("G0 X0.000 Y1.000" in commands, f"frame should move to padded lower-left: {commands}")
     assert_true("G1 X12.000 Y23.000 F1500" in commands, f"frame should trace padded upper-right: {commands}")
     assert_true(commands[-2:] == ["M5", "S0"], f"frame must end laser off: {commands}")
@@ -373,6 +409,19 @@ def test_job_running_rejects_jog_raw_unlock_and_home():
         assert_true(fake.writes == [], f"{action_name} should not write while a job is running")
 
 
+def test_non_idle_status_blocks_motion():
+    fake = FakeSerial(["<Door|MPos:0.000,0.000,0.000|FS:0,0>\n"])
+    controller = controller_with_fake(fake)
+
+    try:
+        controller.jog("X", 1, 1000)
+    except ValueError as exc:
+        assert_true("Idle" in str(exc) and "Door" in str(exc), f"unexpected non-idle blocker: {exc}")
+    else:
+        raise AssertionError("Door state must block motion")
+    assert_true(fake.writes == [b"?"], "non-idle status must block before any jog command")
+
+
 def test_refresh_settings_reports_laser_mode_warning():
     fake = FakeSerial(["$0=10\n", "$32=0\n", "ok\n"])
     controller = controller_with_fake(fake)
@@ -385,15 +434,17 @@ def test_refresh_settings_reports_laser_mode_warning():
     assert_true(snapshot["warnings"], "disabled laser mode should create a machine warning")
 
 
-def test_m3_gcode_logs_laser_mode_warning_when_32_disabled():
-    fake = FakeSerial(["<Idle|MPos:0.000,0.000,0.000|FS:0,0>\n", "ok\n", "ok\n", "ok\n"])
+def test_laser_job_is_blocked_when_32_disabled():
+    fake = FakeSerial(["<Idle|MPos:0.000,0.000,0.000|FS:0,0>\n"])
     controller = controller_with_fake(fake)
     controller._settings = {"32": 0.0}
 
-    controller.start_gcode(["G90", "M3 S100", "G1 X1 F100"], confirmed=True)
-    wait_for_job_done(controller)
-
-    assert_true(any("M3" in line and "$32=1" in line for line in controller.snapshot()["log"]), "M3 job should log a $32 warning")
+    try:
+        controller.start_gcode(["G21", "G90", "G94", "M3 S100", "G1 X1 F100", "M5", "S0"], confirmed=True)
+    except ValueError as exc:
+        assert_true("$32=1" in str(exc), f"$32 blocker should be explicit: {exc}")
+    else:
+        raise AssertionError("$32=0 must block laser jobs")
 
 
 def test_focus_pulse_turns_laser_off_after_short_fire():
@@ -421,6 +472,32 @@ def test_focus_pulse_rejects_high_power_before_machine_write():
     assert_true(fake.writes == [], "invalid focus pulse should not write to machine")
 
 
+def test_focus_deadman_watchdog_turns_laser_off():
+    fake = FakeSerial(["<Idle|MPos:0.000,0.000,0.000|FS:0,0>\n"] + ["ok\n"] * 5)
+    controller = controller_with_fake(fake)
+
+    controller.focus_start(power_percent=3, expert=False, confirmed=True)
+    time.sleep(0.2)
+
+    commands = [item.decode("ascii", errors="ignore").strip() for item in fake.writes]
+    assert_true(commands[:4] == ["?", "M5", "S0", "M3 S30"], f"dead-man focus start mismatch: {commands}")
+    assert_true(commands[-2:] == ["M5", "S0"], f"watchdog must force M5/S0: {commands}")
+    assert_true(controller._focus_active is False, "watchdog must clear focus active state")
+
+
+def test_focus_deadman_rejects_normal_power_above_three_percent():
+    fake = FakeSerial()
+    controller = controller_with_fake(fake)
+
+    try:
+        controller.focus_start(power_percent=3.1, expert=False, confirmed=True)
+    except ValueError as exc:
+        assert_true("%3" in str(exc), f"unexpected focus limit error: {exc}")
+    else:
+        raise AssertionError("normal focus mode must reject power above 3 percent")
+    assert_true(fake.writes == [], "invalid dead-man focus must not write to the machine")
+
+
 def main():
     tests = [
         test_clean_gcode_line_strips_comments,
@@ -433,9 +510,11 @@ def main():
         test_analyze_gcode_converts_inch_jobs_to_mm,
         test_analyze_gcode_reports_modal_safety_warnings,
         test_analyze_gcode_does_not_accept_earlier_m5_as_final_shutdown,
+        test_machine_validation_blocks_unresolved_coordinate_modes_and_axes,
         test_usb_serial_port_scores_above_bluetooth,
         test_bluetooth_port_is_never_auto_selected,
-        test_gcode_error_sends_soft_reset,
+        test_gcode_error_sends_explicit_laser_shutdown,
+        test_gcode_shutdown_failure_sends_soft_reset,
         test_disconnect_sends_soft_reset_before_close,
         test_status_query_during_job_uses_realtime_write_only,
         test_override_uses_realtime_bytes_without_waiting_for_ok,
@@ -446,10 +525,13 @@ def main():
         test_frame_bounds_sends_laser_off_rectangle,
         test_set_and_clear_work_origin,
         test_job_running_rejects_jog_raw_unlock_and_home,
+        test_non_idle_status_blocks_motion,
         test_refresh_settings_reports_laser_mode_warning,
-        test_m3_gcode_logs_laser_mode_warning_when_32_disabled,
+        test_laser_job_is_blocked_when_32_disabled,
         test_focus_pulse_turns_laser_off_after_short_fire,
         test_focus_pulse_rejects_high_power_before_machine_write,
+        test_focus_deadman_watchdog_turns_laser_off,
+        test_focus_deadman_rejects_normal_power_above_three_percent,
     ]
     for test in tests:
         test()

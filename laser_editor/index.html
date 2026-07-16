@@ -3,8 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- LASER_APP_BOOTSTRAP -->
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260716-object-selection-v1" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/style.css?v=20260717-release-safety-v1" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -229,7 +231,7 @@
           <div class="ribbon-group">
             <div class="rib-row">
               <label class="rib-field">Hız F<span class="unit-input"><input id="cutFeed" type="number" value="500" min="1" step="10" /><b>mm/dk</b></span></label>
-              <label class="rib-field">Güç S<input id="cutPower" type="number" value="1000" min="0" max="1000" step="10" /></label>
+              <label class="rib-field">Güç %<input id="cutPower" type="number" value="100" min="0" max="100" step="1" /><small id="cutPowerMachineValue">S1000</small></label>
               <label class="rib-field">Pas<input id="passes" type="number" value="1" min="1" step="1" /></label>
               <label class="rib-field">Bindirme<span class="unit-input"><input id="overcut" type="number" value="0.8" min="0" step="0.1" /><b>mm</b></span></label>
               <label class="rib-field">Kerf<span class="unit-input"><input id="kerf" type="number" value="0" min="0" max="1" step="0.05" /><b>mm</b></span></label>
@@ -252,7 +254,7 @@
           <div class="ribbon-sep"></div>
           <div class="ribbon-group engrave-defaults-group">
             <div class="rib-row">
-              <label class="rib-field engrave-power-field">Güç S<input id="engravePower" type="number" value="500" min="0" max="1000" step="10" /></label>
+              <label class="rib-field engrave-power-field">Güç %<input id="engravePower" type="number" value="50" min="0" max="100" step="1" /><small id="engravePowerMachineValue">S500</small></label>
               <label class="rib-field engrave-speed-field">Hız F<span class="unit-input"><input id="engraveFeed" type="number" value="1800" min="1" step="50" /><b>mm/dk</b></span></label>
               <label class="rib-field engrave-step-field" title="Dolgulu kazımada iki tarama çizgisi arasındaki mesafe. Küçüldükçe dolgu koyulaşır.">Tarama<span class="unit-input"><input id="lineStep" type="number" value="0.08" min="0.05" step="0.01" /><b>mm</b></span></label>
               <label class="rib-field engrave-threshold-field" title="Yalnızca fotoğraf ve raster kazımada açık/koyu ayrımını etkiler.">Foto eşik<input id="threshold" type="number" value="140" min="0" max="255" step="1" /></label>
@@ -432,7 +434,7 @@
               <button id="chooseOutputBtn">Çıktı Seç</button>
               <button id="convertOutputToCutBtn">G-code Kesime Çevir</button>
             </div>
-            <label class="rib-field wide">G-code yolu<input id="outputPath" type="text" /></label>
+            <label class="rib-field wide">G-code yolu<input id="outputPath" type="text" readonly /></label>
             <span class="ribbon-group-title">Çıktı</span>
           </div>
           <div class="ribbon-sep"></div>
@@ -737,7 +739,7 @@
         <div class="flow-backdrop" data-calibration-close></div>
         <form id="calibrationForm" class="flow-card calibration-card">
           <header class="activity-header">
-            <div><h3 id="calibrationTitle">Güç / Hız Kalibrasyonu</h3><p>Her karenin kendi S gücü ve F hızı vardır. Önce düşük riskli aralıkla başlayın.</p></div>
+            <div><h3 id="calibrationTitle">Güç / Hız Kalibrasyonu</h3><p>Her karenin kendi yüzde gücü ve F hızı vardır; gerçek S değeri makine profilinden üretilir.</p></div>
             <button type="button" data-calibration-close>Kapat</button>
           </header>
           <div class="calibration-body">
@@ -753,8 +755,8 @@
             <fieldset>
               <legend>Güç ve hız aralığı</legend>
               <div class="calibration-grid-fields">
-                <label>Min güç S <input id="calibrationMinPower" type="number" min="0" max="1000" value="200" step="10" /></label>
-                <label>Maks güç S <input id="calibrationMaxPower" type="number" min="0" max="1000" value="1000" step="10" /></label>
+                <label>Min güç % <input id="calibrationMinPower" type="number" min="0" max="100" value="20" step="1" /></label>
+                <label>Maks güç % <input id="calibrationMaxPower" type="number" min="0" max="100" value="100" step="1" /></label>
                 <label>Min hız F <input id="calibrationMinFeed" type="number" min="1" value="300" step="50" /></label>
                 <label>Maks hız F <input id="calibrationMaxFeed" type="number" min="1" value="1500" step="50" /></label>
               </div>
@@ -880,11 +882,27 @@
           <div id="machineStatusBox" class="state-card machine-status">
             <strong>Bağlı değil</strong><span>GRBL seri bağlantısı yok.</span>
           </div>
+          <div id="machineProfileCard" class="state-card machine-profile-card">
+            <strong>Makine profili</strong>
+            <div class="form-grid">
+              <label>Maks S <input id="machineProfileMaxS" type="number" min="1" step="1" value="1000" /></label>
+              <label>X sınırı <span class="unit-input"><input id="machineProfileTravelX" type="number" min="1" step="1" value="400" /><b>mm</b></span></label>
+              <label>Y sınırı <span class="unit-input"><input id="machineProfileTravelY" type="number" min="1" step="1" value="400" /><b>mm</b></span></label>
+              <label class="checkline"><input id="machineProfileAirAssist" type="checkbox" /> Air assist</label>
+            </div>
+            <div class="button-grid">
+              <button id="verifyMachineProfileBtn" class="primary">Profili Doğrula</button>
+              <button id="syncMachineProfileBtn">Makineden Güncelle</button>
+            </div>
+            <div id="machineSettingValidation" class="machine-setting-validation" aria-live="polite"></div>
+            <span id="machineProfileStatus">Doğrulama gerekli</span>
+          </div>
           <div class="machine-preview-wrap">
             <canvas id="machinePreviewCanvas" width="256" height="180"></canvas>
             <div id="machinePreviewInfo" class="machine-preview-info">Önizleme yok — "Önizle" ile G-code dosyasını yükleyin.</div>
           </div>
           <div class="button-grid">
+            <button id="openExternalGcodeBtn">Harici G-code Aç</button>
             <button id="machinePreviewBtn">Önizle</button>
             <button id="machinePreviewClearBtn">Temizle</button>
           </div>
@@ -924,13 +942,13 @@
             <button id="clearMachineOriginBtn">Sıfırı Temizle</button>
           </div>
           <div class="form-grid offset-grid">
-            <label>Atım gücü S <input id="machinePulsePower" type="number" value="10" min="1" max="200" step="1" /></label>
-            <label>Atım süresi <span class="unit-input"><input id="machinePulseDuration" type="number" value="80" min="1" max="1000" step="10" /><b>ms</b></span></label>
+            <label>Odak gücü % <input id="machinePulsePower" type="number" value="1" min="0.1" max="3" step="0.1" /></label>
+            <label>Watchdog <span class="unit-input"><input id="machinePulseDuration" type="number" value="100" min="10" max="100" step="10" readonly /><b>ms</b></span></label>
           </div>
-          <button id="focusPulseBtn" class="wide-action">Odak Atımı</button>
+          <button id="focusPulseBtn" class="wide-action">Odak İçin Basılı Tut</button>
           <button id="sendGcodeToMachineBtn" class="wide-action accent">G-code'u Makineye Gönder</button>
           <details class="advanced-settings">
-            <summary>Tek komut</summary>
+            <summary>Uzman GRBL tanılama</summary>
             <div class="machine-command-row">
               <input id="machineCommand" type="text" placeholder="$I" />
               <button id="sendMachineCommandBtn">Gönder</button>
@@ -1059,6 +1077,7 @@
           <aside class="production-preview-actions">
             <h2>Üretim</h2>
             <button id="previewGenerateBtn" class="accent">G-code Oluştur</button>
+            <button id="previewOpenGcodeBtn">Harici G-code Aç</button>
             <button id="previewFrameBtn">Çerçeve Gezdir</button>
             <button id="previewSendBtn" class="primary">Makineye Gönder</button>
             <button id="previewDeviceBtn">Cihaz Panelini Aç</button>
@@ -1087,18 +1106,18 @@
         <div id="textFontEmpty" class="font-menu-empty hidden">Eşleşen font yok</div>
       </div>
     </div>
-    <script src="/static/project_state.js?v=20260716-project-session-v2"></script>
+    <script src="/static/project_state.js?v=20260717-project-v4-v1"></script>
     <script src="/static/geometry.js?v=20260707-ribbon"></script>
     <script src="/static/box_maker.js?v=20260715-box-maker-v1"></script>
     <script src="/static/asset_library.js?v=20260715-library-v1"></script>
     <script src="/static/production_state.js?v=20260716-production-state-v1"></script>
-    <script src="/static/calibration_grid.js?v=20260716-calibration-v1"></script>
+    <script src="/static/calibration_grid.js?v=20260717-percent-power-v1"></script>
     <script src="/static/selection_layout.js?v=20260716-selection-layout-v1"></script>
-    <script src="/static/product_tour.js?v=20260716-product-tour-v2"></script>
+    <script src="/static/product_tour.js?v=20260717-product-tour-v3"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
     <script src="/static/vector_edit.js?v=20260716-thick-text-v1"></script>
     <script src="/static/canvas_selection.js?v=20260716-object-hit-v1"></script>
     <script src="/static/text_geometry.js?v=20260716-text-bounds-v1"></script>
-    <script src="/static/app.js?v=20260716-engrave-defaults-v1"></script>
+    <script src="/static/app.js?v=20260717-release-safety-v1"></script>
   </body>
 </html>

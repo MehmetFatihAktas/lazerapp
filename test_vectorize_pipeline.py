@@ -9,6 +9,53 @@ from PIL import Image, ImageDraw
 import laser_editor_core as core
 
 
+_production_generate_from_state = core.generate_from_state
+
+
+def _legacy_test_power_payload(value):
+    if isinstance(value, list):
+        return [_legacy_test_power_payload(item) for item in value]
+    if not isinstance(value, dict):
+        return copy.deepcopy(value)
+    result = {}
+    for key, item in value.items():
+        if key in {"power", "powerMin", "cutPower", "engravePower", "powerOverride"} and item not in (None, ""):
+            result[key] = float(item) / 10.0
+        else:
+            result[key] = _legacy_test_power_payload(item)
+    return result
+
+
+def _generate_with_v4_profile(state):
+    migrated = _legacy_test_power_payload(state)
+    air_assist_enabled = bool((migrated.get("settings") or {}).get("airAssist"))
+    migrated["machineProfile"] = {
+        "id": "test-s1000",
+        "name": "Test S1000",
+        "maxS": 1000,
+        "travelX": 1000,
+        "travelY": 1000,
+        "requiresLaserMode": True,
+        "airAssist": {"supported": air_assist_enabled, "onCommand": "M8", "offCommand": "M9"},
+        "verified": True,
+    }
+    placements = migrated.get("placements") or []
+    for part in migrated.get("parts") or []:
+        if not part.get("paths") and part.get("path") and Path(part["path"]).is_file():
+            loaded = core.load_part(Path(part["path"]), str(part.get("id") or "part"), 0.25, 0.05, True)
+            quantity = part.get("quantity")
+            part.update(core.part_to_payload(loaded))
+            if quantity is not None:
+                part["quantity"] = quantity
+        if part.get("quantity") is None:
+            part["quantity"] = sum(1 for placement in placements if str(placement.get("partId")) == str(part.get("id")))
+    migrated.setdefault("project", {"id": "test-project", "revision": 1})
+    return _production_generate_from_state(migrated)
+
+
+core.generate_from_state = _generate_with_v4_profile
+
+
 def assert_true(condition, message):
     if not condition:
         raise AssertionError(message)
@@ -1811,23 +1858,22 @@ def test_generate_excludes_active_placement_outside_bed():
         output_path = Path(temp_dir) / "job.nc"
         write_rect_dxf(dxf_path)
 
-        result = core.generate_from_state(
-            {
-                "parts": [{"id": "p1", "path": str(dxf_path)}],
-                "placements": [
-                    {"id": "inside", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
-                    {"id": "outside", "partId": "p1", "x": 50, "y": 5, "rotation": 0, "operation": "cut"},
-                ],
-                "patterns": [],
-                "settings": base_generation_settings(),
-                "outputPath": str(output_path),
-            }
-        )
+        def run():
+            core.generate_from_state(
+                {
+                    "parts": [{"id": "p1", "path": str(dxf_path)}],
+                    "placements": [
+                        {"id": "inside", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
+                        {"id": "outside", "partId": "p1", "x": 50, "y": 5, "rotation": 0, "operation": "cut"},
+                    ],
+                    "patterns": [],
+                    "settings": base_generation_settings(),
+                    "outputPath": str(output_path),
+                }
+            )
 
-        points = gcode_xy_points(output_path.read_text(encoding="utf-8").splitlines())
-        assert_true(result["cutPathCount"] == 1, "only the inside placement should be generated")
-        assert_true(result["excludedObjectCount"] == 1, "outside placement should be reported as excluded")
-        assert_true(points and all(x <= 22.001 and y <= 12.001 for x, y in points), f"outside coordinates must not enter G-code: {points}")
+        assert_raises_contains(run, "active_object_outside")
+        assert_true(not output_path.exists(), "an active outside placement must block the entire artifact")
 
 
 def test_generate_preserves_per_pattern_calibration_power_and_feed():
@@ -1945,7 +1991,7 @@ def test_generate_rejects_when_every_active_object_is_outside():
                 }
             )
 
-        assert_raises_contains(run, "aktif kesim veya kazima")
+        assert_raises_contains(run, "active_object_outside")
         assert_true(not output_path.exists(), "an all-outside job must not create an empty G-code file")
 
 
@@ -1955,41 +2001,40 @@ def test_generate_excludes_pattern_bound_to_outside_placement():
         output_path = Path(temp_dir) / "job.nc"
         write_rect_dxf(dxf_path)
 
-        result = core.generate_from_state(
-            {
-                "parts": [{"id": "p1", "path": str(dxf_path)}],
-                "placements": [
-                    {"id": "inside", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
-                    {"id": "outside", "partId": "p1", "x": 50, "y": 5, "rotation": 0, "operation": "cut"},
-                ],
-                "patterns": [
-                    {
-                        "id": "child",
-                        "kind": "vector",
-                        "path": "embedded-vector",
-                        "name": "outside-child",
-                        "parentId": "outside",
-                        "x": 50,
-                        "y": 5,
-                        "width": 20,
-                        "height": 10,
-                        "sourceWidth": 20,
-                        "sourceHeight": 10,
-                        "operation": "engrave_line",
-                        "vectorPaths": [
-                            {"operation": "engrave_line", "closed": False, "points": [[0, 5], [20, 5]]},
-                        ],
-                    }
-                ],
-                "settings": base_generation_settings(),
-                "outputPath": str(output_path),
-            }
-        )
+        def run():
+            core.generate_from_state(
+                {
+                    "parts": [{"id": "p1", "path": str(dxf_path)}],
+                    "placements": [
+                        {"id": "inside", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
+                        {"id": "outside", "partId": "p1", "x": 50, "y": 5, "rotation": 0, "operation": "cut"},
+                    ],
+                    "patterns": [
+                        {
+                            "id": "child",
+                            "kind": "vector",
+                            "path": "embedded-vector",
+                            "name": "outside-child",
+                            "parentId": "outside",
+                            "x": 50,
+                            "y": 5,
+                            "width": 20,
+                            "height": 10,
+                            "sourceWidth": 20,
+                            "sourceHeight": 10,
+                            "operation": "engrave_line",
+                            "vectorPaths": [
+                                {"operation": "engrave_line", "closed": False, "points": [[0, 5], [20, 5]]},
+                            ],
+                        }
+                    ],
+                    "settings": base_generation_settings(),
+                    "outputPath": str(output_path),
+                }
+            )
 
-        text = output_path.read_text(encoding="utf-8")
-        assert_true(result["cutPathCount"] == 1 and result["patternCount"] == 0, "only the safe parent should generate")
-        assert_true(result["excludedObjectCount"] == 2, "outside parent and its child pattern should both be reported")
-        assert_true("outside-child" not in text, "child of an excluded placement must not enter G-code")
+        assert_raises_contains(run, "active_object_outside")
+        assert_true(not output_path.exists(), "outside parent and child must block the entire artifact")
 
 
 def test_generate_validates_available_area_polygon():
@@ -2021,21 +2066,21 @@ def test_generate_validates_available_area_polygon():
         )
         assert_true(output_path.exists(), "placement inside available area should generate")
 
-        result = core.generate_from_state(
-            {
-                "parts": [{"id": "p1", "path": str(dxf_path)}],
-                "placements": [
-                    {"id": "inside", "partId": "p1", "x": 5, "y": 5, "rotation": 0, "operation": "cut"},
-                    {"id": "outside", "partId": "p1", "x": 24, "y": 5, "rotation": 0, "operation": "cut"},
-                ],
-                "patterns": [],
-                "settings": settings,
-                "outputPath": str(output_path),
-            }
-        )
-        points = gcode_xy_points(output_path.read_text(encoding="utf-8").splitlines())
-        assert_true(result["excludedObjectCount"] == 1, "placement outside custom material area should be excluded")
-        assert_true(points and all(x <= 25.001 for x, _y in points), f"custom-area escape must not enter G-code: {points}")
+        def run_outside():
+            core.generate_from_state(
+                {
+                    "parts": [{"id": "p1", "path": str(dxf_path)}],
+                    "placements": [
+                        {"id": "inside", "partId": "p1", "x": 5, "y": 5, "rotation": 0, "operation": "cut"},
+                        {"id": "outside", "partId": "p1", "x": 24, "y": 5, "rotation": 0, "operation": "cut"},
+                    ],
+                    "patterns": [],
+                    "settings": settings,
+                    "outputPath": str(output_path),
+                }
+            )
+
+        assert_raises_contains(run_outside, "active_object_outside")
 
 
 def test_generate_skips_ignored_outside_placements():
@@ -2509,45 +2554,48 @@ def test_generate_excludes_vector_geometry_outside_declared_pattern_bounds():
         output = Path(tmp) / "escaped-vector.nc"
         settings = {**base_generation_settings(), "bedWidth": 100, "bedHeight": 100, "margin": 0}
 
-        result = core.generate_from_state(
-            {
-                "parts": [
-                    {
-                        "id": "safe",
-                        "name": "safe.dxf",
-                        "width": 10,
-                        "height": 8,
-                        "paths": [[[0, 0], [10, 0], [10, 8], [0, 8], [0, 0]]],
-                    }
-                ],
-                "placements": [{"id": "safe-pl", "partId": "safe", "x": 2, "y": 2, "rotation": 0, "operation": "cut"}],
-                "patterns": [
-                    {
-                        "id": "pat1",
-                        "kind": "vector",
-                        "path": "embedded-vector",
-                        "name": "escaped-vector",
-                        "x": 10,
-                        "y": 10,
-                        "width": 20,
-                        "height": 20,
-                        "sourceWidth": 20,
-                        "sourceHeight": 20,
-                        "operation": "cut",
-                        "vectorPaths": [
-                            {"operation": "cut", "closed": False, "points": [[0, 10], [500, 10]]},
-                        ],
-                    }
-                ],
-                "settings": settings,
-                "outputPath": str(output),
-            }
-        )
+        def run():
+            core.generate_from_state(
+                {
+                    "parts": [
+                        {
+                            "id": "safe",
+                            "name": "safe.dxf",
+                            "width": 10,
+                            "height": 8,
+                            "paths": [[[0, 0], [10, 0], [10, 8], [0, 8], [0, 0]]],
+                        }
+                    ],
+                    "placements": [{"id": "safe-pl", "partId": "safe", "x": 2, "y": 2, "rotation": 0, "operation": "cut"}],
+                    "patterns": [
+                        {
+                            "id": "pat1",
+                            "kind": "vector",
+                            "path": "embedded-vector",
+                            "name": "escaped-vector",
+                            "x": 10,
+                            "y": 10,
+                            "width": 20,
+                            "height": 20,
+                            "sourceWidth": 20,
+                            "sourceHeight": 20,
+                            "operation": "cut",
+                            "vectorPaths": [
+                                {
+                                    "operation": "cut",
+                                    "closed": True,
+                                    "points": [[0, 10], [500, 10], [500, 11], [0, 11], [0, 10]],
+                                },
+                            ],
+                        }
+                    ],
+                    "settings": settings,
+                    "outputPath": str(output),
+                }
+            )
 
-        points = gcode_xy_points(output.read_text(encoding="utf-8").splitlines())
-        assert_true(result["cutPathCount"] == 1, "safe DXF should still generate")
-        assert_true(result["patternCount"] == 0 and result["excludedObjectCount"] == 1, "escaped vector should be excluded as one object")
-        assert_true(points and all(x <= 12.001 and y <= 10.001 for x, y in points), f"escaped vector coordinates must not enter G-code: {points}")
+        assert_raises_contains(run, "Aktif desen yolu")
+        assert_true(not output.exists(), "escaped vector geometry must block the entire artifact")
 
 
 def test_generate_excludes_toolpath_that_kerf_pushes_outside_bed():
@@ -2561,31 +2609,30 @@ def test_generate_excludes_toolpath_that_kerf_pushes_outside_bed():
             "kerf": 0.2,
         }
 
-        result = core.generate_from_state(
-            {
-                "parts": [
-                    {
-                        "id": "p1",
-                        "name": "square.dxf",
-                        "width": 10,
-                        "height": 10,
-                        "paths": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
-                    }
-                ],
-                "placements": [
-                    {"id": "safe", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
-                    {"id": "edge", "partId": "p1", "x": 20, "y": 0, "rotation": 0, "operation": "cut"},
-                ],
-                "patterns": [],
-                "settings": settings,
-                "outputPath": str(output),
-            }
-        )
+        def run():
+            core.generate_from_state(
+                {
+                    "parts": [
+                        {
+                            "id": "p1",
+                            "name": "square.dxf",
+                            "width": 10,
+                            "height": 10,
+                            "paths": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+                        }
+                    ],
+                    "placements": [
+                        {"id": "safe", "partId": "p1", "x": 2, "y": 2, "rotation": 0, "operation": "cut"},
+                        {"id": "edge", "partId": "p1", "x": 20, "y": 0, "rotation": 0, "operation": "cut"},
+                    ],
+                    "patterns": [],
+                    "settings": settings,
+                    "outputPath": str(output),
+                }
+            )
 
-        points = gcode_xy_points(output.read_text(encoding="utf-8").splitlines())
-        assert_true(result["cutPathCount"] == 1, "safe post-kerf path should generate")
-        assert_true(result["excludedObjectCount"] == 1, "kerf escape should exclude only the edge placement")
-        assert_true(points and all(x <= 12.101 and y <= 12.101 for x, y in points), f"post-kerf escape must not enter G-code: {points}")
+        assert_raises_contains(run, "Kerf sonrasi")
+        assert_true(not output.exists(), "post-kerf escape must block the entire artifact")
 
 
 def test_vector_cut_builders_apply_outer_and_hole_kerf():

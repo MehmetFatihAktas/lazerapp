@@ -788,8 +788,8 @@ class LaserGcodeApp(tk.Tk):
     def _initial_dxf_dir(self) -> str:
         if self.dxf_paths:
             return str(self.dxf_paths[-1].parent)
-        solidworks_dir = Path("D:\\SolidÇalışmalarım")
-        return str(solidworks_dir) if solidworks_dir.exists() else str(Path.home())
+        documents_dir = Path.home() / "Documents"
+        return str(documents_dir) if documents_dir.exists() else str(Path.home())
 
     def _set_dxf_paths(self, filenames: list[str], append: bool = False) -> None:
         paths = [Path(filename) for filename in filenames]

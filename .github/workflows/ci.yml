@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  release-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+
+      - name: Install Chromium smoke dependency
+        run: npm install --no-save playwright@1.55.0
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Compile Python
+        run: python -m py_compile dxf_to_laser_gcode.py laser_editor_core.py laser_editor_server.py laser_gcode_app.py laser_grbl.py
+
+      - name: Run Python tests
+        run: |
+          for file in test_*.py; do
+            python "$file"
+          done
+
+      - name: Check and run Node tests
+        run: |
+          node --check laser_editor/app.js
+          for file in test_*.js; do
+            node "$file"
+          done
+
+      - name: Chromium smoke test
+        run: |
+          python laser_editor_server.py 8765 --no-open > laser-editor-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8765/ > /dev/null; then
+              break
+            fi
+            sleep 0.25
+          done
+          LASER_EDITOR_URL=http://127.0.0.1:8765/ node test_browser_smoke.mjs

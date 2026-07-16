@@ -5,8 +5,26 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function createLaserProjectState() {
   "use strict";
 
-  const PROJECT_SCHEMA = "laser-editor-project-v3";
-  const PROJECT_VERSION = 3;
+  const PROJECT_SCHEMA = "laser-editor-project-v4";
+  const PROJECT_VERSION = 4;
+  const LEGACY_MACHINE_PROFILE = Object.freeze({
+    id: "legacy-grbl-s1000",
+    name: "Legacy GRBL S1000",
+    maxS: 1000,
+    travelX: 400,
+    travelY: 400,
+    requiresLaserMode: true,
+    airAssist: Object.freeze({ supported: false, onCommand: "M8", offCommand: "M9" }),
+    focus: Object.freeze({
+      normalMaxPercent: 3,
+      normalMaxMs: 100,
+      expertMaxPercent: 5,
+      expertMaxMs: 250,
+    }),
+    verified: false,
+    verifiedAt: null,
+    source: "legacy-migration",
+  });
   const STORAGE_KEYS = Object.freeze({
     preferences: "laser-editor-preferences-v1",
     recentProjects: "laser-editor-recent-projects-v1",
@@ -33,6 +51,110 @@
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+  }
+
+  function normalizeMachineProfile(value = {}, fallback = LEGACY_MACHINE_PROFILE) {
+    const source = value && typeof value === "object" ? value : {};
+    const airAssist = source.airAssist && typeof source.airAssist === "object" ? source.airAssist : fallback.airAssist;
+    const focus = source.focus && typeof source.focus === "object" ? source.focus : fallback.focus;
+    return {
+      id: String(source.id || fallback.id),
+      name: String(source.name || fallback.name),
+      maxS: Math.max(1, finiteNumber(source.maxS, fallback.maxS)),
+      travelX: Math.max(1, finiteNumber(source.travelX, fallback.travelX)),
+      travelY: Math.max(1, finiteNumber(source.travelY, fallback.travelY)),
+      requiresLaserMode: source.requiresLaserMode !== false,
+      airAssist: {
+        supported: Boolean(airAssist.supported),
+        onCommand: ["M7", "M8"].includes(String(airAssist.onCommand || "").toUpperCase())
+          ? String(airAssist.onCommand).toUpperCase()
+          : "M8",
+        offCommand: "M9",
+      },
+      focus: {
+        normalMaxPercent: clamp(finiteNumber(focus.normalMaxPercent, 3), 0.1, 3),
+        normalMaxMs: clamp(Math.round(finiteNumber(focus.normalMaxMs, 100)), 10, 100),
+        expertMaxPercent: clamp(finiteNumber(focus.expertMaxPercent, 5), 0.1, 5),
+        expertMaxMs: clamp(Math.round(finiteNumber(focus.expertMaxMs, 250)), 10, 250),
+      },
+      verified: Boolean(source.verified),
+      verifiedAt: source.verifiedAt || null,
+      source: String(source.source || fallback.source || "manual"),
+    };
+  }
+
+  function legacyPowerPercent(value) {
+    const numeric = finiteNumber(value, 0);
+    const converted = clamp(numeric / 10, 0, 100);
+    return typeof value === "string" ? String(converted) : converted;
+  }
+
+  function migrateLegacyPatternPowers(pattern) {
+    const next = { ...(pattern || {}) };
+    for (const key of ["power", "powerMin", "cutPower", "engravePower"]) {
+      if (next[key] !== undefined && next[key] !== null && next[key] !== "") next[key] = legacyPowerPercent(next[key]);
+    }
+    next.vectorPaths = (Array.isArray(next.vectorPaths) ? next.vectorPaths : []).map((path) => {
+      const migrated = { ...path };
+      if (migrated.powerOverride !== undefined && migrated.powerOverride !== null && migrated.powerOverride !== "") {
+        migrated.powerOverride = legacyPowerPercent(migrated.powerOverride);
+      }
+      return migrated;
+    });
+    next.originalVectorPaths = (Array.isArray(next.originalVectorPaths) ? next.originalVectorPaths : []).map((path) => {
+      const migrated = { ...path };
+      if (migrated.powerOverride !== undefined && migrated.powerOverride !== null && migrated.powerOverride !== "") {
+        migrated.powerOverride = legacyPowerPercent(migrated.powerOverride);
+      }
+      return migrated;
+    });
+    return next;
+  }
+
+  function migrateProject(project = {}) {
+    const source = project && typeof project === "object" ? project : {};
+    const isCurrent = source.schema === PROJECT_SCHEMA && Number(source.version) === PROJECT_VERSION;
+    const next = {
+      ...source,
+      inputs: { ...(source.inputs || {}) },
+      parts: (Array.isArray(source.parts) ? source.parts : []).map((part) => ({ ...part })),
+      patterns: (Array.isArray(source.patterns) ? source.patterns : []).map((pattern) => ({ ...pattern })),
+    };
+    if (!isCurrent) {
+      for (const key of ["cutPower", "engravePower", "calibrationMinPower", "calibrationMaxPower", "machinePulsePower"]) {
+        if (next.inputs[key] !== undefined && next.inputs[key] !== null && next.inputs[key] !== "") {
+          next.inputs[key] = legacyPowerPercent(next.inputs[key]);
+        }
+      }
+      next.parts = next.parts.map((part) => ({
+        ...part,
+        sourceUnits: part.sourceUnits || {
+          sourceUnit: "legacy-mm-assumed",
+          scaleToMm: 1,
+          unitless: true,
+          override: "mm",
+          legacyAssumed: true,
+        },
+        geometrySnapshotVersion: Number(part.geometrySnapshotVersion) || 1,
+      }));
+      next.patterns = next.patterns.map(migrateLegacyPatternPowers);
+      next.machineProfile = normalizeMachineProfile({
+        ...LEGACY_MACHINE_PROFILE,
+        verified: false,
+        source: "legacy-migration",
+      });
+      next.migration = {
+        ...(source.migration || {}),
+        powerModel: "legacy-s-divided-by-10",
+        legacySchema: source.schema || "unknown",
+        migratedAt: new Date().toISOString(),
+      };
+    } else {
+      next.machineProfile = normalizeMachineProfile(source.machineProfile);
+    }
+    next.schema = PROJECT_SCHEMA;
+    next.version = PROJECT_VERSION;
+    return next;
   }
 
   function createId(prefix = "id") {
@@ -271,6 +393,7 @@
   return Object.freeze({
     PROJECT_SCHEMA,
     PROJECT_VERSION,
+    LEGACY_MACHINE_PROFILE,
     STORAGE_KEYS,
     DEFAULT_PREFERENCES,
     createId,
@@ -285,6 +408,8 @@
     markSaved,
     markAutosaved,
     normalizePreferences,
+    normalizeMachineProfile,
+    migrateProject,
     normalizeRecentProjects,
     upsertRecentProject,
     deriveCounts,

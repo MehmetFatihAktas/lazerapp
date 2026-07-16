@@ -14,7 +14,7 @@ function test(name, fn) {
 
 test("engraving ribbon exposes readable calibrated defaults", () => {
   assert.match(html, /class="ribbon-group engrave-defaults-group"/);
-  assert.match(html, /id="engravePower"[^>]*value="500"/);
+  assert.match(html, /id="engravePower"[^>]*value="50"[^>]*max="100"/);
   assert.match(html, /id="engraveFeed"[^>]*value="1800"/);
   assert.match(html, /id="lineStep"[^>]*value="0\.08"[^>]*step="0\.01"/);
   assert.match(html, />Tarama<span class="unit-input">/);
@@ -22,7 +22,7 @@ test("engraving ribbon exposes readable calibrated defaults", () => {
 });
 
 test("engraving defaults are shared by g-code and text fill", () => {
-  assert.match(app, /const DEFAULT_ENGRAVE_POWER = 500;/);
+  assert.match(app, /const DEFAULT_ENGRAVE_POWER = 50;/);
   assert.match(app, /const DEFAULT_ENGRAVE_FEED = 1800;/);
   assert.match(app, /const DEFAULT_ENGRAVE_LINE_STEP = 0\.08;/);
   assert.match(app, /const TEXT_FILL_LINE_STEP_MM = DEFAULT_ENGRAVE_LINE_STEP;/);

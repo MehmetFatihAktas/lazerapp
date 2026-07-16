@@ -19,7 +19,35 @@ from pathlib import Path
 
 Point = tuple[float, float]
 POWER_MIN = 0
-POWER_MAX = 1000
+POWER_MAX = 1_000_000
+DXF_UNIT_SCALES_MM = {
+    1: ("inch", 25.4),
+    2: ("foot", 304.8),
+    3: ("mile", 1_609_344.0),
+    4: ("mm", 1.0),
+    5: ("cm", 10.0),
+    6: ("m", 1000.0),
+    7: ("km", 1_000_000.0),
+    8: ("microinch", 0.0000254),
+    9: ("mil", 0.0254),
+    10: ("yard", 914.4),
+    11: ("angstrom", 1e-7),
+    12: ("nm", 1e-6),
+    13: ("micron", 0.001),
+    14: ("dm", 100.0),
+    15: ("dam", 10_000.0),
+    16: ("hm", 100_000.0),
+    17: ("gm", 1_000_000_000_000.0),
+    18: ("au", 149_597_870_700_000.0),
+    19: ("lightyear", 9.4607304725808e18),
+    20: ("parsec", 3.0856775814913674e19),
+}
+DXF_UNITLESS_OVERRIDES = {
+    "mm": ("mm", 1.0),
+    "cm": ("cm", 10.0),
+    "inch": ("inch", 25.4),
+    "in": ("inch", 25.4),
+}
 
 
 @dataclass
@@ -153,6 +181,47 @@ def read_pairs(path: Path) -> list[tuple[int, str]]:
             continue
         pairs.append((code, value))
     return pairs
+
+
+def dxf_unit_info(path: Path, unit_override: str | None = None) -> dict[str, object]:
+    pairs = read_pairs(path)
+    code = 0
+    for index, pair in enumerate(pairs):
+        if pair == (9, "$INSUNITS"):
+            for next_code, next_value in pairs[index + 1 : index + 5]:
+                if next_code in {70, 280}:
+                    try:
+                        code = int(float(next_value))
+                    except ValueError:
+                        code = 0
+                    break
+            break
+    if code in DXF_UNIT_SCALES_MM:
+        name, scale = DXF_UNIT_SCALES_MM[code]
+        return {
+            "insunits": code,
+            "sourceUnit": name,
+            "scaleToMm": scale,
+            "unitless": False,
+            "override": None,
+        }
+    normalized_override = str(unit_override or "").strip().lower()
+    if normalized_override in DXF_UNITLESS_OVERRIDES:
+        name, scale = DXF_UNITLESS_OVERRIDES[normalized_override]
+        return {
+            "insunits": code,
+            "sourceUnit": name,
+            "scaleToMm": scale,
+            "unitless": True,
+            "override": normalized_override,
+        }
+    return {
+        "insunits": code,
+        "sourceUnit": "unitless",
+        "scaleToMm": None,
+        "unitless": True,
+        "override": None,
+    }
 
 
 def add_value(values: dict[int, list[str]], code: int, value: str) -> None:
@@ -442,22 +511,30 @@ def ordered_paths(paths: list[list[Point]], tolerance: float) -> list[list[Point
 
 def convert_dxf_paths(input_path: Path,
                       tolerance: float,
-                      join_tolerance: float) -> tuple[list[list[Point]], dict[str, int], int]:
+                      join_tolerance: float,
+                      unit_override: str | None = None) -> tuple[list[list[Point]], dict[str, int], int]:
+    unit_info = dxf_unit_info(input_path, unit_override)
+    if unit_info["scaleToMm"] is None:
+        raise DxfToGcodeError("DXF birimsiz. Iceri almadan once mm, cm veya inch secilmeli.")
+    scale = float(unit_info["scaleToMm"])
+    source_tolerance = max(0.000001, float(tolerance) / scale)
+    source_join_tolerance = max(0.000001, float(join_tolerance) / scale)
     entities = parse_entities(input_path)
     raw_paths: list[list[Point]] = []
     unsupported: dict[str, int] = {}
     supported_count = 0
 
     for entity in entities:
-        paths = entity_to_paths(entity, tolerance)
+        paths = entity_to_paths(entity, source_tolerance)
         if paths:
             supported_count += 1
             raw_paths.extend(paths)
         else:
             unsupported[entity.kind] = unsupported.get(entity.kind, 0) + 1
 
-    joined = join_paths(raw_paths, join_tolerance)
-    return joined, unsupported, supported_count
+    joined = join_paths(raw_paths, source_join_tolerance)
+    scaled = [[(point[0] * scale, point[1] * scale) for point in path] for path in joined]
+    return scaled, unsupported, supported_count
 
 
 def shift_paths_to_origin(paths: list[list[Point]], margin: float) -> tuple[list[list[Point]], tuple[float, float, float, float]]:
@@ -611,7 +688,7 @@ def main() -> int:
     parser.add_argument("input", type=Path, help="Input ASCII DXF file")
     parser.add_argument("-o", "--output", type=Path, help="Output .nc/.gcode file")
     parser.add_argument("--feed", type=float, default=600.0, help="Cut feed rate in mm/min")
-    parser.add_argument("--power", type=int, default=800, help="Laser S value from 0 to 1000")
+    parser.add_argument("--power", type=int, default=800, help="Laser S value; must match the controller's $30 range")
     parser.add_argument("--rapid-feed", type=float, help="Optional G0 feed rate in mm/min")
     parser.add_argument("--laser-cmd", choices=("M3", "M4"), default="M3", help="Laser on command")
     parser.add_argument("--tolerance", type=float, default=0.25, help="Arc approximation segment length in mm")
