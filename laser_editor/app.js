@@ -13391,16 +13391,28 @@ async function buildOutlineTextGeometry(text, options) {
   if (!vector?.vectorPaths?.length) return null;
   const operation = options.operation || "engrave_line";
   const fillLineStep = clamp(Number(options.fillLineStep) || TEXT_FILL_LINE_STEP_MM, 0.05, 1);
-  const vectorPaths = cloneVectorPaths(vector.vectorPaths).map((path) => {
+  const scaledVectorPaths = cloneVectorPaths(vector.vectorPaths).map((path) => {
     path.points = (path.points || []).map(([x, y]) => [x / raster.pxPerMm, y / raster.pxPerMm]);
     path.operation = operation;
     refreshVectorPathMetrics(path);
     return path;
   });
-  return {
-    vectorPaths,
+  const normalized = window.LaserTextGeometry?.normalizeVectorBounds(scaledVectorPaths, {
     sourceWidth: Math.max(0.5, (vector.sourceWidth || raster.widthMm * raster.pxPerMm) / raster.pxPerMm),
     sourceHeight: Math.max(0.5, (vector.sourceHeight || raster.heightMm * raster.pxPerMm) / raster.pxPerMm),
+  }) || {
+    paths: scaledVectorPaths,
+    sourceWidth: Math.max(0.5, (vector.sourceWidth || raster.widthMm * raster.pxPerMm) / raster.pxPerMm),
+    sourceHeight: Math.max(0.5, (vector.sourceHeight || raster.heightMm * raster.pxPerMm) / raster.pxPerMm),
+  };
+  const vectorPaths = normalized.paths.map((path) => {
+    refreshVectorPathMetrics(path);
+    return path;
+  });
+  return {
+    vectorPaths,
+    sourceWidth: normalized.sourceWidth,
+    sourceHeight: normalized.sourceHeight,
     kind: "text",
     textSettings: {
       mode: "outline",
@@ -13417,6 +13429,40 @@ async function buildOutlineTextGeometry(text, options) {
     },
     vectorStats: { ...(vector.stats || {}), filledTraceInvert: false },
   };
+}
+
+function normalizeEditableTextPatternBounds(pattern) {
+  if (!editableTextPattern(pattern) || !vectorPatternHasPaths(pattern) || !window.LaserTextGeometry) return false;
+  const anchorPathIndex = (pattern.vectorPaths || []).findIndex((path) => !path.removed && (path.points || []).length);
+  if (anchorPathIndex < 0) return false;
+  const anchorPointIndex = 0;
+  const anchorBefore = vectorSourcePointToWorld(pattern, pattern.vectorPaths[anchorPathIndex].points[anchorPointIndex]);
+  const oldSourceWidth = Math.max(0.001, Number(pattern.sourceWidth) || Number(pattern.width) || 1);
+  const oldSourceHeight = Math.max(0.001, Number(pattern.sourceHeight) || Number(pattern.height) || 1);
+  const widthScale = Math.max(0.001, Number(pattern.width) || 1) / oldSourceWidth;
+  const heightScale = Math.max(0.001, Number(pattern.height) || 1) / oldSourceHeight;
+  const normalized = window.LaserTextGeometry.normalizeVectorBounds(pattern.vectorPaths, {
+    sourceWidth: oldSourceWidth,
+    sourceHeight: oldSourceHeight,
+  });
+  if (!normalized.changed) return false;
+
+  pattern.vectorPaths = normalized.paths;
+  for (const vectorPath of pattern.vectorPaths) refreshVectorPathMetrics(vectorPath);
+  pattern.sourceWidth = normalized.sourceWidth;
+  pattern.sourceHeight = normalized.sourceHeight;
+  pattern.originalWidth = normalized.sourceWidth;
+  pattern.originalHeight = normalized.sourceHeight;
+  pattern.width = normalized.sourceWidth * widthScale;
+  pattern.height = normalized.sourceHeight * heightScale;
+  const anchorAfter = vectorSourcePointToWorld(pattern, pattern.vectorPaths[anchorPathIndex].points[anchorPointIndex]);
+  pattern.x += anchorBefore.x - anchorAfter.x;
+  pattern.y += anchorBefore.y - anchorAfter.y;
+  pattern.originalVectorPaths = cloneVectorPaths(pattern.vectorPaths);
+  pattern.vectorStats = { ...(pattern.vectorStats || {}), textBoundsNormalized: true };
+  resetPatternVectorModel(pattern);
+  invalidateSelectedVectorMoveTargets();
+  return true;
 }
 
 async function buildEditableTextGeometry(text, font, options = {}) {
@@ -15788,6 +15834,10 @@ function restoreProject(project, options = {}) {
   state.lastGeneratedRevision = null;
   state.lastGeneratedPath = "";
   ensureStateEntityIdentities();
+  let normalizedTextPatternCount = 0;
+  for (const pattern of state.patterns) {
+    if (normalizeEditableTextPatternBounds(pattern)) normalizedTextPatternCount += 1;
+  }
   for (const pattern of state.patterns) {
     if (!vectorPatternHasPaths(pattern)) continue;
     if (Number(pattern.vectorModelVersion) === 2) compilePatternVectorModel(pattern);
@@ -15815,6 +15865,9 @@ function restoreProject(project, options = {}) {
     dirty: Boolean(options.recovery),
     lastSavedAt: restoredSession.lastSavedAt || project.savedAt || null,
   });
+  if (normalizedTextPatternCount && !options.recovery) {
+    state.project = ProjectState.markDirty(state.project, "Metin seçim kutusu düzeltildi");
+  }
   undoStack.length = 0;
   redoStack.length = 0;
   cancelImageTool();
