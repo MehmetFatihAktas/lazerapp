@@ -2964,6 +2964,41 @@ details > .wide-action {
 }
 .ribbon-body .unit-input { width: auto; }
 .ribbon-body .unit-input input { width: 58px; }
+.ribbon-body .engrave-defaults-group {
+  flex: none;
+  min-width: 472px;
+}
+.ribbon-body .engrave-defaults-group > .rib-row {
+  flex-wrap: nowrap;
+  gap: 10px;
+}
+.ribbon-body .engrave-defaults-group .rib-field {
+  min-width: 72px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.ribbon-body .engrave-defaults-group .unit-input {
+  width: 100%;
+}
+.ribbon-body .engrave-defaults-group input[type="number"] {
+  width: 72px;
+  padding-inline: 10px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.ribbon-body .engrave-defaults-group .unit-input input[type="number"] {
+  width: 76px;
+}
+.ribbon-body .engrave-defaults-group .unit-input b {
+  min-width: 50px;
+  padding-inline: 8px;
+  white-space: nowrap;
+}
+.ribbon-body .engrave-defaults-group .engrave-speed-field { min-width: 142px; }
+.ribbon-body .engrave-defaults-group .engrave-step-field { min-width: 112px; }
+.ribbon-body .engrave-defaults-group .engrave-threshold-field { min-width: 78px; }
 .rib-field.wide input,
 .rib-field.wide select { width: 100%; }
 .ribbon-body button { height: 30px; }

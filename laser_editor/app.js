@@ -455,6 +455,10 @@ const state = {
 
 const SETTINGS_KEY = "laser-editor-settings-v3";
 const VECTOR_SETTINGS_VERSION = 10;
+const ENGRAVE_SETTINGS_VERSION = 1;
+const DEFAULT_ENGRAVE_POWER = 500;
+const DEFAULT_ENGRAVE_FEED = 1800;
+const DEFAULT_ENGRAVE_LINE_STEP = 0.08;
 const CLIENT_SESSION_KEY = "laser-editor-client-id-v1";
 let jobAnalysisTimer = null;
 let pendingDxfQuantityResolve = null;
@@ -511,8 +515,15 @@ const TEXT_FONT_PRESETS = [
   { id: "lucida", label: "Lucida Handwriting", kind: "outline", family: "'Lucida Handwriting', cursive" },
 ];
 const DEFAULT_TEXT_FONT_VALUE = "arial-black";
-const TEXT_FILL_LINE_STEP_MM = 0.12;
+const TEXT_FILL_LINE_STEP_MM = DEFAULT_ENGRAVE_LINE_STEP;
+const TEXT_FILL_SETTINGS_VERSION = 1;
 const TEXT_SETTINGS_VERSION = 2;
+
+function applyRecommendedEngraveInputs() {
+  if (refs.engravePower) refs.engravePower.value = String(DEFAULT_ENGRAVE_POWER);
+  if (refs.engraveFeed) refs.engraveFeed.value = String(DEFAULT_ENGRAVE_FEED);
+  if (refs.lineStep) refs.lineStep.value = String(DEFAULT_ENGRAVE_LINE_STEP);
+}
 
 function updateJobAnalysisNow(extra = "") {
   if (jobAnalysisTimer) {
@@ -1079,6 +1090,25 @@ function textFillLineStep(pattern) {
     return clamp(current, 0.05, 1);
   }
   return TEXT_FILL_LINE_STEP_MM;
+}
+
+function migrateEditableTextFillDefaults(pattern) {
+  const textPattern = outlineTextPattern(pattern);
+  if (!textPattern || patternOperation(textPattern) !== "engrave_fill") return false;
+  const settings = textPattern.textSettings || {};
+  if (Number(settings.fillSettingsVersion) === TEXT_FILL_SETTINGS_VERSION) return false;
+  const savedStep = Number(settings.fillLineStep ?? textPattern.lineStep);
+  const nextStep = Number.isFinite(savedStep) && savedStep >= 0.05 && savedStep < TEXT_FILL_LINE_STEP_MM
+    ? clamp(savedStep, 0.05, 1)
+    : TEXT_FILL_LINE_STEP_MM;
+  textPattern.lineStep = nextStep;
+  textPattern.textSettings = {
+    ...settings,
+    operation: "engrave_fill",
+    fillLineStep: nextStep,
+    fillSettingsVersion: TEXT_FILL_SETTINGS_VERSION,
+  };
+  return true;
 }
 
 function textFontValueForPattern(pattern) {
@@ -2419,6 +2449,7 @@ async function discardRecoveryProject() {
 function loadUiSettings() {
   let saved = {};
   let migratedTextDefaults = false;
+  let migratedEngraveDefaults = false;
   try {
     const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     saved = parsed && typeof parsed === "object" ? parsed : {};
@@ -2435,6 +2466,14 @@ function loadUiSettings() {
         if (input.type === "checkbox") input.checked = Boolean(value);
         else input.value = value;
       }
+    }
+    if (saved.engraveSettingsVersion !== ENGRAVE_SETTINGS_VERSION) {
+      applyRecommendedEngraveInputs();
+      saved.engravePower = String(DEFAULT_ENGRAVE_POWER);
+      saved.engraveFeed = String(DEFAULT_ENGRAVE_FEED);
+      saved.lineStep = String(DEFAULT_ENGRAVE_LINE_STEP);
+      saved.engraveSettingsVersion = ENGRAVE_SETTINGS_VERSION;
+      migratedEngraveDefaults = true;
     }
     if (
       saved.textSettingsVersion !== TEXT_SETTINGS_VERSION
@@ -2458,7 +2497,7 @@ function loadUiSettings() {
   enforceAirAssistDefaults();
   syncVectorProfessionalModeUi();
   syncCanvasSelectionModeUi();
-  if (migratedTextDefaults) saveUiSettings();
+  if (migratedTextDefaults || migratedEngraveDefaults) saveUiSettings();
   return saved;
 }
 
@@ -2468,6 +2507,7 @@ function saveUiSettings() {
     laserCmd: state.laserCmd,
     canvasSelectionMode: state.canvasSelectionMode,
     vectorSettingsVersion: VECTOR_SETTINGS_VERSION,
+    engraveSettingsVersion: ENGRAVE_SETTINGS_VERSION,
     textSettingsVersion: TEXT_SETTINGS_VERSION,
   };
   for (const id of persistedInputIds) {
@@ -2509,6 +2549,13 @@ const PROFILE_FIELDS = [
   "travelFeed", "pierceDelay", "engravePower", "engraveFeed", "lineStep", "threshold",
 ];
 const BUILTIN_PROFILES = [
+  {
+    id: "builtin-white-mdf-fill",
+    name: "Beyaz MDF - Koyu Dolgulu Yazı",
+    builtin: true,
+    values: { cutFeed: 350, cutPower: 1000, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: DEFAULT_ENGRAVE_POWER, engraveFeed: DEFAULT_ENGRAVE_FEED, lineStep: DEFAULT_ENGRAVE_LINE_STEP, threshold: 140 },
+    laserCmd: "M4",
+  },
   {
     id: "builtin-kontrplak-3",
     name: "3mm Kontrplak",
@@ -2581,7 +2628,9 @@ function applyMaterialProfile() {
     saveUiSettings();
   }
   const hint = document.getElementById("profileHint");
-  if (hint) hint.textContent = `"${profile.name}" uygulandı: F${profile.values.cutFeed} S${profile.values.cutPower} ${profile.values.passes} pas, kerf ${profile.values.kerf} mm.`;
+  if (hint) {
+    hint.textContent = `"${profile.name}" uygulandı: kesim F${profile.values.cutFeed} S${profile.values.cutPower}, kazıma F${profile.values.engraveFeed} S${profile.values.engravePower}, tarama ${profile.values.lineStep} mm.`;
+  }
   updateUiFromAnalysis(computeJobAnalysis());
   setStatus(`Malzeme profili uygulandı: ${profile.name}`);
 }
@@ -2744,9 +2793,9 @@ function getSettings() {
     airAssist: true,
     airAssistCommand: "M8",
     availableArea: materialAreaPayload(),
-    engravePower: clamp(Math.round(mm("engravePower", 250)), 0, 1000),
-    engraveFeed: Math.max(1, mm("engraveFeed", 1800)),
-    lineStep: Math.max(0.05, mm("lineStep", 0.35)),
+    engravePower: clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000),
+    engraveFeed: Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED)),
+    lineStep: Math.max(0.05, mm("lineStep", DEFAULT_ENGRAVE_LINE_STEP)),
     laserCmd: state.laserCmd,
     innerFirst: refs.innerFirst.checked,
     returnToOrigin: refs.returnOrigin.checked,
@@ -8506,7 +8555,7 @@ function selectedVectorOperationEntries() {
 function vectorFillSettings(entries = selectedVectorOperationEntries()) {
   const pattern = entries[0]?.pattern || selectedVectorPattern() || selectedPatternObjects().find(vectorPatternHasPaths);
   return {
-    lineStep: Math.max(0.05, Number(pattern?.lineStep ?? mm("lineStep", 0.25))),
+    lineStep: Math.max(0.05, Number(pattern?.lineStep ?? mm("lineStep", DEFAULT_ENGRAVE_LINE_STEP))),
   };
 }
 
@@ -8532,8 +8581,8 @@ function enablePatternProcessOverride(pattern) {
   if (!pattern || patternUsesCustomProcess(pattern)) return;
   const cutPower = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
   const cutFeed = Math.max(1, mm("cutFeed", 500));
-  const engravePower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
-  const engraveFeed = Math.max(1, mm("engraveFeed", 1800));
+  const engravePower = clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000);
+  const engraveFeed = Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED));
   pattern.cutPower = cutPower;
   pattern.cutFeed = cutFeed;
   pattern.engravePower = engravePower;
@@ -8553,7 +8602,7 @@ function vectorEntryDefaultPower(entry) {
     const value = Number(entry.pattern?.cutPower ?? fallback);
     return clamp(Math.round(Number.isFinite(value) ? value : globalPower), 0, 1000);
   }
-  const globalPower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
+  const globalPower = clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000);
   if (!patternUsesCustomProcess(entry.pattern)) return globalPower;
   const fallback = patternOperation(entry.pattern) !== "cut" ? entry.pattern?.power : globalPower;
   const value = Number(entry.pattern?.engravePower ?? fallback);
@@ -8578,7 +8627,7 @@ function vectorPowerOverrideSettings(entries = selectedVectorOperationEntries())
   return {
     enabled: allOverride,
     mixed: anyOverride && (!allOverride || commonOverride === null),
-    power: clamp(Math.round(commonOverride ?? commonInherited ?? inherited[0] ?? mm("engravePower", 250)), 0, 1000),
+    power: clamp(Math.round(commonOverride ?? commonInherited ?? inherited[0] ?? mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000),
     inheritedLabel: commonInherited === null ? "işleme göre" : `S${commonInherited}`,
   };
 }
@@ -8978,8 +9027,8 @@ function setPatternOperationDefaults(pattern, operation) {
     pattern.cutFeed = pattern.feed;
     pattern.vectorEngraveMode = "contour";
   } else if (nextOperation === "engrave_line" || nextOperation === "engrave_fill") {
-    pattern.power = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
-    pattern.feed = Math.max(1, mm("engraveFeed", 1800));
+    pattern.power = clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000);
+    pattern.feed = Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED));
     pattern.engravePower = pattern.power;
     pattern.engraveFeed = pattern.feed;
     pattern.vectorEngraveMode = nextOperation === "engrave_fill" ? "fill" : "contour";
@@ -8990,14 +9039,15 @@ function setPatternOperationDefaults(pattern, operation) {
     if (nextOperation === "engrave_fill" && textPattern.textSettings.mode === "outline") {
       textPattern.lineStep = textFillLineStep(textPattern);
       textPattern.textSettings.fillLineStep = textPattern.lineStep;
+      textPattern.textSettings.fillSettingsVersion = TEXT_FILL_SETTINGS_VERSION;
       textPattern.vectorStats = { ...(textPattern.vectorStats || {}), filledTraceInvert: false };
     }
   }
 }
 
 function wholeTextFillSettings(pattern) {
-  const defaultPower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
-  const defaultFeed = Math.max(1, mm("engraveFeed", 1800));
+  const defaultPower = clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000);
+  const defaultFeed = Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED));
   if (!patternUsesCustomProcess(pattern)) {
     return {
       power: defaultPower,
@@ -9037,7 +9087,7 @@ function wholeTextFillActionHtml(pattern) {
       <label>Hız F <input id="wholeTextFillFeed" type="number" min="1" step="50" value="${settings.feed}" /></label>
       <label>Tarama aralığı <span class="unit-input"><input id="wholeTextFillStep" type="number" min="0.05" max="1" step="0.01" value="${settings.lineStep.toFixed(2)}" /><b>mm</b></span></label>
     </div>
-    <small class="text-fill-note">Dolu ve düzgün görünüm için önerilen aralık 0,10–0,15 mm. Büyük aralık çizgili sonuç verir.</small>
+    <small class="text-fill-note">Beyaz MDF üzerinde koyu ve dolu görünüm için önerilen aralık 0,08–0,12 mm. Büyük aralık çizgili ve soluk sonuç verir.</small>
     <button id="panelApplyWholeTextFill" class="primary">${active ? "Dolgu Ayarlarını Tüm Yazıya Uygula" : "Tüm Yazıyı Kalın Kazı"}</button>
   </div>`;
 }
@@ -9081,14 +9131,15 @@ async function applyWholeTextFill(pattern, options = {}) {
   textPattern.engravePower = power;
   textPattern.engraveFeed = feed;
   textPattern.processOverride = patternUsesCustomProcess(textPattern)
-    || power !== clamp(Math.round(mm("engravePower", 250)), 0, 1000)
-    || feed !== Math.max(1, mm("engraveFeed", 1800));
+    || power !== clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000)
+    || feed !== Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED));
   textPattern.lineStep = lineStep;
   textPattern.vectorStats = { ...(textPattern.vectorStats || {}), filledTraceInvert: false };
   textPattern.textSettings = {
     ...(textPattern.textSettings || {}),
     operation: "engrave_fill",
     fillLineStep: lineStep,
+    fillSettingsVersion: TEXT_FILL_SETTINGS_VERSION,
   };
   for (const vectorPath of textPattern.vectorPaths || []) {
     if (vectorPath.removed) continue;
@@ -9119,8 +9170,8 @@ function setCadLineArtDefaults(pattern) {
   pattern.cutRegionSeeds = clonePlain(pattern.cutRegionSeeds || []);
   pattern.cutPower = clamp(Math.round(Number(pattern.cutPower ?? mm("cutPower", 1000))), 0, 1000);
   pattern.cutFeed = Math.max(1, Number(pattern.cutFeed ?? mm("cutFeed", 500)));
-  pattern.engravePower = clamp(Math.round(Number(pattern.engravePower ?? mm("engravePower", 250))), 0, 1000);
-  pattern.engraveFeed = Math.max(1, Number(pattern.engraveFeed ?? mm("engraveFeed", 1800)));
+  pattern.engravePower = clamp(Math.round(Number(pattern.engravePower ?? mm("engravePower", DEFAULT_ENGRAVE_POWER))), 0, 1000);
+  pattern.engraveFeed = Math.max(1, Number(pattern.engraveFeed ?? mm("engraveFeed", DEFAULT_ENGRAVE_FEED)));
   pattern.power = pattern.engravePower;
   pattern.feed = pattern.engraveFeed;
   pattern.operation = "engrave_line";
@@ -9872,8 +9923,8 @@ function renderPatternPanel(pattern) {
   const customProcess = patternUsesCustomProcess(pattern);
   const cutPowerValue = customProcess ? Number(pattern.cutPower ?? pattern.power ?? mm("cutPower", 1000)) : mm("cutPower", 1000);
   const cutFeedValue = customProcess ? Number(pattern.cutFeed ?? pattern.feed ?? mm("cutFeed", 500)) : mm("cutFeed", 500);
-  const engravePowerValue = customProcess ? Number(pattern.engravePower ?? pattern.power ?? mm("engravePower", 250)) : mm("engravePower", 250);
-  const engraveFeedValue = customProcess ? Number(pattern.engraveFeed ?? pattern.feed ?? mm("engraveFeed", 1800)) : mm("engraveFeed", 1800);
+  const engravePowerValue = customProcess ? Number(pattern.engravePower ?? pattern.power ?? mm("engravePower", DEFAULT_ENGRAVE_POWER)) : mm("engravePower", DEFAULT_ENGRAVE_POWER);
+  const engraveFeedValue = customProcess ? Number(pattern.engraveFeed ?? pattern.feed ?? mm("engraveFeed", DEFAULT_ENGRAVE_FEED)) : mm("engraveFeed", DEFAULT_ENGRAVE_FEED);
   const processControls = cadLineArt
     ? `<label>Kesim gücü S <input data-pattern="cutPower" type="number" min="0" max="1000" step="10" value="${cutPowerValue}" /></label>
        <label>Kesim hızı F <input data-pattern="cutFeed" type="number" min="1" step="50" value="${cutFeedValue}" /></label>
@@ -12042,9 +12093,9 @@ async function preparePhotoEngrave(options = {}) {
       photoEngrave: true,
       vectorPreset: professionalMode.id,
       vectorProductMode: professionalMode.productMode,
-      power: clamp(Math.round(mm("engravePower", 250)), 0, 1000),
+      power: clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000),
       powerMin: 0,
-      feed: Math.max(1, mm("engraveFeed", 1800)),
+      feed: Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED)),
       lineStep: 0.2,
       gamma: 1,
       bidirectional: true,
@@ -12534,9 +12585,9 @@ function createPatternForPlacement(id, imageData, placement) {
     width,
     height,
     rotation: 0,
-    power: clamp(Math.round(mm("engravePower", 250)), 0, 1000),
-    feed: Math.max(1, mm("engraveFeed", 1800)),
-    lineStep: Math.max(0.05, mm("lineStep", 0.35)),
+    power: clamp(Math.round(mm("engravePower", DEFAULT_ENGRAVE_POWER)), 0, 1000),
+    feed: Math.max(1, mm("engraveFeed", DEFAULT_ENGRAVE_FEED)),
+    lineStep: Math.max(0.05, mm("lineStep", DEFAULT_ENGRAVE_LINE_STEP)),
     threshold: clamp(Math.round(mm("threshold", 140)), 0, 255),
     rasterMode: imageData.rasterMode || "threshold",
     powerMin: Number(imageData.powerMin || 0),
@@ -13426,6 +13477,7 @@ async function buildOutlineTextGeometry(text, options) {
       style: options.style || refs.textStyle?.value || "normal",
       operation,
       fillLineStep,
+      fillSettingsVersion: TEXT_FILL_SETTINGS_VERSION,
     },
     vectorStats: { ...(vector.stats || {}), filledTraceInvert: false },
   };
@@ -15814,6 +15866,7 @@ function projectPayload(options = {}) {
     layout: clonePlain(state.layout),
     materialArea: clonePlain(state.materialArea),
     laserCmd: state.laserCmd,
+    engraveSettingsVersion: ENGRAVE_SETTINGS_VERSION,
     inputs: undoInputSnapshot(),
     outputPath: refs.outputPath?.value || "",
     imageSources,
@@ -15834,9 +15887,12 @@ function restoreProject(project, options = {}) {
   state.lastGeneratedRevision = null;
   state.lastGeneratedPath = "";
   ensureStateEntityIdentities();
+  const migrateProjectEngraveDefaults = Number(project.engraveSettingsVersion) !== ENGRAVE_SETTINGS_VERSION;
   let normalizedTextPatternCount = 0;
+  let migratedTextFillPatternCount = 0;
   for (const pattern of state.patterns) {
     if (normalizeEditableTextPatternBounds(pattern)) normalizedTextPatternCount += 1;
+    if (migrateEditableTextFillDefaults(pattern)) migratedTextFillPatternCount += 1;
   }
   for (const pattern of state.patterns) {
     if (!vectorPatternHasPaths(pattern)) continue;
@@ -15865,14 +15921,18 @@ function restoreProject(project, options = {}) {
     dirty: Boolean(options.recovery),
     lastSavedAt: restoredSession.lastSavedAt || project.savedAt || null,
   });
-  if (normalizedTextPatternCount && !options.recovery) {
-    state.project = ProjectState.markDirty(state.project, "Metin seçim kutusu düzeltildi");
+  if ((normalizedTextPatternCount || migratedTextFillPatternCount || migrateProjectEngraveDefaults) && !options.recovery) {
+    const reason = migrateProjectEngraveDefaults || migratedTextFillPatternCount
+      ? "Kazıma varsayılanları güncellendi"
+      : "Metin seçim kutusu düzeltildi";
+    state.project = ProjectState.markDirty(state.project, reason);
   }
   undoStack.length = 0;
   redoStack.length = 0;
   cancelImageTool();
   cancelDrawingTool();
   applyUndoInputSnapshot(project.inputs || {});
+  if (migrateProjectEngraveDefaults) applyRecommendedEngraveInputs();
   if (refs.outputPath) refs.outputPath.value = project.outputPath || project.inputs?.outputPath || "";
   restoreImageSources(project.imageSources || {}, project.imageAdjustmentBases || {});
   installCustomFonts().then(() => renderTextFontOptions(project.inputs?.textFont || refs.textFont?.value)).catch(() => renderTextFontOptions(refs.textFont?.value));

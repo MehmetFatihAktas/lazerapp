@@ -250,12 +250,12 @@
             <span class="ribbon-group-title">Kesim</span>
           </div>
           <div class="ribbon-sep"></div>
-          <div class="ribbon-group">
+          <div class="ribbon-group engrave-defaults-group">
             <div class="rib-row">
-              <label class="rib-field">Güç S<input id="engravePower" type="number" value="250" min="0" max="1000" step="10" /></label>
-              <label class="rib-field">Hız F<span class="unit-input"><input id="engraveFeed" type="number" value="1800" min="1" step="50" /><b>mm/dk</b></span></label>
-              <label class="rib-field">Çizgi<span class="unit-input"><input id="lineStep" type="number" value="0.35" min="0.05" step="0.05" /><b>mm</b></span></label>
-              <label class="rib-field">Eşik<input id="threshold" type="number" value="140" min="0" max="255" step="1" /></label>
+              <label class="rib-field engrave-power-field">Güç S<input id="engravePower" type="number" value="500" min="0" max="1000" step="10" /></label>
+              <label class="rib-field engrave-speed-field">Hız F<span class="unit-input"><input id="engraveFeed" type="number" value="1800" min="1" step="50" /><b>mm/dk</b></span></label>
+              <label class="rib-field engrave-step-field" title="Dolgulu kazımada iki tarama çizgisi arasındaki mesafe. Küçüldükçe dolgu koyulaşır.">Tarama<span class="unit-input"><input id="lineStep" type="number" value="0.08" min="0.05" step="0.01" /><b>mm</b></span></label>
+              <label class="rib-field engrave-threshold-field" title="Yalnızca fotoğraf ve raster kazımada açık/koyu ayrımını etkiler.">Foto eşik<input id="threshold" type="number" value="140" min="0" max="255" step="1" /></label>
             </div>
             <span class="ribbon-group-title">Kazıma Varsayılanı</span>
           </div>
@@ -1099,6 +1099,6 @@
     <script src="/static/vector_edit.js?v=20260716-thick-text-v1"></script>
     <script src="/static/canvas_selection.js?v=20260716-object-hit-v1"></script>
     <script src="/static/text_geometry.js?v=20260716-text-bounds-v1"></script>
-    <script src="/static/app.js?v=20260716-text-bounds-v1"></script>
+    <script src="/static/app.js?v=20260716-engrave-defaults-v1"></script>
   </body>
 </html>
