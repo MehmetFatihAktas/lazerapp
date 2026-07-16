@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260716-system-fonts-v1" />
+    <link rel="stylesheet" href="/static/style.css?v=20260716-object-selection-v1" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -471,7 +471,10 @@
         <section class="canvas-panel">
           <div class="canvas-toolbar">
             <div class="tool-group">
-              <button id="selectToolBtn" class="active">Seç</button>
+              <div id="canvasSelectionMode" class="selection-mode-switch" role="group" aria-label="Tuval seçim modu">
+                <button id="selectToolBtn" type="button" data-selection-mode="object" class="active" aria-pressed="true" title="Metin, SVG, görsel ve DXF parçalarını tek nesne olarak seçer">Nesne</button>
+                <button id="contourSelectToolBtn" type="button" data-selection-mode="contour" aria-pressed="false" title="Vektörün içindeki tek tek konturları seçer">Kontur</button>
+              </div>
               <button id="zoomInBtn">Yakınlaş</button>
               <button id="zoomOutBtn">Uzaklaş</button>
               <button id="fitViewBtn">Tabla’ya Sığdır</button>
@@ -1094,6 +1097,6 @@
     <script src="/static/product_tour.js?v=20260716-product-tour-v2"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
     <script src="/static/vector_edit.js?v=20260716-thick-text-v1"></script>
-    <script src="/static/app.js?v=20260716-system-fonts-v1"></script>
+    <script src="/static/app.js?v=20260716-object-selection-v1"></script>
   </body>
 </html>

@@ -1219,6 +1219,34 @@ details > .wide-action {
   flex: 0 0 auto;
 }
 
+.selection-mode-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+}
+
+.selection-mode-switch button {
+  min-width: 68px;
+  border-radius: 0;
+}
+
+.selection-mode-switch button:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.selection-mode-switch button:last-child {
+  margin-left: -1px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.selection-mode-switch button.active {
+  position: relative;
+  z-index: 1;
+  border-color: var(--selection);
+  background: var(--selection);
+  color: #fff;
+}
+
 .precision-control {
   flex: 0 0 182px;
   display: grid;

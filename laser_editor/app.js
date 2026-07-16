@@ -177,6 +177,7 @@ const refs = {
   threshold: document.getElementById("threshold"),
   nudgeStep: document.getElementById("nudgeStep"),
   selectionArrange: document.getElementById("selectionArrange"),
+  canvasSelectionMode: document.getElementById("canvasSelectionMode"),
   vecThreshold: document.getElementById("vecThreshold"),
   vecMode: document.getElementById("vecMode"),
   vecThresholdMode: document.getElementById("vecThresholdMode"),
@@ -309,6 +310,7 @@ const state = {
   selected: null,
   selectedItems: [],
   selectedVectorPaths: [],
+  canvasSelectionMode: "object",
   vectorSelectionRegion: null,
   clipboard: [],
   clipboardPasteCount: 0,
@@ -2416,17 +2418,25 @@ function loadUiSettings() {
       }
     }
     if (saved.laserCmd) state.laserCmd = saved.laserCmd;
+    if (["object", "contour"].includes(saved.canvasSelectionMode)) {
+      state.canvasSelectionMode = saved.canvasSelectionMode;
+    }
   } catch (_error) {
     localStorage.removeItem(SETTINGS_KEY);
   }
   enforceAirAssistDefaults();
   syncVectorProfessionalModeUi();
+  syncCanvasSelectionModeUi();
   return saved;
 }
 
 function saveUiSettings() {
   enforceAirAssistDefaults();
-  const payload = { laserCmd: state.laserCmd, vectorSettingsVersion: VECTOR_SETTINGS_VERSION };
+  const payload = {
+    laserCmd: state.laserCmd,
+    canvasSelectionMode: state.canvasSelectionMode,
+    vectorSettingsVersion: VECTOR_SETTINGS_VERSION,
+  };
   for (const id of persistedInputIds) {
     const input = refs[id];
     if (!input) continue;
@@ -7240,18 +7250,53 @@ function updateVectorMarqueePreview(drag) {
   setVectorPathPreview(drag.previewItems);
 }
 
-function drawVectorSelectionMarquee() {
-  const drag = state.drag;
-  if (drag?.mode !== "vectorMarquee" || !drag.startScreen || !drag.currentScreen) return;
+function objectMarqueeHitItems(drag) {
+  const rect = vectorMarqueeWorldRect(drag);
+  if (!rect || rect.maxX - rect.minX <= 1e-6 || rect.maxY - rect.minY <= 1e-6) return [];
+  const patterns = state.patterns
+    .map((pattern) => ({ type: "pattern", id: pattern.id, bounds: patternBounds(pattern) }))
+    .filter((item) => item.bounds && vectorMarqueeBoundsOverlap(item.bounds, rect));
+  if (patterns.length) return patterns.map(({ type, id }) => ({ type, id }));
+  return state.placements
+    .map((placement) => ({ type: "placement", id: placement.id, bounds: placementBounds(placement) }))
+    .filter((item) => item.bounds && vectorMarqueeBoundsOverlap(item.bounds, rect))
+    .map(({ type, id }) => ({ type, id }));
+}
+
+function combineObjectMarqueeItems(baseItems, hitItems, mode) {
+  const normalizedBase = uniqueSelectionItems(baseItems);
+  const normalizedHits = uniqueSelectionItems(hitItems);
+  const targetType = normalizedHits[0]?.type || normalizedBase[0]?.type || "";
+  const combined = new Map();
+  for (const item of normalizedBase.filter((entry) => !targetType || entry.type === targetType)) {
+    combined.set(selectionKey(item), item);
+  }
+  if (mode === "replace") combined.clear();
+  for (const item of normalizedHits) {
+    const key = selectionKey(item);
+    if (mode === "toggle" && combined.has(key)) combined.delete(key);
+    else combined.set(key, item);
+  }
+  return [...combined.values()];
+}
+
+function updateObjectMarqueePreview(drag) {
+  const movedPixels = Math.hypot(
+    Number(drag.currentScreen?.x) - Number(drag.startScreen?.x),
+    Number(drag.currentScreen?.y) - Number(drag.startScreen?.y),
+  );
+  const hitItems = movedPixels >= 3 ? objectMarqueeHitItems(drag) : [];
+  drag.previewItems = combineObjectMarqueeItems(drag.baseItems, hitItems, drag.selectionMode);
+  drag.hitCount = hitItems.length;
+}
+
+function drawSelectionMarqueeFrame(drag, label) {
+  if (!drag?.startScreen || !drag.currentScreen) return;
   const palette = canvasPalette();
   const x = Math.min(drag.startScreen.x, drag.currentScreen.x);
   const y = Math.min(drag.startScreen.y, drag.currentScreen.y);
   const width = Math.abs(drag.currentScreen.x - drag.startScreen.x);
   const height = Math.abs(drag.currentScreen.y - drag.startScreen.y);
-  const worldRect = vectorMarqueeWorldRect(drag);
-  const worldWidth = Math.max(0, Number(worldRect?.maxX) - Number(worldRect?.minX));
-  const worldHeight = Math.max(0, Number(worldRect?.maxY) - Number(worldRect?.minY));
-  const label = `${worldWidth.toFixed(1)} × ${worldHeight.toFixed(1)} mm · ${(drag.previewItems || []).length} kontur`;
 
   ctx.save();
   ctx.fillStyle = colorWithAlpha(palette.selection, 0.12);
@@ -7270,6 +7315,49 @@ function drawVectorSelectionMarquee() {
   ctx.fillStyle = palette.panel;
   ctx.fillText(label, labelX + 8, labelY + 15);
   ctx.restore();
+}
+
+function drawVectorSelectionMarquee() {
+  const drag = state.drag;
+  if (drag?.mode !== "vectorMarquee") return;
+  const worldRect = vectorMarqueeWorldRect(drag);
+  const worldWidth = Math.max(0, Number(worldRect?.maxX) - Number(worldRect?.minX));
+  const worldHeight = Math.max(0, Number(worldRect?.maxY) - Number(worldRect?.minY));
+  drawSelectionMarqueeFrame(
+    drag,
+    `${worldWidth.toFixed(1)} × ${worldHeight.toFixed(1)} mm · ${(drag.previewItems || []).length} kontur`
+  );
+}
+
+function drawObjectSelectionMarquee() {
+  const drag = state.drag;
+  if (drag?.mode !== "objectMarquee") return;
+  const palette = canvasPalette();
+  ctx.save();
+  for (const item of drag.previewItems || []) {
+    if (item.type === "pattern") {
+      const pattern = patternById(item.id);
+      if (pattern) drawPatternSelectionOutline(pattern);
+      continue;
+    }
+    const placement = placementById(item.id);
+    if (!placement) continue;
+    const bounds = placementBounds(placement);
+    const topLeft = worldToScreen({ x: bounds.minX, y: bounds.maxY });
+    const bottomRight = worldToScreen({ x: bounds.maxX, y: bounds.minY });
+    ctx.strokeStyle = palette.selection;
+    ctx.lineWidth = 1.8;
+    ctx.setLineDash([7, 4]);
+    ctx.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
+  }
+  ctx.restore();
+  const worldRect = vectorMarqueeWorldRect(drag);
+  const worldWidth = Math.max(0, Number(worldRect?.maxX) - Number(worldRect?.minX));
+  const worldHeight = Math.max(0, Number(worldRect?.maxY) - Number(worldRect?.minY));
+  drawSelectionMarqueeFrame(
+    drag,
+    `${worldWidth.toFixed(1)} × ${worldHeight.toFixed(1)} mm · ${(drag.previewItems || []).length} nesne`
+  );
 }
 
 const vectorFillNestingCache = new WeakMap();
@@ -7843,6 +7931,7 @@ function draw() {
   drawPatterns();
   drawPlacements();
   drawSelectedVectorGroupBounds();
+  drawObjectSelectionMarquee();
   drawVectorSelectionMarquee();
   drawVectorRegionCursor();
   drawVectorRepairCursor();
@@ -7850,7 +7939,7 @@ function draw() {
   drawImageTool();
   drawDrawingTool();
   drawSelectedPatternHandles();
-  if (state.drag?.mode !== "vectorMarquee") {
+  if (!["vectorMarquee", "objectMarquee"].includes(state.drag?.mode)) {
     scheduleJobAnalysis(state.drag ? 220 : canvasInteraction ? 500 : 80);
   }
 }
@@ -7991,6 +8080,44 @@ function showSelectionCursor(screenPoint, mode = "select") {
   refs.selectionCursor.style.top = `${canvasRect.top - panelRect.top + Number(screenPoint.y)}px`;
   refs.selectionCursor.classList.toggle("is-move", mode === "move");
   refs.selectionCursor.hidden = false;
+}
+
+function canvasSelectionIsContour() {
+  return state.canvasSelectionMode === "contour";
+}
+
+function syncCanvasSelectionModeUi() {
+  refs.canvasSelectionMode?.querySelectorAll("[data-selection-mode]").forEach((button) => {
+    const active = button.dataset.selectionMode === state.canvasSelectionMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function setCanvasSelectionMode(mode, options = {}) {
+  const next = mode === "contour" ? "contour" : "object";
+  const changed = state.canvasSelectionMode !== next;
+  state.canvasSelectionMode = next;
+  if (next === "object" && ["vectorPath", "vectorObject"].includes(state.selected?.type)) {
+    select("pattern", state.selected.id);
+  } else if (next === "object" && state.selectedVectorPaths.length) {
+    state.selectedVectorPaths = [];
+    state.vectorSelectionRegion = null;
+    rebuildVectorPathSelectionKeys();
+    setVectorPathPreview([]);
+    updateSelectionPanel();
+    draw();
+  }
+  syncCanvasSelectionModeUi();
+  if (options.persist !== false) saveUiSettings();
+  if (changed && options.announce !== false) {
+    setStatus(
+      next === "object"
+        ? "Nesne seçimi açık: metin, SVG, görsel ve DXF parçaları bütün olarak seçilir."
+        : "Kontur seçimi açık: vektör içindeki çizgileri tek tek veya kutuyla seçebilirsiniz.",
+      "info"
+    );
+  }
 }
 
 function vectorPathSelectionHas(patternId, pathId) {
@@ -14427,17 +14554,14 @@ function hitTestBounds(worldPoint) {
   return null;
 }
 
-function hitTest(worldPoint) {
+function hitTest(worldPoint, mode = state.canvasSelectionMode) {
+  const objectMode = mode !== "contour";
   const vectorHitDistance = Math.max(2 / Math.max(0.001, state.view.scale), 0.3);
   for (let i = state.patterns.length - 1; i >= 0; i -= 1) {
     const pattern = state.patterns[i];
     if (!pointInPolygon(worldPoint, patternCorners(pattern))) continue;
     if (vectorPatternHasPaths(pattern)) {
-      if (
-        state.selected?.type === "pattern"
-        && state.selected.id === pattern.id
-        && distanceToPolyline(worldPoint, patternCorners(pattern), true) <= vectorHitDistance
-      ) {
+      if (objectMode && state.selected?.type === "pattern" && state.selected.id === pattern.id) {
         return { type: "pattern", id: pattern.id };
       }
       const vectorPaths = pattern.vectorPaths || [];
@@ -14445,7 +14569,10 @@ function hitTest(worldPoint) {
         const vectorPath = vectorPaths[j];
         if (vectorPath.removed) continue;
         const points = vectorWorldPath(pattern, vectorPath);
-        if (distanceToPolyline(worldPoint, points, Boolean(vectorPath.closed)) <= vectorHitDistance) {
+        const pathHit = distanceToPolyline(worldPoint, points, Boolean(vectorPath.closed)) <= vectorHitDistance;
+        const fillHit = Boolean(vectorPath.closed) && points.length >= 3 && pointInPolygon(worldPoint, points);
+        if (pathHit || (objectMode && fillHit)) {
+          if (objectMode) return { type: "pattern", id: pattern.id };
           return { type: "vectorPath", id: pattern.id, pathId: vectorPath.id, objectId: vectorPath.objectId || vectorPath.provenance?.objectId || "" };
         }
       }
@@ -14466,6 +14593,26 @@ function hitTest(worldPoint) {
     }
   }
   return null;
+}
+
+function beginObjectMarquee(screen, world, event) {
+  const selectionMode = (event.ctrlKey || event.metaKey) ? "toggle" : event.shiftKey ? "add" : "replace";
+  const baseItems = selectionMode === "replace" ? [] : uniqueSelectionItems(state.selectedItems || []);
+  state.drag = {
+    mode: "objectMarquee",
+    startScreen: { ...screen },
+    currentScreen: { ...screen },
+    startWorld: { ...world },
+    currentWorld: { ...world },
+    selectionMode,
+    baseItems,
+    previewItems: [...baseItems],
+    hitCount: 0,
+  };
+  canvas.style.cursor = "none";
+  showSelectionCursor(screen, "select");
+  canvas.setPointerCapture(event.pointerId);
+  requestCanvasDraw();
 }
 
 function beginVectorMarquee(screen, world, event) {
@@ -14663,7 +14810,7 @@ function onPointerDown(event) {
     return;
   }
 
-  const selectedMoveHit = event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey
+  const selectedMoveHit = canvasSelectionIsContour() && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey
     ? selectedVectorMoveHit(world)
     : null;
   if (selectedMoveHit) {
@@ -14674,7 +14821,8 @@ function onPointerDown(event) {
 
   const hit = hitTest(world);
   if (!hit) {
-    beginVectorMarquee(screen, world, event);
+    if (canvasSelectionIsContour()) beginVectorMarquee(screen, world, event);
+    else beginObjectMarquee(screen, world, event);
     event.preventDefault();
     return;
   }
@@ -14834,7 +14982,7 @@ function onPointerMove(event) {
     const boundsHit = hitTestBounds(world);
     const wholeObjectMove = boundsHit?.type === "placement"
       || (boundsHit?.type === "pattern" && state.selected?.type === "pattern" && state.selected.id === boundsHit.id);
-    const vectorMoveHit = selectedVectorMoveHit(world);
+    const vectorMoveHit = canvasSelectionIsContour() ? selectedVectorMoveHit(world) : null;
     if (handleCursor || wholeObjectMove) {
       hideSelectionCursor();
       canvas.style.cursor = handleCursor || "move";
@@ -14843,6 +14991,15 @@ function onPointerMove(event) {
       showSelectionCursor(screen, vectorMoveHit ? "move" : "select");
     }
     computeView();
+    return;
+  }
+  if (state.drag.mode === "objectMarquee") {
+    state.drag.currentScreen = { ...screen };
+    state.drag.currentWorld = { ...world };
+    updateObjectMarqueePreview(state.drag);
+    canvas.style.cursor = "none";
+    showSelectionCursor(screen, "select");
+    requestCanvasDraw();
     return;
   }
   if (state.drag.mode === "vectorMarquee") {
@@ -15034,6 +15191,41 @@ function onPointerUp(event) {
       finishVectorPathRedraw(world);
     }
     canvas.releasePointerCapture?.(event.pointerId);
+    event.preventDefault();
+    return;
+  }
+  if (state.drag?.mode === "objectMarquee") {
+    const completedDrag = state.drag;
+    if (event.type !== "pointercancel") {
+      completedDrag.currentScreen = canvasPoint(event);
+      completedDrag.currentWorld = screenToWorld(completedDrag.currentScreen);
+      updateObjectMarqueePreview(completedDrag);
+    }
+    const movedPixels = Math.hypot(
+      Number(completedDrag.currentScreen?.x) - Number(completedDrag.startScreen?.x),
+      Number(completedDrag.currentScreen?.y) - Number(completedDrag.startScreen?.y),
+    );
+    const finalItems = event.type === "pointercancel"
+      ? completedDrag.baseItems
+      : movedPixels >= 3
+        ? completedDrag.previewItems
+        : completedDrag.selectionMode === "replace" ? [] : completedDrag.baseItems;
+    state.drag = null;
+    canvas.releasePointerCapture?.(event.pointerId);
+    const normalized = uniqueSelectionItems(finalItems);
+    const patterns = normalized.filter((item) => item.type === "pattern");
+    const placements = normalized.filter((item) => item.type === "placement");
+    if (patterns.length) {
+      selectPatternItems(patterns.map((item) => item.id), patterns[patterns.length - 1].id);
+    } else if (placements.length) {
+      selectPlacementItems(placements.map((item) => item.id), placements[placements.length - 1].id);
+    } else {
+      select(null, null);
+    }
+    setStatus(
+      normalized.length ? `${normalized.length} nesne seçildi.` : "Nesne seçimi temizlendi.",
+      normalized.length ? "ok" : "info"
+    );
     event.preventDefault();
     return;
   }
@@ -16075,6 +16267,9 @@ function bindControls() {
   document.getElementById("zoomInBtn").addEventListener("click", () => zoomView(1.25));
   document.getElementById("zoomOutBtn").addEventListener("click", () => zoomView(1 / 1.25));
   document.getElementById("fitViewBtn").addEventListener("click", fitView);
+  refs.canvasSelectionMode?.querySelectorAll("[data-selection-mode]").forEach((button) => {
+    button.addEventListener("click", () => setCanvasSelectionMode(button.dataset.selectionMode));
+  });
   document.getElementById("rotateLeftBtn").addEventListener("click", () => rotateSelected(-15));
   document.getElementById("rotateRightBtn").addEventListener("click", () => rotateSelected(15));
   document.getElementById("rotate90Btn").addEventListener("click", () => rotateSelected(90));
