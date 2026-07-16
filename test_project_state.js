@@ -69,7 +69,7 @@ test("derived counters use actual entities", () => {
 });
 
 test("preferences are clamped to safe limits", () => {
-  const preferences = ProjectState.normalizePreferences({ autosaveDelayMs: 10, maxRecentProjects: 100, theme: "purple", userMode: "invalid", prepareStrategy: "invalid", showTravelInPreview: 1 });
+  const preferences = ProjectState.normalizePreferences({ autosaveDelayMs: 10, maxRecentProjects: 100, theme: "purple", userMode: "invalid", prepareStrategy: "invalid", showTravelInPreview: 1, productTourVersion: 1200 });
   assert.equal(preferences.autosaveDelayMs, 1000);
   assert.equal(preferences.maxRecentProjects, 30);
   assert.equal(preferences.theme, "system");
@@ -77,4 +77,6 @@ test("preferences are clamped to safe limits", () => {
   assert.equal(preferences.prepareStrategy, "keep");
   assert.equal(preferences.showGrid, true);
   assert.equal(preferences.showTravelInPreview, true);
+  assert.equal(preferences.productTourVersion, 999);
+  assert.equal(ProjectState.normalizePreferences({ productTourVersion: 4 }).productTourVersion, 4);
 });

@@ -10,6 +10,8 @@ const CalibrationGrid = window.LaserCalibrationGrid;
 if (!CalibrationGrid) throw new Error("Kalibrasyon modülü yüklenemedi.");
 const SelectionLayout = window.LaserSelectionLayout;
 if (!SelectionLayout) throw new Error("Hizalama modülü yüklenemedi.");
+const ProductTour = window.LaserProductTour;
+if (!ProductTour) throw new Error("Ürün tanıtımı modülü yüklenemedi.");
 
 const canvas = document.getElementById("editorCanvas");
 const ctx = canvas.getContext("2d");
@@ -40,6 +42,19 @@ const refs = {
   helpModal: document.getElementById("helpModal"),
   capabilityList: document.getElementById("capabilityList"),
   diagnosticsSummary: document.getElementById("diagnosticsSummary"),
+  productTour: document.getElementById("productTour"),
+  tourSpotlight: document.getElementById("tourSpotlight"),
+  tourCard: document.getElementById("tourCard"),
+  tourCategory: document.getElementById("tourCategory"),
+  tourCounter: document.getElementById("tourCounter"),
+  tourProgressBar: document.getElementById("tourProgressBar"),
+  tourTitle: document.getElementById("productTourTitle"),
+  tourDescription: document.getElementById("tourDescription"),
+  tourFeatureList: document.getElementById("tourFeatureList"),
+  tourPreviousBtn: document.getElementById("tourPreviousBtn"),
+  tourNextBtn: document.getElementById("tourNextBtn"),
+  workflowNextTitle: document.getElementById("workflowNextTitle"),
+  workflowContinueBtn: document.getElementById("workflowContinueBtn"),
   boxMakerModal: document.getElementById("boxMakerModal"),
   boxMakerForm: document.getElementById("boxMakerForm"),
   boxMakerPreview: document.getElementById("boxMakerPreview"),
@@ -420,6 +435,13 @@ const state = {
     capabilities: null,
     diagnostics: null,
     errors: [],
+  },
+  workspaceMode: "design",
+  tour: {
+    active: false,
+    index: 0,
+    target: null,
+    returnContext: null,
   },
 };
 
@@ -1793,6 +1815,289 @@ const CAPABILITY_LABELS = {
   safetySensors: "Kapı / alev sensörleri",
 };
 
+const PRODUCT_TOUR_STEPS = [
+  {
+    category: "İş Akışı",
+    title: "Lazer işini dört kontrollü aşamada yönetin",
+    description: "Uygulama; tasarımdan makineye gönderime kadar aynı üretim dosyasını izleyen, geri dönülebilir bir süreç kullanır.",
+    features: [
+      "Tasarımda kaynakları ve geometrileri oluşturun.",
+      "Hazırla aşamasında tabla, yerleşim ve işlem parametrelerini doğrulayın.",
+      "Önizleme ile gerçek G-code yollarını, süreyi ve boş hareketleri inceleyin.",
+      "Cihaz aşamasında GRBL bağlantısını ve üretimi güvenli biçimde yönetin.",
+    ],
+    target: () => document.querySelector("#projectHub:not(.hidden) .project-hub-header") || document.querySelector(".titlebar .brand"),
+  },
+  {
+    category: "Proje Yönetimi",
+    title: "Çalışmalarınız kaybolmadan kaldığınız yerden devam edin",
+    description: "Proje merkezi; disk dosyaları, otomatik kurtarma ve tekrar kullanılabilir tasarım varlıklarını tek noktada toplar.",
+    features: [
+      "Yeni proje, aç, kaydet, farklı kaydet ve son projeler.",
+      "Kaydedilmemiş değişiklikler için yerel otomatik kurtarma.",
+      "DXF ve desenler için aranabilir tasarım kütüphanesi.",
+      "Ölçülü kutu üretici, kalibrasyon plakası ve üretim geçmişi.",
+    ],
+    prepare: () => openProjectHub(),
+    target: ".project-hub-content",
+  },
+  {
+    category: "Aşama Kontrolü",
+    title: "Canlı durum göstergeleri sıradaki işi açıkça gösterir",
+    description: "Her aşama; işteki nesne, ön kontrol, G-code ve makine durumuna göre güncellenir. Sağdaki Devam düğmesi sizi doğru sonraki adıma taşır.",
+    features: [
+      "Boş iş, nesne sayısı, ön kontrol ve bağlantı durumu anlık görünür.",
+      "Aşamalar arasında veri kaybetmeden ileri veya geri geçebilirsiniz.",
+      "G-code hazır değilse akış sizi önce Çıktı ve Ön Kontrol bölümüne yönlendirir.",
+    ],
+    prepare: () => {
+      closeProjectHub();
+      setProductionPreviewTabOpen(false, false);
+      setMachineTabOpen(false, false, false);
+      activateRibbonTab("ekle");
+      setWorkflowActive("design");
+    },
+    target: ".workflow-tabs",
+  },
+  {
+    category: "İçerik Araçları",
+    title: "Araç şeridi işi amacına göre gruplandırır",
+    description: "Sekmeler artık yalnız araç adı değil, hangi üretim görevini çözdüğünü de gösterir. İlgili ayarlar tek şeritte birlikte açılır.",
+    features: [
+      "DXF, SVG, JPG/PNG, metin ve temel şekiller ekleyin.",
+      "Kütüphane, kutu üretici ve otomatik yerleşime doğrudan erişin.",
+      "Vektör, görsel, çizim ve çıktı araçlarını ayrı görev gruplarında kullanın.",
+    ],
+    prepare: () => activateRibbonTab("ekle"),
+    target: ".ribbon-tabs",
+  },
+  {
+    category: "Hassas Düzenleme",
+    title: "Canvas gerçek milimetre ölçüsünü korur",
+    description: "Tabla görünümü yalnız bir önizleme değildir; yerleşim, sınır, merkez eksenleri ve üretime girecek geometri aynı belge modelinden çizilir.",
+    features: [
+      "Çoklu seçim, grup taşıma, kopyala/kes/yapıştır ve hizalama.",
+      "Hassas adım, döndürme, aynalama, tabla merkezleri ve dinamik grid.",
+      "DXF sınırına göre desen kırpma ve ayarlanabilir iç kenar payı.",
+    ],
+    target: ".canvas-panel",
+  },
+  {
+    category: "Nesne ve Ön Kontrol",
+    title: "Parça ağacı ile üretim güvenliği aynı ekranda kalır",
+    description: "Sol panel işteki gerçek nesneleri, sağ panel seçili nesnenin özelliklerini ve G-code ön kontrolünü gösterir.",
+    features: [
+      "Sayaçlar belge modelinden anlık türetilir; silme ve kopyalama sonrası güncel kalır.",
+      "Kesim, çizgi kazıma, dolgu ve yok say işlemleri nesne bazında atanır.",
+      "Tabla dışı, boş işlem ve riskli üretim durumları G-code öncesinde engellenir.",
+    ],
+    target: ".workspace",
+  },
+  {
+    category: "Hazırlama",
+    title: "Tabla ve yerleşimi malzeme kaybını azaltacak şekilde hazırlayın",
+    description: "Hazırla araçları, tasarım geometrisini değiştirmeden üretim alanını ve yerleşim stratejisini yönetir.",
+    features: [
+      "Tabla ölçüsü, kenar payı, parça aralığı ve kalan malzeme poligonu.",
+      "Döndürmeye izin veren kompakt otomatik yerleşim ve düzeni koruma seçeneği.",
+      "Tüm işi hizalama, ofsetleme, dışarıdakileri park etme ve yerleşimi geri alma.",
+    ],
+    prepare: () => activateRibbonTab("tabla"),
+    target: '.ribbon-panel[data-tab="tabla"]',
+  },
+  {
+    category: "Kesim ve Kazıma",
+    title: "Her işlem için üretim parametrelerini ayrı yönetin",
+    description: "Kesim ve kazıma değerleri birbirine karışmaz; G-code derleyicisi nesne işlemini ve güvenlik sırasını korur.",
+    features: [
+      "S0–S1000 güç, F hızı, pass, kerf, overcut ve kontrollü boş hareket hızı.",
+      "M4 dinamik güç, hava desteği ve delme beklemesi.",
+      "İç detayları önce, dış konturu en son kesme ve mikro köprü desteği.",
+      "Malzeme profilleri ve bağımsız güç/hız kalibrasyon matrisi.",
+    ],
+    prepare: () => activateRibbonTab("kesim"),
+    target: '.ribbon-panel[data-tab="kesim"]',
+  },
+  {
+    category: "Vektör ve Görsel",
+    title: "Fotoğraftan üretilebilir kontura kadar ayrıntılı işlem hattı",
+    description: "Görsel dönüşümü, ham kenar algılama yerine lazer üretimine uygun çizgi veya dolgu geometrisi oluşturur.",
+    features: [
+      "OpenCV, Potrace ve VTracer tabanlı otomatik fotoğraf→vektör hattı.",
+      "Gürültü temizliği, kopuk çizgi onarımı, köşe koruma ve pürüzsüzleştirme.",
+      "Kontur silme/geri alma, işlem atama, manuel köprü ve yeni kontur çizme.",
+      "Raster filtreleri, arka plan temizleme, crop, maske ve serbest çizim.",
+    ],
+    prepare: () => activateRibbonTab("vektor"),
+    target: '.ribbon-panel[data-tab="vektor"]',
+  },
+  {
+    category: "Çıktı Güvenliği",
+    title: "G-code oluşturulmadan önce tek bir ön kontrolden geçer",
+    description: "Canvas görünümü yerine normalize edilmiş üretim modeli kullanılır; aynı sınır kontrolleri dosya yazılırken çekirdekte yeniden uygulanır.",
+    features: [
+      "Tabla ve kalan malzeme sınırı, aktif işlem ve yol bütünlüğü denetimi.",
+      "Kesim/kazıma sırası, M4/S0 güvenliği ve dosya sonunda lazer kapatma.",
+      "Dosya kimliği, güç/hız aralığı, süre ve mesafe raporu.",
+    ],
+    prepare: () => activateRibbonTab("cikti"),
+    target: ".right-panel",
+  },
+  {
+    category: "Önizleme ve Cihaz",
+    title: "Üretmeden önce gerçek makine hareketini inceleyin",
+    description: "Önizleme ve cihaz aşamaları tasarımdan ayrıdır; operatör gönderilecek dosyayı ve makinenin durumunu açıkça görür.",
+    features: [
+      "Kesim, kazıma ve boş hareket katmanları; oynat, duraklat ve zaman çizelgesi.",
+      "Anlık XY konumu, tahmini süre, yol mesafesi ve harici dosya hash uyarısı.",
+      "GRBL seri bağlantı, çerçeve gezdirme, iş sıfırı, jog ve canlı override.",
+      "Çalışan iş sırasında tehlikeli komut kilidi, alarm ve acil durdurma takibi.",
+    ],
+    target: '.workflow-tab[data-workspace-mode="preview"]',
+  },
+  {
+    category: "İzlenebilirlik",
+    title: "Bildirim, geçmiş, tercihler ve tanılama üretimi tamamlar",
+    description: "Destek araçları proje içeriğini ifşa etmeden uygulama ve cihaz durumunu anlaşılır biçimde raporlar.",
+    features: [
+      "Kalıcı bildirim merkezi ve dosya hash'i ile üretim geçmişi.",
+      "Basit/uzman görünüm, tema, grid, autosave ve Prepare/Preview tercihleri.",
+      "Klavye kısayolları, cihaz kabiliyetleri ve gizlilik güvenli tanılama çıktısı.",
+      "Tanıtım düğmesi bu rehberi istediğiniz zaman yeniden açar.",
+    ],
+    target: ".title-actions",
+  },
+];
+
+function productTourTarget(step) {
+  const candidate = typeof step?.target === "function" ? step.target() : document.querySelector(step?.target || "");
+  if (candidate?.getClientRects().length) return candidate;
+  return document.querySelector(".titlebar") || document.body;
+}
+
+function updateProductTourPosition() {
+  if (!state.tour.active || !refs.tourCard || !refs.tourSpotlight) return;
+  const target = state.tour.target || document.querySelector(".titlebar");
+  if (!target) return;
+  const rect = target.getBoundingClientRect();
+  const padding = 7;
+  const left = clamp(rect.left - padding, 6, Math.max(6, window.innerWidth - 12));
+  const top = clamp(rect.top - padding, 6, Math.max(6, window.innerHeight - 12));
+  const right = clamp(rect.right + padding, left + 1, window.innerWidth - 6);
+  const bottom = clamp(rect.bottom + padding, top + 1, window.innerHeight - 6);
+  Object.assign(refs.tourSpotlight.style, {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${Math.max(1, right - left)}px`,
+    height: `${Math.max(1, bottom - top)}px`,
+  });
+
+  const cardRect = refs.tourCard.getBoundingClientRect();
+  const position = ProductTour.computeCardPosition(
+    { left, top, right, bottom, width: right - left, height: bottom - top },
+    { width: cardRect.width, height: cardRect.height },
+    { width: window.innerWidth, height: window.innerHeight }
+  );
+  refs.tourCard.dataset.placement = position.placement;
+  refs.tourCard.style.left = `${position.left}px`;
+  refs.tourCard.style.top = `${position.top}px`;
+  refs.tourCard.style.visibility = "visible";
+}
+
+function showProductTourStep(index) {
+  if (!state.tour.active) return;
+  const progress = ProductTour.progress(index, PRODUCT_TOUR_STEPS.length);
+  state.tour.index = progress.current - 1;
+  const step = PRODUCT_TOUR_STEPS[state.tour.index];
+  step.prepare?.();
+  if (refs.tourCategory) refs.tourCategory.textContent = step.category;
+  if (refs.tourCounter) refs.tourCounter.textContent = `${progress.current} / ${progress.total}`;
+  if (refs.tourProgressBar) refs.tourProgressBar.style.width = `${progress.percent}%`;
+  if (refs.tourTitle) refs.tourTitle.textContent = step.title;
+  if (refs.tourDescription) refs.tourDescription.textContent = step.description;
+  if (refs.tourFeatureList) refs.tourFeatureList.innerHTML = step.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("");
+  if (refs.tourPreviousBtn) refs.tourPreviousBtn.disabled = progress.first;
+  if (refs.tourNextBtn) refs.tourNextBtn.textContent = progress.last ? "Tanıtımı Bitir" : "Sonraki";
+  if (refs.tourCard) refs.tourCard.style.visibility = "hidden";
+  state.tour.target = productTourTarget(step);
+  state.tour.target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  window.requestAnimationFrame(() => window.requestAnimationFrame(updateProductTourPosition));
+}
+
+function restoreProductTourContext() {
+  const context = state.tour.returnContext;
+  if (!context) return;
+  if (context.productionPreviewOpen) {
+    setProductionPreviewTabOpen(true);
+  } else if (context.machineOpen) {
+    setMachineTabOpen(true, false, true);
+  } else {
+    setProductionPreviewTabOpen(false, false);
+    setMachineTabOpen(false, false, false);
+    activateRibbonTab(context.ribbonTab || "ekle");
+    setWorkflowActive(context.workspaceMode || "design");
+  }
+  if (context.projectHubOpen) openProjectHub();
+  else closeProjectHub();
+}
+
+function finishProductTour({ skipped = false } = {}) {
+  if (!state.tour.active) return;
+  refs.productTour?.classList.add("hidden");
+  document.body.classList.remove("tour-active");
+  state.tour.active = false;
+  state.tour.target = null;
+  state.preferences = ProjectState.normalizePreferences({
+    ...state.preferences,
+    productTourVersion: ProductTour.TOUR_VERSION,
+  });
+  saveProjectPreferences();
+  restoreProductTourContext();
+  state.tour.returnContext = null;
+  setStatus(skipped ? "Tanıtım atlandı. Tanıtım düğmesinden yeniden açabilirsiniz." : "Tanıtım tamamlandı.", "ok");
+}
+
+function startProductTour() {
+  if (state.tour.active) return;
+  state.tour.returnContext = {
+    workspaceMode: state.workspaceMode || "design",
+    ribbonTab: document.querySelector(".ribbon-tab.active")?.dataset.tab || "ekle",
+    projectHubOpen: !refs.projectHub?.classList.contains("hidden"),
+    machineOpen: !document.getElementById("machineTab")?.classList.contains("hidden"),
+    productionPreviewOpen: Boolean(state.productionPreview.open),
+  };
+  closeHelp();
+  closePreferences();
+  closeProjectInfo();
+  closeNotifications();
+  closeProductionHistory();
+  closeLibrary();
+  closeBoxMaker();
+  closeCalibration();
+  state.tour.active = true;
+  refs.productTour?.classList.remove("hidden");
+  document.body.classList.add("tour-active");
+  showProductTourStep(0);
+}
+
+function nextProductTourStep() {
+  if (!state.tour.active) return;
+  if (state.tour.index >= PRODUCT_TOUR_STEPS.length - 1) finishProductTour();
+  else showProductTourStep(state.tour.index + 1);
+}
+
+function previousProductTourStep() {
+  if (!state.tour.active) return;
+  showProductTourStep(state.tour.index - 1);
+}
+
+function scheduleAutomaticProductTour() {
+  if (!ProductTour.shouldAutoStart(state.preferences)) return;
+  window.setTimeout(() => {
+    if (!state.tour.active && ProductTour.shouldAutoStart(state.preferences)) startProductTour();
+  }, 700);
+}
+
 function renderSupportInfo() {
   const capabilities = state.support.capabilities || {};
   if (refs.capabilityList) {
@@ -2929,9 +3234,80 @@ function detachMachineHomeFromSidePanel() {
 }
 
 function setWorkflowActive(mode) {
+  state.workspaceMode = mode || "design";
   document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.workspaceMode === mode);
+    const active = button.dataset.workspaceMode === state.workspaceMode;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "step");
+    else button.removeAttribute("aria-current");
   });
+  renderWorkflowProgress();
+}
+
+function renderWorkflowProgress(analysis = state.currentAnalysis) {
+  const objectCount = state.placements.length + state.patterns.length;
+  const generatedReady = Boolean(state.lastGeneratedPath);
+  const selectedOutput = Boolean(refs.outputPath?.value.trim());
+  const criticalCount = Number(analysis?.criticalCount || 0);
+  const warningCount = Number(analysis?.warningCount || 0);
+  const statuses = {
+    design: {
+      text: objectCount ? `${objectCount} nesne` : "Boş iş",
+      className: objectCount ? "ready" : "",
+    },
+    prepare: {
+      text: analysis?.canGenerate ? "Kontrol geçti" : criticalCount ? `${criticalCount} kritik` : warningCount ? `${warningCount} uyarı` : "Bekliyor",
+      className: analysis?.canGenerate ? "ready" : criticalCount || warningCount ? "warn" : "",
+    },
+    preview: {
+      text: generatedReady ? "G-code hazır" : selectedOutput ? "Çıktı seçildi" : "Bekliyor",
+      className: generatedReady ? "ready" : selectedOutput ? "warn" : "",
+    },
+    device: {
+      text: state.machine.connected ? "Bağlı" : "Bağlı değil",
+      className: state.machine.connected ? "connected" : "",
+    },
+  };
+  document.querySelectorAll("[data-workflow-status]").forEach((element) => {
+    const status = statuses[element.dataset.workflowStatus] || { text: "Bekliyor", className: "" };
+    element.textContent = status.text;
+    element.classList.remove("ready", "warn", "connected");
+    if (status.className) element.classList.add(status.className);
+  });
+
+  const next = state.workspaceMode === "design"
+    ? { title: "Hazırla", button: "Devam" }
+    : state.workspaceMode === "prepare"
+      ? generatedReady ? { title: "Önizleme", button: "Aç" } : { title: "Çıktı ve Kontrol", button: "Devam" }
+      : state.workspaceMode === "preview"
+        ? { title: "Cihaz", button: "Devam" }
+        : { title: "Tasarım", button: "Geri Dön" };
+  if (refs.workflowNextTitle) refs.workflowNextTitle.textContent = next.title;
+  if (refs.workflowContinueBtn) {
+    refs.workflowContinueBtn.textContent = next.button;
+    refs.workflowContinueBtn.setAttribute("aria-label", `${next.title} aşamasına geç`);
+  }
+}
+
+function advanceWorkflow() {
+  if (state.workspaceMode === "design") {
+    setWorkspaceMode("prepare");
+    return;
+  }
+  if (state.workspaceMode === "prepare") {
+    if (state.lastGeneratedPath) setWorkspaceMode("preview");
+    else {
+      activateRibbonTab("cikti");
+      setWorkflowActive("prepare");
+      setStatus("Ön kontrolü tamamlayın, çıktı yolunu seçin ve G-code oluşturun.", "info");
+    }
+    return;
+  }
+  if (state.workspaceMode === "preview") {
+    setWorkspaceMode("device");
+    return;
+  }
+  setWorkspaceMode("design");
 }
 
 function setWorkspaceMode(mode) {
@@ -3000,6 +3376,7 @@ function applyMachineSnapshot(machine) {
   };
   captureMachineActivity(previousMachine, state.machine);
   renderMachinePanel();
+  renderWorkflowProgress();
 }
 
 function machinePositionText(status) {
@@ -7644,6 +8021,162 @@ function vectorPathSupportsFill(vectorPath) {
   return Boolean(vectorPath?.closed) && (vectorPath.points || []).length >= 3;
 }
 
+function selectedVectorOperationEntries() {
+  const selectedPaths = selectedVectorPathEntries();
+  if (selectedPaths.length) return selectedPaths;
+
+  const selectedObject = selectedVectorObject();
+  if (selectedObject) {
+    const edgeIds = new Set((selectedObject.vectorObject.edgeRefs || []).map((item) => String(item.edgeId || "")));
+    return (selectedObject.pattern.vectorPaths || [])
+      .filter((vectorPath) => (
+        String(vectorPath.objectId || vectorPath.provenance?.objectId || "") === String(selectedObject.vectorObject.id)
+        || edgeIds.has(String(vectorPath.edgeId || vectorPath.provenance?.edgeId || ""))
+      ))
+      .map((vectorPath) => ({ pattern: selectedObject.pattern, vectorPath }));
+  }
+
+  const entries = [];
+  const seen = new Set();
+  for (const pattern of selectedPatternObjects()) {
+    if (!vectorPatternHasPaths(pattern)) continue;
+    for (const vectorPath of pattern.vectorPaths || []) {
+      if (vectorPath.removed) continue;
+      const key = vectorPathSelectionKey(pattern.id, vectorPath.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ pattern, vectorPath });
+    }
+  }
+  return entries;
+}
+
+function vectorFillSettings(entries = selectedVectorOperationEntries()) {
+  const pattern = entries[0]?.pattern || selectedVectorPattern() || selectedPatternObjects().find(vectorPatternHasPaths);
+  const overallOperation = patternOperation(pattern);
+  const defaultPower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
+  const defaultFeed = Math.max(1, mm("engraveFeed", 1800));
+  return {
+    power: clamp(Math.round(Number(pattern?.engravePower ?? (overallOperation === "cut" ? defaultPower : pattern?.power ?? defaultPower))), 0, 1000),
+    feed: Math.max(1, Number(pattern?.engraveFeed ?? (overallOperation === "cut" ? defaultFeed : pattern?.feed ?? defaultFeed))),
+    lineStep: Math.max(0.05, Number(pattern?.lineStep ?? mm("lineStep", 0.25))),
+  };
+}
+
+function vectorFillSettingsHtml(entries) {
+  const settings = vectorFillSettings(entries);
+  return `<div class="vector-fill-settings">
+    <label>Dolgu gücü S <input id="vectorSelectionFillPower" type="number" min="0" max="1000" step="10" value="${settings.power}" /></label>
+    <label>Dolgu hızı F <input id="vectorSelectionFillFeed" type="number" min="1" step="50" value="${settings.feed}" /></label>
+    <label>Tarama aralığı <span class="unit-input"><input id="vectorSelectionFillStep" type="number" min="0.05" max="5" step="0.05" value="${settings.lineStep.toFixed(2)}" /><b>mm</b></span></label>
+  </div>`;
+}
+
+function readVectorFillSettings(entries) {
+  const defaults = vectorFillSettings(entries);
+  return {
+    power: clamp(Math.round(Number(document.getElementById("vectorSelectionFillPower")?.value ?? defaults.power)), 0, 1000),
+    feed: Math.max(1, Number(document.getElementById("vectorSelectionFillFeed")?.value ?? defaults.feed)),
+    lineStep: clamp(Number(document.getElementById("vectorSelectionFillStep")?.value ?? defaults.lineStep), 0.05, 5),
+  };
+}
+
+function expandVectorFillEntries(entries) {
+  const grouped = new Map();
+  for (const entry of entries || []) {
+    if (!entry?.pattern || !entry.vectorPath) continue;
+    if (!grouped.has(entry.pattern)) grouped.set(entry.pattern, []);
+    grouped.get(entry.pattern).push(entry.vectorPath);
+  }
+  const expanded = [];
+  const seen = new Set();
+  for (const [pattern, selectedPaths] of grouped.entries()) {
+    const paths = window.LaserVectorEdit.expandNestedClosedPaths(pattern.vectorPaths || [], selectedPaths);
+    for (const vectorPath of paths) {
+      const key = vectorPathSelectionKey(pattern.id, vectorPath.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      expanded.push({
+        pattern,
+        vectorPath,
+        patternId: pattern.id,
+        pathId: vectorPath.id,
+      });
+    }
+  }
+  return expanded;
+}
+
+function applySelectedVectorOperation(operation, options = {}) {
+  let entries = selectedVectorOperationEntries();
+  if (!entries.length) {
+    activateRibbonTab("vektor");
+    setStatus("Önce bir vektör, vektör nesnesi veya kontur grubu seçin. Bir bölümü seçmek için boş alandan seçim çerçevesi çizin.", "warn");
+    return null;
+  }
+  const nextOperation = normalizeOperation(operation, "engrave_line");
+  const explicitPathSelection = selectedVectorPathEntries().length > 0;
+  const originalEntryCount = entries.length;
+  if (nextOperation === "engrave_fill") entries = expandVectorFillEntries(entries);
+  const autoNestedCount = Math.max(0, entries.length - originalEntryCount);
+  const fillableCount = entries.filter((entry) => vectorPathSupportsFill(entry.vectorPath)).length;
+  if (nextOperation === "engrave_fill" && fillableCount === 0) {
+    setStatus("Dolgu Motif için en az bir kapalı kontur gerekir. Açık tek çizgiler dolguya çevrilemez.", "warn");
+    return null;
+  }
+
+  const fillSettings = nextOperation === "engrave_fill"
+    ? { ...readVectorFillSettings(entries), ...(options.fillSettings || {}) }
+    : null;
+  pushUndo(nextOperation === "engrave_fill" ? "Dolgu motif uygula" : "Kontur işlemi");
+  const result = window.LaserVectorEdit.assignPathOperation(
+    entries.map((entry) => entry.vectorPath),
+    nextOperation,
+  );
+  if (nextOperation === "engrave_fill" && explicitPathSelection && autoNestedCount) {
+    setVectorPathSelection(
+      entries.map((entry) => ({ patternId: entry.pattern.id, pathId: entry.vectorPath.id })),
+      entries[entries.length - 1],
+      { updateUi: false, redraw: false },
+    );
+  }
+  const patterns = [...new Set(entries.map((entry) => entry.pattern))];
+  for (const pattern of patterns) {
+    if (patternOperation(pattern) === "ignore") pattern.operation = "engrave_line";
+    pattern.vectorEngraveMode = "contour";
+    if (fillSettings) {
+      pattern.engravePower = fillSettings.power;
+      pattern.engraveFeed = fillSettings.feed;
+      pattern.lineStep = fillSettings.lineStep;
+      if (patternOperation(pattern) !== "cut") {
+        pattern.power = fillSettings.power;
+        pattern.feed = fillSettings.feed;
+      }
+    }
+    const remainingOperations = (pattern.vectorPaths || [])
+      .filter((vectorPath) => !vectorPath.removed && (vectorPath.points || []).length >= 2)
+      .map((vectorPath) => baseVectorPathOperation(vectorPath, pattern));
+    if (remainingOperations.length && remainingOperations.every((value) => value === "engrave_fill")) {
+      pattern.operation = "engrave_fill";
+      pattern.vectorEngraveMode = "fill";
+    }
+  }
+  draw();
+  updateSelectionPanel();
+  renderVectorQualityBox();
+  updateJobAnalysisNow();
+
+  const operationText = nextOperation === "engrave_fill" ? "Dolgu Motif" : operationLabel(nextOperation);
+  const skippedText = result.skippedOpen
+    ? ` ${result.skippedOpen} açık çizgi dolguya uygun olmadığı için çizgi olarak kaldı.`
+    : "";
+  const nestedText = autoNestedCount
+    ? ` ${autoNestedCount} iç boşluk konturu otomatik korunacak şekilde eklendi.`
+    : "";
+  setStatus(`${result.changed || fillableCount} kontur ${operationText} olarak ayarlandı.${nestedText}${skippedText}`, result.skippedOpen ? "warn" : "ok");
+  return result;
+}
+
 function vectorPathIsActive(vectorPath, pattern) {
   return Boolean(vectorPath) && !vectorPath.removed && (vectorPath.points || []).length >= 2 && vectorPathOperation(vectorPath, pattern) !== "ignore";
 }
@@ -7674,7 +8207,7 @@ function latestVectorPattern() {
 function vectorQualitySummary(pattern) {
   if (!vectorPatternHasPaths(pattern)) return null;
   const paths = pattern.vectorPaths || [];
-  const operation = patternOperation(pattern);
+  const operation = vectorPatternCommonOperation(pattern) || patternOperation(pattern);
   const autoIgnored = autoIgnoredCutInnerPaths(pattern);
   const active = paths.filter((path) => vectorPathIsActive(path, pattern));
   const open = active.filter((path) => !path.closed).length;
@@ -7793,15 +8326,34 @@ function operationLabel(operation) {
     {
       cut: "Kesim",
       engrave_line: "Kazıma çizgi",
-      engrave_fill: "Kazıma dolgu",
+      engrave_fill: "Dolgu Motif",
       ignore: "Yok say",
     }[normalizeOperation(operation, "engrave_line")] || "Kazıma çizgi"
   );
 }
 
+function vectorPatternCommonOperation(pattern) {
+  if (!vectorPatternHasPaths(pattern)) return "";
+  const operations = (pattern.vectorPaths || [])
+    .filter((vectorPath) => !vectorPath.removed && (vectorPath.points || []).length >= 2)
+    .map((vectorPath) => vectorPathOperation(vectorPath, pattern));
+  if (!operations.length) return "";
+  return operations.every((operation) => operation === operations[0]) ? operations[0] : "";
+}
+
 function patternOperationDisplayLabel(pattern) {
   if (isCadLineArtPattern(pattern) && pattern.regionClassificationMode === "exterior-cut") {
     return "Karma · dış kesim / iç kazıma";
+  }
+  const commonOperation = vectorPatternCommonOperation(pattern);
+  if (commonOperation) return operationLabel(commonOperation);
+  if (vectorPatternHasPaths(pattern)) {
+    const operations = new Set(
+      (pattern.vectorPaths || [])
+        .filter((vectorPath) => !vectorPath.removed && (vectorPath.points || []).length >= 2)
+        .map((vectorPath) => vectorPathOperation(vectorPath, pattern)),
+    );
+    if (operations.size > 1) return "Karma · kontur bazlı işlemler";
   }
   return operationLabel(patternOperation(pattern));
 }
@@ -8348,7 +8900,7 @@ function renderPatternPanel(pattern) {
     return;
   }
   const kindText = patternPanelKindText(pattern);
-  const operation = patternOperation(pattern);
+  const operation = vectorPatternCommonOperation(pattern) || patternOperation(pattern);
   const hasVectorPaths = vectorPatternHasPaths(pattern);
   const cadLineArt = isCadLineArtPattern(pattern);
   const canFillVectorEngrave = vectorCanFillEngrave(pattern);
@@ -8357,7 +8909,7 @@ function renderPatternPanel(pattern) {
     operation === "cut"
       ? "Kesim: vektör konturlarını kırmızı kesim yolu olarak üretir."
       : operation === "engrave_fill"
-        ? "Kazıma dolgu: dolu alanları tarama satırlarıyla kazır."
+        ? "Dolgu Motif: kapalı vektör alanlarını, iç boşlukları koruyarak tarama satırlarıyla kazır."
         : operation === "ignore"
           ? "Yok say: bu nesne G-code çıktısına dahil edilmez."
           : "Kazıma çizgi: mavi çizgi kazıma yolu olarak üretir.";
@@ -8369,7 +8921,7 @@ function renderPatternPanel(pattern) {
         <div class="operation-toggle">
           ${isVectorLikePattern(pattern) ? `<button data-operation="cut" class="${operation === "cut" ? "active danger-mode" : ""}">Kesim</button>` : ""}
           <button data-operation="engrave_line" class="${operation === "engrave_line" ? "active" : ""}">Kazıma çizgi</button>
-          <button data-operation="engrave_fill" class="${operation === "engrave_fill" ? "active" : ""}" ${hasVectorPaths && !canFillVectorEngrave ? "disabled" : ""}>Kazıma dolgu</button>
+          <button data-operation="engrave_fill" class="${operation === "engrave_fill" ? "active" : ""}" ${hasVectorPaths && !canFillVectorEngrave ? "disabled" : ""}>Dolgu Motif</button>
           <button data-operation="ignore" class="${operation === "ignore" ? "active" : ""}">Yok say</button>
         </div>
       </div>`;
@@ -8635,10 +9187,26 @@ function renderPatternPanel(pattern) {
 function renderVectorPathMultiPanel(entries) {
   const patternCount = new Set(entries.map((entry) => String(entry.pattern.id))).size;
   const lockedCount = entries.filter((entry) => entry.vectorPath.locked).length;
+  const fillableCount = entries.filter((entry) => vectorPathSupportsFill(entry.vectorPath)).length;
+  const operations = entries.map((entry) => vectorPathOperation(entry.vectorPath, entry.pattern));
+  const commonOperation = operations.every((operation) => operation === operations[0]) ? operations[0] : "";
   refs.selectionPanel.innerHTML = `
     <div class="property-title">
       <strong>Çoklu Kontur Seçimi</strong>
-      <span>${entries.length} kontur · ${patternCount} desen${lockedCount ? ` · ${lockedCount} kilitli` : ""}</span>
+      <span>${entries.length} kontur · ${patternCount} desen · ${fillableCount} kapalı${lockedCount ? ` · ${lockedCount} kilitli` : ""}</span>
+    </div>
+    <div class="operation-card vector-fill-operation-card">
+      <div>
+        <strong>Seçili bölgenin işlemi</strong>
+        <span>Dolgu Motif yalnız kapalı konturları tarayarak kazır. Harflerin iç boşlukları otomatik bulunur ve korunur.</span>
+      </div>
+      <div class="operation-toggle">
+        <button data-vector-selection-operation="cut" class="${commonOperation === "cut" ? "active danger-mode" : ""}">Kesim</button>
+        <button data-vector-selection-operation="engrave_line" class="${commonOperation === "engrave_line" ? "active" : ""}">Çizgi kazıma</button>
+        <button data-vector-selection-operation="engrave_fill" class="${commonOperation === "engrave_fill" ? "active" : ""}" ${fillableCount ? "" : "disabled"}>Dolgu Motif</button>
+        <button data-vector-selection-operation="ignore" class="${commonOperation === "ignore" ? "active" : ""}">Yok say</button>
+      </div>
+      ${vectorFillSettingsHtml(entries)}
     </div>
     <div class="operation-card vector-move-card">
       <div><strong>Grup konumu</strong><span>Dünya koordinatında mm hareket</span></div>
@@ -8657,6 +9225,9 @@ function renderVectorPathMultiPanel(entries) {
       <button id="panelDeleteVectorSelection" class="danger">Seçilenleri Sil</button>
     </div>
   `;
+  refs.selectionPanel.querySelectorAll("[data-vector-selection-operation]").forEach((button) => {
+    button.addEventListener("click", () => applySelectedVectorOperation(button.dataset.vectorSelectionOperation));
+  });
   refs.selectionPanel.querySelectorAll("[data-vector-multi-move]").forEach((button) => {
     button.addEventListener("click", () => {
       const [dx, dy] = button.dataset.vectorMultiMove.split(",").map(Number);
@@ -8735,10 +9306,11 @@ function renderVectorPathPanel(pattern, vectorPath) {
       </div>
       <div class="operation-toggle">
         <button data-vector-path-operation="cut" class="${operation === "cut" ? "active danger-mode" : ""}">Kesim</button>
-        <button data-vector-path-operation="engrave_line" class="${operation === "engrave_line" ? "active" : ""}">Yakma cizgi</button>
-        <button data-vector-path-operation="engrave_fill" class="${operation === "engrave_fill" ? "active" : ""}" ${canFill ? "" : "disabled"}>Yakma alan</button>
+        <button data-vector-path-operation="engrave_line" class="${operation === "engrave_line" ? "active" : ""}">Çizgi kazıma</button>
+        <button data-vector-path-operation="engrave_fill" class="${operation === "engrave_fill" ? "active" : ""}" ${canFill ? "" : "disabled"}>Dolgu Motif</button>
         <button data-vector-path-operation="ignore" class="${operation === "ignore" ? "active" : ""}">Yok say</button>
       </div>
+      ${vectorFillSettingsHtml([{ pattern, vectorPath }])}
     </div>
     ${microTabControl}
     <label class="checkline">
@@ -8818,21 +9390,7 @@ function renderVectorPathPanel(pattern, vectorPath) {
     </div>
   `;
   refs.selectionPanel.querySelectorAll("[data-vector-path-operation]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const nextOperation = normalizeOperation(button.dataset.vectorPathOperation, patternOperation(pattern));
-      if (nextOperation === "engrave_fill" && !canFill) {
-        setStatus("Alan yakma icin kapali kontur secin.");
-        return;
-      }
-      if (vectorPath.operation === nextOperation && !vectorPath.removed) return;
-      pushUndo("Kontur islemi");
-      vectorPath.operation = nextOperation;
-      vectorPath.removed = false;
-      vectorPath.operationManual = true;
-      vectorPath.regionOperation = "manual";
-      draw();
-      updateSelectionPanel();
-    });
+    button.addEventListener("click", () => applySelectedVectorOperation(button.dataset.vectorPathOperation));
   });
   document.getElementById("panelApplyVectorPathTabs")?.addEventListener("click", () => {
     const nextCount = Math.max(0, Math.round(Number(document.getElementById("vectorPathTabCount")?.value) || 0));
@@ -10094,6 +10652,7 @@ function renderStatusBars(analysis) {
       refs.smallBedWarning.classList.add("hidden");
     });
   }
+  renderWorkflowProgress(analysis);
 }
 
 function updateUiFromAnalysis(analysis, extra = "") {
@@ -11888,7 +12447,10 @@ function initRibbon() {
 function activateRibbonTab(name) {
   if (!name) return;
   document.querySelectorAll(".ribbon-tab").forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.tab === name);
+    const active = tab.dataset.tab === name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.tabIndex = active ? 0 : -1;
   });
   document.querySelectorAll(".ribbon-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.tab === name);
@@ -14794,10 +15356,20 @@ function applyAlignmentPreviewUpdate() {
 }
 
 function bindControls() {
+  document.addEventListener("keydown", (event) => {
+    if (!state.tour.active) return;
+    if (event.key === "Escape") finishProductTour({ skipped: true });
+    else if (event.key === "ArrowRight" || event.key === "Enter") nextProductTourStep();
+    else if (event.key === "ArrowLeft") previousProductTourStep();
+    else return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
   undoInputIds.forEach((id) => bindUndoBeforeEdit(refs[id], "Ayar degisikligi"));
   document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
     button.addEventListener("click", () => setWorkspaceMode(button.dataset.workspaceMode));
   });
+  refs.workflowContinueBtn?.addEventListener("click", advanceWorkflow);
   document.getElementById("addDxfBtn").addEventListener("click", addDxfs);
   document.getElementById("addImageBtn").addEventListener("click", addImage);
   // Ust bardaki "Foto→Vektör" artik ayar panelini acar (dogrudan tekrar
@@ -14805,6 +15377,7 @@ function bindControls() {
   document.getElementById("vectorizeBtn").addEventListener("click", openVectorPanel);
   document.getElementById("vectorizePhotoBtn").addEventListener("click", vectorizePhoto);
   document.getElementById("revectorizeBtn").addEventListener("click", revectorizeSelected);
+  document.getElementById("fillSelectedVectorBtn")?.addEventListener("click", () => applySelectedVectorOperation("engrave_fill"));
   document.getElementById("vectorAutoPresetBtn")?.addEventListener("click", applyAutoVectorPreset);
   refs.applyVectorModeBtn?.addEventListener("click", () => applyVectorProfessionalMode(true));
   refs.vecProfessionalMode?.addEventListener("change", () => {
@@ -14886,6 +15459,12 @@ function bindControls() {
   refs.preferencesForm?.addEventListener("submit", savePreferences);
   document.getElementById("helpBtn")?.addEventListener("click", openHelp);
   document.getElementById("hubHelpBtn")?.addEventListener("click", openHelp);
+  document.getElementById("productTourBtn")?.addEventListener("click", startProductTour);
+  document.getElementById("hubProductTourBtn")?.addEventListener("click", startProductTour);
+  document.getElementById("tourSkipBtn")?.addEventListener("click", () => finishProductTour({ skipped: true }));
+  document.getElementById("tourCloseBtn")?.addEventListener("click", () => finishProductTour({ skipped: true }));
+  refs.tourPreviousBtn?.addEventListener("click", previousProductTourStep);
+  refs.tourNextBtn?.addEventListener("click", nextProductTourStep);
   document.querySelectorAll("[data-help-close]").forEach((element) => element.addEventListener("click", closeHelp));
   document.getElementById("downloadDiagnosticsBtn")?.addEventListener("click", downloadDiagnostics);
   document.getElementById("helpHistoryBtn")?.addEventListener("click", () => {
@@ -15147,6 +15726,7 @@ function bindControls() {
       draw();
       saveUiSettings();
       renderMachinePanel();
+      renderWorkflowProgress();
     });
   });
 
@@ -15177,6 +15757,8 @@ function bindControls() {
   });
   canvas.addEventListener("wheel", onWheel, { passive: false });
   window.addEventListener("resize", resizeCanvas);
+  window.addEventListener("resize", updateProductTourPosition);
+  document.addEventListener("scroll", updateProductTourPosition, true);
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   window.addEventListener("hashchange", syncMachineTabFromHash);
@@ -15209,17 +15791,18 @@ if (window.ResizeObserver) {
 updateSelectionPanel();
 updateSummary();
 updateProjectChrome();
+renderWorkflowProgress();
 renderRecentProjects();
 renderMachinePanel();
 refreshMachinePorts({ silent: true });
 refreshMachineStatus(false, { silent: true });
 startMachinePolling();
 syncMachineTabFromHash();
-loadRecoveryCandidate().then(() => {
+loadRecoveryCandidate().then(async () => {
   if (!state.recovery.snapshot && state.preferences.reopenLastProject && !projectHasContent() && state.recentProjects[0]?.path) {
-    openProject({ path: state.recentProjects[0].path });
+    await openProject({ path: state.recentProjects[0].path });
   }
-});
+}).finally(scheduleAutomaticProductTour);
 window.addEventListener("beforeunload", (event) => {
   if (!state.project.dirty) return;
   event.preventDefault();

@@ -7169,10 +7169,10 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
                 **item,
                 "power": item.get("power", default_pattern_power),
                 "feed": item.get("feed", default_pattern_feed),
-                "cutPower": power,
-                "cutFeed": feed,
-                "engravePower": item.get("power", engrave_power),
-                "engraveFeed": item.get("feed", engrave_feed),
+                "cutPower": item.get("cutPower", power),
+                "cutFeed": item.get("cutFeed", feed),
+                "engravePower": item.get("engravePower", item.get("power", engrave_power)),
+                "engraveFeed": item.get("engraveFeed", item.get("feed", engrave_feed)),
                 "vectorEngraveMode": "fill" if operation == "engrave_fill" else "contour",
             }
             item_lines = build_embedded_vector_engrave_lines(

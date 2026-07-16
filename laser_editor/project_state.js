@@ -23,6 +23,7 @@
     showGrid: true,
     showTravelInPreview: false,
     prepareStrategy: "keep",
+    productTourVersion: 0,
   });
 
   function finiteNumber(value, fallback) {
@@ -167,6 +168,7 @@
       showGrid: value.showGrid !== false,
       showTravelInPreview: Boolean(value.showTravelInPreview),
       prepareStrategy: value.prepareStrategy === "auto" ? "auto" : "keep",
+      productTourVersion: clamp(Math.round(finiteNumber(value.productTourVersion, 0)), 0, 999),
     };
   }
 

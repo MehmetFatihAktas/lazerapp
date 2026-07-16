@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260716-bambu-workflow-v2" />
+    <link rel="stylesheet" href="/static/style.css?v=20260716-professional-tour-v3" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -30,28 +30,54 @@
           <button id="projectInfoBtn" title="Proje bilgisi ve kayıt durumu">Bilgi</button>
           <button id="productionHistoryBtn" title="Üretilen ve makineye gönderilen işleri göster">Geçmiş</button>
           <button id="notificationsBtn" class="notification-button" title="Uyarılar ve makine bildirimleri">Bildirimler<span id="notificationBadge" class="notification-badge hidden">0</span></button>
+          <button id="productTourBtn" class="tour-launch-button" title="Uygulama özelliklerinin tanıtımını başlat">Tanıtım</button>
           <button id="helpBtn" class="icon-title-button" title="Kısayollar ve tanılama" aria-label="Kısayollar ve tanılama">?</button>
           <button id="generateBtn" class="accent">G-code Oluştur</button>
         </div>
       </header>
 
       <nav class="workflow-tabs" aria-label="Çalışma aşaması">
-        <button class="workflow-tab active" data-workspace-mode="design">Tasarım</button>
-        <button class="workflow-tab" data-workspace-mode="prepare">Hazırla</button>
-        <button class="workflow-tab" data-workspace-mode="preview">Önizleme</button>
-        <button class="workflow-tab" data-workspace-mode="device">Cihaz</button>
+        <div class="workflow-stage-list">
+          <button class="workflow-tab active" data-workspace-mode="design" aria-current="step">
+            <span class="workflow-step-index">01</span>
+            <span class="workflow-step-copy"><strong>Tasarım</strong><small>İçerik ve geometri</small></span>
+            <span class="workflow-step-status" data-workflow-status="design">Başlangıç</span>
+          </button>
+          <span class="workflow-connector" aria-hidden="true"></span>
+          <button class="workflow-tab" data-workspace-mode="prepare">
+            <span class="workflow-step-index">02</span>
+            <span class="workflow-step-copy"><strong>Hazırla</strong><small>Yerleşim ve işlem</small></span>
+            <span class="workflow-step-status" data-workflow-status="prepare">Bekliyor</span>
+          </button>
+          <span class="workflow-connector" aria-hidden="true"></span>
+          <button class="workflow-tab" data-workspace-mode="preview">
+            <span class="workflow-step-index">03</span>
+            <span class="workflow-step-copy"><strong>Önizleme</strong><small>Yol ve süre kontrolü</small></span>
+            <span class="workflow-step-status" data-workflow-status="preview">Bekliyor</span>
+          </button>
+          <span class="workflow-connector" aria-hidden="true"></span>
+          <button class="workflow-tab" data-workspace-mode="device">
+            <span class="workflow-step-index">04</span>
+            <span class="workflow-step-copy"><strong>Cihaz</strong><small>Bağlantı ve üretim</small></span>
+            <span class="workflow-step-status" data-workflow-status="device">Bağlı değil</span>
+          </button>
+        </div>
+        <div class="workflow-forward" aria-live="polite">
+          <span><small>Sonraki adım</small><strong id="workflowNextTitle">Hazırla</strong></span>
+          <button id="workflowContinueBtn" class="primary">Devam</button>
+        </div>
       </nav>
 
       <!-- ===================== SERIT (RIBBON) ===================== -->
       <nav class="ribbon-tabs" role="tablist">
-        <button class="ribbon-tab active" data-tab="ekle" role="tab">Ekle</button>
-        <button class="ribbon-tab" data-tab="metin" role="tab">Metin &amp; Şekil</button>
-        <button class="ribbon-tab" data-tab="tabla" role="tab">Tabla &amp; Yerleşim</button>
-        <button class="ribbon-tab" data-tab="kesim" role="tab">Kesim &amp; Kazıma</button>
-        <button class="ribbon-tab" data-tab="vektor" role="tab">Vektör</button>
-        <button class="ribbon-tab" data-tab="gorsel" role="tab">Görsel</button>
-        <button class="ribbon-tab" data-tab="cizim" role="tab">Çizim</button>
-        <button class="ribbon-tab" data-tab="cikti" role="tab">Çıktı</button>
+        <button class="ribbon-tab active" data-tab="ekle" role="tab" aria-selected="true"><strong>Ekle</strong><small>Dosya ve kütüphane</small></button>
+        <button class="ribbon-tab" data-tab="metin" role="tab" aria-selected="false"><strong>Metin &amp; Şekil</strong><small>Vektör içerik</small></button>
+        <button class="ribbon-tab" data-tab="tabla" role="tab" aria-selected="false"><strong>Tabla &amp; Yerleşim</strong><small>Üretim alanı</small></button>
+        <button class="ribbon-tab" data-tab="kesim" role="tab" aria-selected="false"><strong>Kesim &amp; Kazıma</strong><small>İşlem parametreleri</small></button>
+        <button class="ribbon-tab" data-tab="vektor" role="tab" aria-selected="false"><strong>Vektör</strong><small>Kontur işleme</small></button>
+        <button class="ribbon-tab" data-tab="gorsel" role="tab" aria-selected="false"><strong>Görsel</strong><small>Raster düzenleme</small></button>
+        <button class="ribbon-tab" data-tab="cizim" role="tab" aria-selected="false"><strong>Çizim</strong><small>Serbest araçlar</small></button>
+        <button class="ribbon-tab" data-tab="cikti" role="tab" aria-selected="false"><strong>Çıktı</strong><small>Kontrol ve üretim</small></button>
       </nav>
 
       <div class="ribbon-body">
@@ -92,7 +118,7 @@
               <label class="rib-field">Aralık<span class="unit-input"><input id="textTracking" type="number" value="0" min="-2" step="0.2" /><b>mm</b></span></label>
               <label class="rib-field">Ağırlık<select id="textWeight"><option value="400">Normal</option><option value="600">Kalın</option><option value="700">Bold</option><option value="900">Siyah</option></select></label>
               <label class="rib-field">Stil<select id="textStyle"><option value="normal">Düz</option><option value="italic">İtalik</option></select></label>
-              <label class="rib-field">Çıktı<select id="textOperation"><option value="engrave_line">Yakma çizgi</option><option value="engrave_fill">Yakma alan</option><option value="cut">Kesim kontur</option></select></label>
+              <label class="rib-field">Çıktı<select id="textOperation"><option value="engrave_line">Çizgi kazıma</option><option value="engrave_fill">Dolgu Motif</option><option value="cut">Kesim kontur</option></select></label>
               <button id="addTextBtn" class="primary">Metni Ekle</button>
             </div>
             <div class="rib-row">
@@ -284,6 +310,7 @@
               <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>
               <button id="revectorizeBtn" title="Konturlar fareyle tarandıysa yalnız seçili alanı; desen seçiliyse tüm vektörü yeniden işler.">Seçili Vektörü Yeniden İşle</button>
               <button id="vectorAutoPresetBtn">Otomatik ayar</button>
+              <button id="fillSelectedVectorBtn" title="Seçili kapalı konturları taramalı dolgu kazımaya dönüştürür. Metin ve SVG vektörlerinde iç boşlukları korur.">Seçileni Dolgu Motif Yap</button>
               <button id="saveVectorSvgBtn">Seçili Vektörü SVG Kaydet</button>
             </div>
             <span class="ribbon-group-title">Eylemler</span>
@@ -565,6 +592,10 @@
             <div><h3>Yardım ve Tanılama</h3><p>Kısayollar, cihaz kabiliyetleri ve güvenli tanılama özeti.</p></div>
             <button id="hubHelpBtn">Yardımı Aç</button>
           </section>
+          <section class="project-section project-settings-row tour-project-row">
+            <div><h3>Uygulama Tanıtımı</h3><p>Tasarım, hazırlama, önizleme ve cihaz akışını adım adım keşfedin.</p></div>
+            <button id="hubProductTourBtn" class="primary">Tanıtımı Başlat</button>
+          </section>
         </div>
       </section>
 
@@ -801,6 +832,33 @@
         </div>
       </section>
 
+      <!-- Etkileşimli ürün tanıtımı -->
+      <section id="productTour" class="product-tour hidden" role="dialog" aria-modal="true" aria-labelledby="productTourTitle">
+        <div id="tourSpotlight" class="tour-spotlight" aria-hidden="true"></div>
+        <article id="tourCard" class="tour-card" data-placement="bottom">
+          <header class="tour-card-header">
+            <div>
+              <span id="tourCategory" class="tour-category">Başlangıç</span>
+              <span id="tourCounter" class="tour-counter">1 / 10</span>
+            </div>
+            <button id="tourCloseBtn" class="tour-close" type="button" aria-label="Tanıtımı kapat">×</button>
+          </header>
+          <div class="tour-progress-track" aria-hidden="true"><span id="tourProgressBar"></span></div>
+          <div class="tour-content">
+            <h3 id="productTourTitle">Lazer işini güvenli bir akışla yönetin</h3>
+            <p id="tourDescription"></p>
+            <ul id="tourFeatureList" class="tour-feature-list"></ul>
+          </div>
+          <footer class="tour-actions">
+            <button id="tourSkipBtn" type="button">Atla</button>
+            <div>
+              <button id="tourPreviousBtn" type="button">Geri</button>
+              <button id="tourNextBtn" type="button" class="primary">Sonraki</button>
+            </div>
+          </footer>
+        </article>
+      </section>
+
       <!-- Makine paneli icerigi (gizli; JS Makine sekmesine tasir) -->
       <div id="machinePanelHome" class="hidden" aria-hidden="true">
         <div id="machinePanelContent" class="machine-panel-content">
@@ -1019,8 +1077,9 @@
     <script src="/static/production_state.js?v=20260716-production-state-v1"></script>
     <script src="/static/calibration_grid.js?v=20260716-calibration-v1"></script>
     <script src="/static/selection_layout.js?v=20260716-selection-layout-v1"></script>
+    <script src="/static/product_tour.js?v=20260716-product-tour-v2"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
-    <script src="/static/vector_edit.js?v=20260715-local-revector-v1"></script>
-    <script src="/static/app.js?v=20260716-bambu-workflow-v5"></script>
+    <script src="/static/vector_edit.js?v=20260716-vector-fill-v2"></script>
+    <script src="/static/app.js?v=20260716-professional-tour-v3"></script>
   </body>
 </html>

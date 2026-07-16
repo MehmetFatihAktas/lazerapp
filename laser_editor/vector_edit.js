@@ -15,6 +15,110 @@
     return item?.pasteInPlace === true ? (count - 1) * safeStep : count * safeStep;
   }
 
+  function assignPathOperation(paths, operation) {
+    const nextOperation = ["cut", "engrave_line", "engrave_fill", "ignore"].includes(operation)
+      ? operation
+      : "engrave_line";
+    const result = { total: 0, changed: 0, skippedOpen: 0, operation: nextOperation };
+    for (const path of Array.isArray(paths) ? paths : []) {
+      if (!path || typeof path !== "object") continue;
+      result.total += 1;
+      const fillable = Boolean(path.closed) && Array.isArray(path.points) && path.points.length >= 3;
+      if (nextOperation === "engrave_fill" && !fillable) {
+        result.skippedOpen += 1;
+        continue;
+      }
+      if (path.operation === nextOperation && !path.removed && path.operationManual === true) continue;
+      path.operation = nextOperation;
+      path.removed = false;
+      path.operationManual = true;
+      path.regionOperation = "manual";
+      result.changed += 1;
+    }
+    return result;
+  }
+
+  function normalizedClosedPathPolygon(path) {
+    if (!path?.closed || !Array.isArray(path.points) || path.points.length < 3) return null;
+    const polygon = path.points
+      .map((point) => [Number(point?.[0]), Number(point?.[1])])
+      .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]));
+    if (polygon.length > 3 && pointDistance(polygon[0], polygon[polygon.length - 1]) <= 1e-8) polygon.pop();
+    return polygon.length >= 3 ? polygon : null;
+  }
+
+  function polygonAreaMagnitude2d(polygon) {
+    let area = 0;
+    for (let index = 0; index < polygon.length; index += 1) {
+      const current = polygon[index];
+      const next = polygon[(index + 1) % polygon.length];
+      area += current[0] * next[1] - next[0] * current[1];
+    }
+    return Math.abs(area / 2);
+  }
+
+  function polygonBounds2d(polygon) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const point of polygon) {
+      minX = Math.min(minX, point[0]);
+      minY = Math.min(minY, point[1]);
+      maxX = Math.max(maxX, point[0]);
+      maxY = Math.max(maxY, point[1]);
+    }
+    return { minX, minY, maxX, maxY };
+  }
+
+  function polygonContainsClosedPath(parent, candidate) {
+    const parentArea = polygonAreaMagnitude2d(parent);
+    const candidateArea = polygonAreaMagnitude2d(candidate);
+    if (candidateArea <= 1e-10 || parentArea <= candidateArea + 1e-10) return false;
+    const outer = polygonBounds2d(parent);
+    const inner = polygonBounds2d(candidate);
+    const epsilon = 1e-7;
+    if (
+      inner.minX < outer.minX - epsilon
+      || inner.minY < outer.minY - epsilon
+      || inner.maxX > outer.maxX + epsilon
+      || inner.maxY > outer.maxY + epsilon
+    ) {
+      return false;
+    }
+    const sampleStep = Math.max(1, Math.floor(candidate.length / 32));
+    for (let index = 0; index < candidate.length; index += sampleStep) {
+      if (!pointInPolygon2d(candidate[index], parent)) return false;
+    }
+    return true;
+  }
+
+  function expandNestedClosedPaths(allPaths, selectedPaths) {
+    const sourcePaths = Array.isArray(allPaths) ? allPaths.filter(Boolean) : [];
+    const selected = Array.isArray(selectedPaths) ? selectedPaths.filter(Boolean) : [];
+    const result = [];
+    const seen = new Set();
+    const add = (path) => {
+      if (seen.has(path)) return;
+      seen.add(path);
+      result.push(path);
+    };
+    selected.forEach(add);
+
+    const selectedPolygons = selected
+      .map((path) => ({ path, polygon: normalizedClosedPathPolygon(path) }))
+      .filter((entry) => entry.polygon);
+    if (!selectedPolygons.length) return result;
+
+    for (const path of sourcePaths) {
+      if (seen.has(path) || path.removed) continue;
+      const polygon = normalizedClosedPathPolygon(path);
+      if (!polygon) continue;
+      if (selectedPolygons.some((entry) => polygonContainsClosedPath(entry.polygon, polygon))) add(path);
+    }
+    return result;
+  }
+
   function projectPointToSegment(point, start, end) {
     const px = Number(point[0]);
     const py = Number(point[1]);
@@ -1837,6 +1941,7 @@
   }
 
   return {
+    assignPathOperation,
     appendOpenPathToVectorModel,
     anchorPointToVectorModel,
     affineFromComponents,
@@ -1844,6 +1949,7 @@
     affineVector,
     compileVectorObjects,
     edgeIdsInRect,
+    expandNestedClosedPaths,
     fitOpenPolyline,
     invertAffine,
     isUserSemanticVectorObject,

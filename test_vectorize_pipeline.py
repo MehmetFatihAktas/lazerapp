@@ -1160,6 +1160,20 @@ def test_vector_fill_scan_segments_support_inverted_fill():
     assert_true(any(abs(a[0] - 20) < 1e-6 and abs(b[0] - 30) < 1e-6 for a, b in inverted), "inverted fill should engrave after the hole")
 
 
+def test_vector_fill_scan_segments_preserve_text_counter_holes():
+    paths = [
+        {"points": [[0, 0], [30, 0], [30, 30], [0, 30]], "closed": True, "operation": "engrave_fill"},
+        {"points": [[10, 10], [20, 10], [20, 20], [10, 20]], "closed": True, "operation": "engrave_fill"},
+    ]
+
+    segments = core.vector_fill_scan_segments(paths, 30, 30, 5, fill_invert=False)
+    middle = [(start, end) for start, end in segments if abs(start[1] - 15) < 1e-6]
+
+    assert_true(any(abs(start[0] - 0) < 1e-6 and abs(end[0] - 10) < 1e-6 for start, end in middle), "fill should cover the left side of a letter counter")
+    assert_true(any(abs(start[0] - 20) < 1e-6 and abs(end[0] - 30) < 1e-6 for start, end in middle), "fill should cover the right side of a letter counter")
+    assert_true(not any(start[0] < 15 < end[0] for start, end in middle), "the inner counter of O/A/B-like text must remain unengraved")
+
+
 def test_potrace_vector_gcode_uses_fill_scanlines():
     item = {
         "path": "vector",
@@ -1708,6 +1722,53 @@ def test_generate_preserves_per_pattern_calibration_power_and_feed():
             and any(line.startswith("G1 ") and "F1500" in line for line in lines),
             "each calibration cell must preserve its own feed rate",
         )
+
+
+def test_generate_mixed_vector_uses_dedicated_fill_and_cut_settings():
+    with TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "mixed-fill.nc"
+        result = core.generate_from_state(
+            {
+                "parts": [],
+                "placements": [],
+                "patterns": [
+                    {
+                        "id": "mixed-text",
+                        "kind": "vector",
+                        "path": "embedded-mixed-text",
+                        "name": "Filled vector text",
+                        "x": 5,
+                        "y": 5,
+                        "width": 30,
+                        "height": 20,
+                        "sourceWidth": 30,
+                        "sourceHeight": 20,
+                        "rotation": 0,
+                        "operation": "cut",
+                        "power": 777,
+                        "feed": 999,
+                        "cutPower": 850,
+                        "cutFeed": 420,
+                        "engravePower": 230,
+                        "engraveFeed": 1600,
+                        "lineStep": 1,
+                        "vectorPaths": [
+                            {"id": "outer", "operation": "engrave_fill", "closed": True, "points": [[0, 0], [10, 0], [10, 10], [0, 10]]},
+                            {"id": "counter", "operation": "engrave_fill", "closed": True, "points": [[3, 3], [7, 3], [7, 7], [3, 7]]},
+                            {"id": "cut", "operation": "cut", "closed": True, "points": [[15, 0], [25, 0], [25, 10], [15, 10]]},
+                        ],
+                    }
+                ],
+                "settings": base_generation_settings(),
+                "outputPath": str(output_path),
+            }
+        )
+
+        lines = output_path.read_text(encoding="utf-8").splitlines()
+        assert_true(result["patternCount"] == 1, "the mixed vector should enter the job")
+        assert_true("S230" in lines and "S850" in lines, "fill and cut paths should keep their dedicated powers")
+        assert_true(any(line.startswith("G1 ") and "F1600" in line for line in lines), "filled text should use the engraving feed")
+        assert_true(any(line.startswith("G1 ") and "F420" in line for line in lines), "cut contours should use the cut feed")
 
 
 def test_generate_rejects_when_every_active_object_is_outside():
@@ -2803,6 +2864,7 @@ def main():
         test_svg_export_can_write_filled_compound_paths,
         test_svg_export_can_invert_filled_compound_paths,
         test_vector_fill_scan_segments_support_inverted_fill,
+        test_vector_fill_scan_segments_preserve_text_counter_holes,
         test_potrace_vector_gcode_uses_fill_scanlines,
         test_potrace_vector_engrave_defaults_to_contours,
         test_potrace_vector_cut_uses_contours_not_fill_scanlines,
@@ -2823,6 +2885,7 @@ def main():
         test_pattern_point_supports_mirroring,
         test_generate_excludes_active_placement_outside_bed,
         test_generate_preserves_per_pattern_calibration_power_and_feed,
+        test_generate_mixed_vector_uses_dedicated_fill_and_cut_settings,
         test_generate_rejects_when_every_active_object_is_outside,
         test_generate_excludes_pattern_bound_to_outside_placement,
         test_generate_validates_available_area_polygon,

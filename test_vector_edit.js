@@ -2,10 +2,12 @@
 
 const assert = require("node:assert/strict");
 const {
+  assignPathOperation,
   appendOpenPathToVectorModel,
   anchorPointToVectorModel,
   compileVectorObjects,
   edgeIdsInRect,
+  expandNestedClosedPaths,
   fitOpenPolyline,
   isUserSemanticVectorObject,
   migrateVectorPathsToModel,
@@ -26,6 +28,35 @@ const {
   widenPolylineRegion,
   widenVectorModelRegion,
 } = require("./laser_editor/vector_edit.js");
+
+function testSelectedClosedPathsBecomeFillWhileOpenPathsStayLines() {
+  const paths = [
+    { id: "outer", points: [[0, 0], [10, 0], [10, 10], [0, 10]], closed: true, operation: "engrave_line" },
+    { id: "hole", points: [[3, 3], [7, 3], [7, 7], [3, 7]], closed: true, operation: "engrave_line" },
+    { id: "baseline", points: [[0, 12], [10, 12]], closed: false, operation: "engrave_line" },
+  ];
+  const result = assignPathOperation(paths, "engrave_fill");
+  assert.deepEqual(result, { total: 3, changed: 2, skippedOpen: 1, operation: "engrave_fill" });
+  assert.equal(paths[0].operation, "engrave_fill");
+  assert.equal(paths[1].operation, "engrave_fill");
+  assert.equal(paths[2].operation, "engrave_line");
+  assert.equal(paths[0].operationManual, true);
+  assert.equal(paths[0].regionOperation, "manual");
+}
+
+function testSelectedOuterPathIncludesNestedTextCounters() {
+  const outer = { id: "letter-o", points: [[0, 0], [30, 0], [30, 30], [0, 30]], closed: true };
+  const counter = { id: "letter-o-counter", points: [[8, 8], [22, 8], [22, 22], [8, 22]], closed: true };
+  const nestedIsland = { id: "nested-island", points: [[12, 12], [18, 12], [18, 18], [12, 18]], closed: true };
+  const unrelated = { id: "other-letter", points: [[40, 0], [55, 0], [55, 20], [40, 20]], closed: true };
+  const overlapping = { id: "overlap", points: [[25, 10], [35, 10], [35, 20], [25, 20]], closed: true };
+  const openStroke = { id: "baseline", points: [[5, 5], [25, 5]], closed: false };
+  const paths = [outer, counter, nestedIsland, unrelated, overlapping, openStroke];
+
+  assert.deepEqual(expandNestedClosedPaths(paths, [outer]), [outer, counter, nestedIsland]);
+  assert.deepEqual(expandNestedClosedPaths(paths, [counter]), [counter, nestedIsland]);
+  assert.deepEqual(expandNestedClosedPaths(paths, [openStroke]), [openStroke]);
+}
 
 function testOpenPathRepairsOnlyMarkedArc() {
   const points = [[0, 0], [1, 0], [2, 0], [2.5, 1], [3, 0], [4, 0], [5, 0]];
@@ -581,4 +612,6 @@ testPinnedAndSharedJointPoliciesEnforceAnchors();
 testCanonicalSelectionTranslationSurvivesObjectTransform();
 testMaskedFragmentsTranslateThroughCanonicalEdge();
 testMovingOneSharedEdgeCreatesAValidDetachedNode();
-console.log("vector edit tests: 35 passed");
+testSelectedClosedPathsBecomeFillWhileOpenPathsStayLines();
+testSelectedOuterPathIncludesNestedTextCounters();
+console.log("vector edit tests: 37 passed");
