@@ -8,7 +8,9 @@ import base64
 import hashlib
 import math
 import mimetypes
+import os
 import platform
+import re
 import socket
 import sys
 import tempfile
@@ -22,6 +24,11 @@ from urllib.parse import unquote
 import laser_grbl
 import laser_editor_core as core
 from PIL import Image, ImageOps
+try:
+    from fontTools.ttLib import TTCollection, TTFont
+except ImportError:  # pragma: no cover - source installs include fontTools
+    TTCollection = None
+    TTFont = None
 
 
 ROOT = Path(__file__).resolve().parent
@@ -36,7 +43,272 @@ CLIENTS: dict[str, float] = {}
 CLIENT_EVER_CONNECTED = False
 NO_CLIENTS_SINCE: float | None = None
 DIALOG_LOCK = threading.Lock()
+SYSTEM_FONT_LOCK = threading.Lock()
+SYSTEM_FONT_CACHE: dict | None = None
 APP_VERSION = "2026.07.16"
+
+
+FONT_SUFFIXES = {".ttf", ".otf", ".ttc", ".otc"}
+FONT_EXCLUDE_TOKENS = (
+    "symbol",
+    "wingdings",
+    "webdings",
+    "marlett",
+    "mdl2",
+    "fluent icons",
+    "hololens",
+)
+FONT_THICK_TOKENS = (
+    "black",
+    "heavy",
+    "bold",
+    "impact",
+    "poster",
+    "fat",
+    "cooper",
+    "broadway",
+    "bauhaus",
+    "britannic",
+    "showcard",
+    "stencil",
+)
+FONT_HANDWRITING_TOKENS = (
+    "script",
+    "hand",
+    "brush",
+    "calligraphy",
+    "chancery",
+    "corsiva",
+    "mistral",
+    "pristina",
+    "viner",
+    "vladimir",
+    "vivaldi",
+    "blackadder",
+    "edwardian",
+    "kristen",
+    "ravie",
+)
+FONT_DECORATIVE_TOKENS = (
+    "algerian",
+    "broadway",
+    "castellar",
+    "chiller",
+    "curlz",
+    "elephant",
+    "forte",
+    "gigi",
+    "harrington",
+    "jokerman",
+    "magneto",
+    "old english",
+    "onyx",
+    "papyrus",
+    "playbill",
+    "ravie",
+    "showcard",
+    "snap itc",
+    "stencil",
+)
+
+
+def _font_directories() -> list[Path]:
+    candidates: list[Path] = []
+    if sys.platform.startswith("win"):
+        windows_root = Path(os.environ.get("WINDIR") or "C:/Windows")
+        candidates.append(windows_root / "Fonts")
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "Microsoft" / "Windows" / "Fonts")
+    elif sys.platform == "darwin":
+        candidates.extend([Path("/System/Library/Fonts"), Path("/Library/Fonts"), Path.home() / "Library" / "Fonts"])
+    else:
+        candidates.extend([Path("/usr/share/fonts"), Path("/usr/local/share/fonts"), Path.home() / ".fonts"])
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        resolved = str(path).casefold()
+        if path.is_dir() and resolved not in seen:
+            seen.add(resolved)
+            result.append(path)
+    return result
+
+
+def _font_name(font, name_ids: tuple[int, ...]) -> str:
+    if "name" not in font:
+        return ""
+    records = font["name"].names
+    for name_id in name_ids:
+        values: list[tuple[int, str]] = []
+        for record in records:
+            if record.nameID != name_id:
+                continue
+            try:
+                value = re.sub(r"\s+", " ", record.toUnicode()).strip()
+            except Exception:
+                continue
+            if not value:
+                continue
+            language_priority = 0 if record.langID in {0x409, 0x41F} else 1
+            values.append((language_priority, value))
+        if values:
+            values.sort(key=lambda item: (item[0], len(item[1]), item[1].casefold()))
+            return values[0][1]
+    return ""
+
+
+def _font_category(family: str, font) -> str:
+    lowered = family.casefold()
+    if any(token in lowered for token in FONT_HANDWRITING_TOKENS):
+        return "handwriting"
+    if any(token in lowered for token in FONT_DECORATIVE_TOKENS):
+        return "decorative"
+    if "post" in font and bool(getattr(font["post"], "isFixedPitch", 0)):
+        return "monospace"
+    if "OS/2" in font:
+        panose = getattr(font["OS/2"], "panose", None)
+        family_type = int(getattr(panose, "bFamilyType", 0) or 0)
+        serif_style = int(getattr(panose, "bSerifStyle", 0) or 0)
+        proportion = int(getattr(panose, "bProportion", 0) or 0)
+        if proportion == 9:
+            return "monospace"
+        if family_type == 3:
+            return "handwriting"
+        if family_type == 4:
+            return "decorative"
+        if family_type == 2:
+            return "sans" if serif_style >= 11 else "serif"
+    return "other"
+
+
+def _font_face_record(font) -> dict | None:
+    family = _font_name(font, (16, 1))
+    if not family or family.startswith("@"):
+        return None
+    lowered = family.casefold()
+    if any(token in lowered for token in FONT_EXCLUDE_TOKENS):
+        return None
+    try:
+        cmap = font.getBestCmap() or {}
+    except Exception:
+        cmap = {}
+    if ord("A") not in cmap and ord("a") not in cmap:
+        return None
+    subfamily = _font_name(font, (17, 2)) or "Regular"
+    weight = 400
+    italic = "italic" in subfamily.casefold() or "oblique" in subfamily.casefold()
+    if "OS/2" in font:
+        os2 = font["OS/2"]
+        weight = max(100, min(1000, int(getattr(os2, "usWeightClass", 400) or 400)))
+        italic = italic or bool(int(getattr(os2, "fsSelection", 0) or 0) & 0x01)
+    supports_turkish = all(ord(char) in cmap for char in "ÇĞİÖŞÜçğıöşü")
+    return {
+        "family": family,
+        "subfamily": subfamily,
+        "weight": weight,
+        "italic": italic,
+        "category": _font_category(family, font),
+        "supportsTurkish": supports_turkish,
+    }
+
+
+def build_system_font_catalog(face_records: list[dict]) -> list[dict]:
+    families: dict[str, dict] = {}
+    category_priority = {"other": 0, "sans": 1, "serif": 1, "monospace": 2, "decorative": 3, "handwriting": 4}
+    for record in face_records:
+        family = re.sub(r"\s+", " ", str(record.get("family") or "")).strip()
+        if not family:
+            continue
+        key = family.casefold()
+        entry = families.setdefault(
+            key,
+            {
+                "family": family,
+                "weights": set(),
+                "styles": set(),
+                "category": "other",
+                "supportsTurkish": False,
+            },
+        )
+        entry["weights"].add(max(100, min(1000, int(record.get("weight") or 400))))
+        entry["styles"].add("italic" if record.get("italic") else "normal")
+        category = str(record.get("category") or "other")
+        if category_priority.get(category, 0) > category_priority.get(entry["category"], 0):
+            entry["category"] = category
+        entry["supportsTurkish"] = bool(entry["supportsTurkish"] or record.get("supportsTurkish"))
+    result: list[dict] = []
+    for entry in families.values():
+        family = entry["family"]
+        weights = sorted(entry["weights"])
+        lowered = family.casefold()
+        result.append(
+            {
+                "id": f"system-{hashlib.sha1(lowered.encode('utf-8')).hexdigest()[:12]}",
+                "family": family,
+                "weights": weights,
+                "styles": sorted(entry["styles"]),
+                "category": entry["category"],
+                "supportsTurkish": bool(entry["supportsTurkish"]),
+                "thickSuitable": max(weights, default=400) >= 700 or any(token in lowered for token in FONT_THICK_TOKENS),
+            }
+        )
+    return sorted(result, key=lambda item: item["family"].casefold())
+
+
+def system_font_catalog(force: bool = False) -> dict:
+    global SYSTEM_FONT_CACHE
+    with SYSTEM_FONT_LOCK:
+        if SYSTEM_FONT_CACHE is not None and not force:
+            return SYSTEM_FONT_CACHE
+        started = time.perf_counter()
+        records: list[dict] = []
+        scanned_files = 0
+        failed_files = 0
+        if TTFont is not None and TTCollection is not None:
+            seen_files: set[str] = set()
+            for directory in _font_directories():
+                for path in directory.rglob("*"):
+                    if not path.is_file() or path.suffix.casefold() not in FONT_SUFFIXES:
+                        continue
+                    path_key = str(path.resolve()).casefold()
+                    if path_key in seen_files:
+                        continue
+                    seen_files.add(path_key)
+                    scanned_files += 1
+                    collection = None
+                    fonts = []
+                    try:
+                        if path.suffix.casefold() in {".ttc", ".otc"}:
+                            collection = TTCollection(str(path), lazy=True)
+                            fonts = collection.fonts
+                        else:
+                            fonts = [TTFont(str(path), lazy=True)]
+                        for font in fonts:
+                            record = _font_face_record(font)
+                            if record:
+                                records.append(record)
+                    except Exception:
+                        failed_files += 1
+                    finally:
+                        for font in fonts:
+                            try:
+                                font.close()
+                            except Exception:
+                                pass
+                        if collection is not None:
+                            try:
+                                collection.close()
+                            except Exception:
+                                pass
+        fonts = build_system_font_catalog(records)
+        SYSTEM_FONT_CACHE = {
+            "fonts": fonts,
+            "count": len(fonts),
+            "scannedFiles": scanned_files,
+            "failedFiles": failed_files,
+            "durationMs": round((time.perf_counter() - started) * 1000),
+        }
+        return SYSTEM_FONT_CACHE
 
 
 def device_capabilities() -> dict:
@@ -505,6 +777,9 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/diagnostics":
             self._json({"ok": True, "diagnostics": diagnostics_snapshot()})
+            return
+        if self.path == "/api/system-fonts":
+            self._json({"ok": True, **system_font_catalog()})
             return
         if self.path.startswith("/static/"):
             relative = unquote(self.path[len("/static/") :].split("?", 1)[0])

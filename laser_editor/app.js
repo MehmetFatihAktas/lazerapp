@@ -130,6 +130,9 @@ const refs = {
   textFontButtonLabel: document.getElementById("textFontButtonLabel"),
   textFontMenu: document.getElementById("textFontMenu"),
   textFontSearch: document.getElementById("textFontSearch"),
+  textFontFilters: document.getElementById("textFontFilters"),
+  textFontCount: document.getElementById("textFontCount"),
+  textFontLoading: document.getElementById("textFontLoading"),
   textFontOptions: document.getElementById("textFontOptions"),
   textFontEmpty: document.getElementById("textFontEmpty"),
   textFontUpload: document.getElementById("textFontUpload"),
@@ -300,6 +303,9 @@ const state = {
   patterns: [],
   images: new Map(),
   customFonts: [],
+  systemFonts: [],
+  textFontFilter: "all",
+  systemFontsLoaded: false,
   selected: null,
   selectedItems: [],
   selectedVectorPaths: [],
@@ -944,10 +950,66 @@ function textFontValue(font) {
   return font.custom ? customFontValue(font) : font.id;
 }
 
+function inferredFontCategory(font) {
+  if (font?.category) return font.category;
+  if (font?.kind === "single") return "monospace";
+  const value = `${font?.id || ""} ${font?.name || font?.label || ""}`.toLocaleLowerCase("tr-TR");
+  if (/(script|hand|brush|calligraphy|corsiva|mistral|lucida)/.test(value)) return "handwriting";
+  if (/(alger|broadway|decor|stencil|papyrus|comic)/.test(value)) return "decorative";
+  if (/(times|georgia|garamond|cambria|baskerville|book antiqua)/.test(value)) return "serif";
+  if (/(consolas|courier|mono|code)/.test(value)) return "monospace";
+  return "sans";
+}
+
+function fontIsThickSuitable(font) {
+  if (typeof font?.thickSuitable === "boolean") return font.thickSuitable;
+  if ((font?.weights || []).some((weight) => Number(weight) >= 700)) return true;
+  const value = `${font?.id || ""} ${font?.name || font?.label || ""}`.toLocaleLowerCase("tr-TR");
+  return /(black|heavy|bold|impact|poster|fat|cooper|broadway|bauhaus)/.test(value);
+}
+
+function cssQuotedFontFamily(family) {
+  const escaped = String(family || "Arial").replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  return `"${escaped}", Arial, sans-serif`;
+}
+
+function systemFontDefinitions() {
+  const curatedNames = new Set(
+    TEXT_FONT_PRESETS
+      .filter((font) => font.kind !== "single")
+      .map((font) => String(font.name || font.label || "").toLocaleLowerCase("tr-TR")),
+  );
+  return (state.systemFonts || [])
+    .filter((font) => !curatedNames.has(String(font.family || "").toLocaleLowerCase("tr-TR")))
+    .map((font) => ({
+      ...font,
+      name: font.family,
+      label: font.family,
+      family: cssQuotedFontFamily(font.family),
+      kind: "outline",
+      system: true,
+    }));
+}
+
+function curatedFontDefinitions() {
+  const systemByName = new Map(
+    (state.systemFonts || []).map((font) => [String(font.family || "").toLocaleLowerCase("tr-TR"), font]),
+  );
+  return TEXT_FONT_PRESETS.map((font) => {
+    const system = systemByName.get(String(font.name || font.label || "").toLocaleLowerCase("tr-TR"));
+    return system ? { ...font, ...system, id: font.id, family: font.family, label: font.label } : font;
+  });
+}
+
+function customFontDefinitions() {
+  return state.customFonts.map((font) => ({ ...font, kind: "outline", custom: true, category: "other" }));
+}
+
 function textFontDefinitions() {
   return [
-    ...TEXT_FONT_PRESETS,
-    ...state.customFonts.map((font) => ({ ...font, kind: "outline", custom: true })),
+    ...curatedFontDefinitions(),
+    ...systemFontDefinitions(),
+    ...customFontDefinitions(),
   ];
 }
 
@@ -958,7 +1020,7 @@ function textFontDefinitionByValue(value) {
     const font = state.customFonts.find((item) => item.id === id);
     if (font) return { ...font, kind: "outline", custom: true, value: normalized };
   }
-  return TEXT_FONT_PRESETS.find((item) => item.id === normalized) || TEXT_FONT_PRESETS[0];
+  return textFontDefinitions().find((item) => textFontValue(item) === normalized) || curatedFontDefinitions()[0];
 }
 
 function selectedTextFontDefinition() {
@@ -1069,14 +1131,14 @@ function clearTextFontPreview() {
 function positionTextFontMenu() {
   if (!refs.textFontMenu || !refs.textFontButton || refs.textFontMenu.classList.contains("hidden")) return;
   const rect = refs.textFontButton.getBoundingClientRect();
-  const width = Math.min(Math.max(300, rect.width), Math.max(240, window.innerWidth - 16));
+  const width = Math.min(Math.max(420, rect.width), Math.max(280, window.innerWidth - 16));
   refs.textFontMenu.style.width = `${width}px`;
   const downSpace = window.innerHeight - rect.bottom - 8;
   const upSpace = rect.top - 8;
   const openDown = downSpace >= Math.min(300, upSpace);
   const available = Math.max(150, openDown ? downSpace : upSpace);
-  refs.textFontMenu.style.maxHeight = `${Math.min(470, available)}px`;
-  const measuredHeight = Math.min(refs.textFontMenu.scrollHeight, Math.min(470, available));
+  refs.textFontMenu.style.maxHeight = `${Math.min(560, available)}px`;
+  const measuredHeight = Math.min(refs.textFontMenu.scrollHeight, Math.min(560, available));
   const top = openDown ? rect.bottom + 4 : Math.max(8, rect.top - measuredHeight - 4);
   const left = clamp(rect.left, 8, Math.max(8, window.innerWidth - width - 8));
   refs.textFontMenu.style.left = `${left}px`;
@@ -1089,11 +1151,16 @@ function textFontMenuIsOpen() {
 
 function filterTextFontOptions(query = "") {
   const normalized = String(query).trim().toLocaleLowerCase("tr-TR");
+  const activeFilter = state.textFontFilter || "all";
   let visibleCount = 0;
   refs.textFontOptions?.querySelectorAll(".font-option-section").forEach((section) => {
     let sectionCount = 0;
     section.querySelectorAll("[data-font-value]").forEach((button) => {
-      const visible = !normalized || String(button.dataset.fontName || "").toLocaleLowerCase("tr-TR").includes(normalized);
+      const matchesQuery = !normalized || String(button.dataset.fontName || "").toLocaleLowerCase("tr-TR").includes(normalized);
+      const matchesFilter = activeFilter === "all"
+        || (activeFilter === "thick" && button.dataset.fontThick === "true")
+        || button.dataset.fontCategory === activeFilter;
+      const visible = matchesQuery && matchesFilter;
       button.classList.toggle("hidden", !visible);
       if (visible) {
         visibleCount += 1;
@@ -1103,6 +1170,12 @@ function filterTextFontOptions(query = "") {
     section.classList.toggle("hidden", sectionCount === 0);
   });
   refs.textFontEmpty?.classList.toggle("hidden", visibleCount > 0);
+  if (refs.textFontCount) refs.textFontCount.textContent = `${visibleCount.toLocaleString("tr-TR")} font`;
+  refs.textFontFilters?.querySelectorAll("[data-font-filter]").forEach((button) => {
+    const active = button.dataset.fontFilter === activeFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
   return visibleCount;
 }
 
@@ -1164,21 +1237,43 @@ function appendTextFontGroup(label, fonts) {
   section.appendChild(heading);
   fonts.forEach((font) => {
     const value = textFontValue(font);
+    const category = inferredFontCategory(font);
+    const thickSuitable = fontIsThickSuitable(font);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "font-option";
     button.dataset.fontValue = value;
     button.dataset.fontName = font.name || font.label;
+    button.dataset.fontCategory = category;
+    button.dataset.fontThick = thickSuitable ? "true" : "false";
+    button.dataset.fontTurkish = font.supportsTurkish ? "true" : "false";
     button.setAttribute("role", "option");
+    const labelWrap = document.createElement("span");
+    labelWrap.className = "font-option-label";
     const name = document.createElement("span");
     name.className = "font-option-name";
     name.textContent = font.name || font.label;
     name.style.fontFamily = textFontCssFamily(font);
+    const badges = document.createElement("span");
+    badges.className = "font-option-badges";
+    if (thickSuitable) {
+      const badge = document.createElement("b");
+      badge.className = "is-thick";
+      badge.textContent = "Kalın";
+      badges.appendChild(badge);
+    }
+    if (font.supportsTurkish) {
+      const badge = document.createElement("b");
+      badge.className = "is-tr";
+      badge.textContent = "TR";
+      badges.appendChild(badge);
+    }
+    labelWrap.append(name, badges);
     const sample = document.createElement("span");
     sample.className = "font-option-sample";
-    sample.textContent = "Aa 123";
+    sample.textContent = "Aa Çğ 123";
     sample.style.fontFamily = textFontCssFamily(font);
-    button.append(name, sample);
+    button.append(labelWrap, sample);
     button.addEventListener("pointerenter", () => previewSelectedTextFont(value));
     button.addEventListener("focus", () => previewSelectedTextFont(value));
     button.addEventListener("click", () => chooseTextFont(value));
@@ -1213,13 +1308,66 @@ function renderTextFontOptions(selectedValue = "") {
     select.appendChild(group);
     appendTextFontGroup(label, fonts);
   };
-  appendGroup("Lazer fontu", TEXT_FONT_PRESETS.filter((font) => font.kind === "single"));
-  appendGroup("Sistem fontları", TEXT_FONT_PRESETS.filter((font) => font.kind !== "single"));
-  appendGroup("Yüklenen fontlar", state.customFonts.map((font) => ({ ...font, kind: "outline", custom: true })));
+  const curatedFonts = curatedFontDefinitions();
+  appendGroup("Lazer fontu", curatedFonts.filter((font) => font.kind === "single"));
+  appendGroup("Öne çıkan fontlar", curatedFonts.filter((font) => font.kind !== "single"));
+  const systemGroups = [
+    ["El yazısı", "handwriting"],
+    ["Dekoratif", "decorative"],
+    ["Sans serif", "sans"],
+    ["Serif", "serif"],
+    ["Monospace", "monospace"],
+    ["Diğer sistem fontları", "other"],
+  ];
+  const systemFonts = systemFontDefinitions();
+  for (const [label, category] of systemGroups) {
+    appendGroup(label, systemFonts.filter((font) => inferredFontCategory(font) === category));
+  }
+  appendGroup("Yüklenen fontlar", customFontDefinitions());
   const values = Array.from(select.options).map((option) => option.value);
   select.value = values.includes(selected) ? selected : "laser-single";
   updateTextFontSelectionUi(select.value);
   updateTextFontHint();
+  filterTextFontOptions(refs.textFontSearch?.value || "");
+}
+
+async function loadSystemFonts(preferredValue = "") {
+  if (refs.textFontLoading) {
+    refs.textFontLoading.classList.remove("hidden");
+    refs.textFontLoading.textContent = "Bilgisayardaki fontlar taranıyor…";
+  }
+  try {
+    const response = await fetch("/api/system-fonts");
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || "Sistem fontları okunamadı.");
+    state.systemFonts = (data.fonts || [])
+      .filter((font) => font?.id && font?.family)
+      .map((font) => ({
+        id: String(font.id),
+        family: String(font.family),
+        weights: Array.isArray(font.weights) ? font.weights.map(Number).filter(Number.isFinite) : [],
+        styles: Array.isArray(font.styles) ? font.styles.map(String) : [],
+        category: ["handwriting", "decorative", "sans", "serif", "monospace", "other"].includes(font.category)
+          ? font.category
+          : "other",
+        supportsTurkish: Boolean(font.supportsTurkish),
+        thickSuitable: Boolean(font.thickSuitable),
+      }));
+    state.systemFontsLoaded = true;
+    const activeText = editableTextPattern();
+    const selected = activeText ? textFontValueForPattern(activeText) : preferredValue || refs.textFont?.value;
+    renderTextFontOptions(selected || "laser-single");
+    if (refs.textFontLoading) {
+      refs.textFontLoading.textContent = `${state.systemFonts.length.toLocaleString("tr-TR")} sistem fontu hazır.`;
+      window.setTimeout(() => refs.textFontLoading?.classList.add("hidden"), 1400);
+    }
+    if (textFontMenuIsOpen()) positionTextFontMenu();
+    return state.systemFonts;
+  } catch (error) {
+    state.systemFontsLoaded = true;
+    if (refs.textFontLoading) refs.textFontLoading.textContent = "Sistem fontları okunamadı; font dosyası yüklemeyi kullanabilirsiniz.";
+    return [];
+  }
 }
 
 function updateTextFontHint() {
@@ -2249,8 +2397,10 @@ async function discardRecoveryProject() {
 }
 
 function loadUiSettings() {
+  let saved = {};
   try {
-    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    saved = parsed && typeof parsed === "object" ? parsed : {};
     for (const id of persistedInputIds) {
       const input = refs[id];
       if (!input || saved[id] === undefined) continue;
@@ -2271,6 +2421,7 @@ function loadUiSettings() {
   }
   enforceAirAssistDefaults();
   syncVectorProfessionalModeUi();
+  return saved;
 }
 
 function saveUiSettings() {
@@ -15826,6 +15977,13 @@ function bindControls() {
     else openTextFontMenu();
   });
   refs.textFontSearch?.addEventListener("input", () => filterTextFontOptions(refs.textFontSearch.value));
+  refs.textFontFilters?.querySelectorAll("[data-font-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.textFontFilter = button.dataset.fontFilter || "all";
+      filterTextFontOptions(refs.textFontSearch?.value || "");
+      refs.textFontOptions?.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  });
   refs.textFontSearch?.addEventListener("keydown", (event) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -16020,8 +16178,10 @@ applyPreferencesToUi(false);
 loadActivityState();
 installClientErrorBoundary();
 renderTextFontOptions();
-loadUiSettings();
-renderTextFontOptions(refs.textFont?.value || "laser-single");
+const savedUiSettings = loadUiSettings();
+const preferredStartupFont = savedUiSettings.textFont || refs.textFont?.value || "laser-single";
+renderTextFontOptions(preferredStartupFont);
+void loadSystemFonts(preferredStartupFont);
 state.layout.appliedSettings = layoutSettingsSnapshot();
 syncLaserButtons();
 startClientLifecycleTracking();

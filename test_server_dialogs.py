@@ -148,6 +148,24 @@ def test_diagnostics_excludes_project_and_gcode_content():
     }
 
 
+def test_system_font_catalog_groups_faces_and_marks_thick_families():
+    fonts = server.build_system_font_catalog(
+        [
+            {"family": "Demo Sans", "weight": 400, "italic": False, "category": "sans", "supportsTurkish": True},
+            {"family": "Demo Sans", "weight": 700, "italic": True, "category": "sans", "supportsTurkish": True},
+            {"family": "Brush Demo", "weight": 400, "italic": False, "category": "handwriting", "supportsTurkish": False},
+        ]
+    )
+
+    assert [font["family"] for font in fonts] == ["Brush Demo", "Demo Sans"]
+    demo = next(font for font in fonts if font["family"] == "Demo Sans")
+    assert demo["weights"] == [400, 700]
+    assert demo["styles"] == ["italic", "normal"]
+    assert demo["supportsTurkish"] is True
+    assert demo["thickSuitable"] is True
+    assert demo["id"].startswith("system-")
+
+
 def main():
     tests = [
         test_dialog_lock_rejects_instead_of_queueing,
@@ -159,6 +177,7 @@ def main():
         test_gcode_info_contains_stable_file_identity_and_safety,
         test_atomic_write_replaces_complete_project_file,
         test_diagnostics_excludes_project_and_gcode_content,
+        test_system_font_catalog_groups_faces_and_marks_thick_families,
     ]
     for test in tests:
         test()

@@ -2761,9 +2761,9 @@ details > .wide-action {
 .font-menu {
   position: fixed;
   z-index: 1400;
-  width: 300px;
+  width: 420px;
   max-width: calc(100vw - 16px);
-  max-height: min(470px, calc(100vh - 16px));
+  max-height: min(560px, calc(100vh - 16px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2773,14 +2773,55 @@ details > .wide-action {
   box-shadow: 0 14px 36px rgba(15, 23, 42, 0.2);
 }
 .font-menu-search {
+  display: grid;
+  gap: 7px;
   flex: none;
   padding: 8px;
   border-bottom: 1px solid var(--border);
   background: var(--panel-soft);
 }
+.font-search-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
 .font-menu-search input {
   width: 100%;
   height: 32px;
+}
+.font-search-line output {
+  min-width: 58px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-align: right;
+  white-space: nowrap;
+}
+.font-filter-segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.font-filter-segmented button {
+  min-height: 26px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.font-filter-segmented button.active {
+  border-color: var(--selection);
+  background: color-mix(in srgb, var(--selection) 12%, var(--panel));
+  color: var(--selection);
+}
+.font-menu-loading {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--info-bg);
+  color: var(--text-muted);
+  font-size: 11px;
 }
 .font-menu-options {
   min-height: 0;
@@ -2841,6 +2882,35 @@ details > .wide-action {
   letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.font-option-label {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.font-option-badges {
+  display: flex;
+  gap: 4px;
+  min-height: 14px;
+}
+.font-option-badges b {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-soft);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+.font-option-badges b.is-thick {
+  border-color: color-mix(in srgb, var(--success) 36%, var(--border));
+  color: var(--success);
+}
+.font-option-badges b.is-tr {
+  border-color: color-mix(in srgb, var(--selection) 32%, var(--border));
+  color: var(--selection);
 }
 .font-option-sample {
   padding-right: 8px;

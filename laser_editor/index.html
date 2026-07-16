@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260716-thick-text-v1" />
+    <link rel="stylesheet" href="/static/style.css?v=20260716-system-fonts-v1" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -1065,8 +1065,21 @@
 
       <div id="textFontMenu" class="font-menu hidden" role="listbox" aria-label="Yazı tipi seçimi">
         <div class="font-menu-search">
-          <input id="textFontSearch" type="search" placeholder="Font ara" autocomplete="off" aria-label="Font ara" />
+          <div class="font-search-line">
+            <input id="textFontSearch" type="search" placeholder="Font ara" autocomplete="off" aria-label="Font ara" />
+            <output id="textFontCount">0 font</output>
+          </div>
+          <div id="textFontFilters" class="font-filter-segmented" role="toolbar" aria-label="Font kategorisi">
+            <button type="button" data-font-filter="all" class="active" aria-pressed="true">Tümü</button>
+            <button type="button" data-font-filter="thick" aria-pressed="false">Kalın</button>
+            <button type="button" data-font-filter="handwriting" aria-pressed="false">El yazısı</button>
+            <button type="button" data-font-filter="decorative" aria-pressed="false">Dekoratif</button>
+            <button type="button" data-font-filter="sans" aria-pressed="false">Sans</button>
+            <button type="button" data-font-filter="serif" aria-pressed="false">Serif</button>
+            <button type="button" data-font-filter="monospace" aria-pressed="false">Mono</button>
+          </div>
         </div>
+        <div id="textFontLoading" class="font-menu-loading">Bilgisayardaki fontlar taranıyor…</div>
         <div id="textFontOptions" class="font-menu-options"></div>
         <div id="textFontEmpty" class="font-menu-empty hidden">Eşleşen font yok</div>
       </div>
@@ -1081,6 +1094,6 @@
     <script src="/static/product_tour.js?v=20260716-product-tour-v2"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
     <script src="/static/vector_edit.js?v=20260716-thick-text-v1"></script>
-    <script src="/static/app.js?v=20260716-thick-text-v1"></script>
+    <script src="/static/app.js?v=20260716-system-fonts-v1"></script>
   </body>
 </html>
