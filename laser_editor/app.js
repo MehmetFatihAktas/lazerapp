@@ -510,7 +510,9 @@ const TEXT_FONT_PRESETS = [
   { id: "brush", label: "Brush Script MT", kind: "outline", family: "'Brush Script MT', cursive" },
   { id: "lucida", label: "Lucida Handwriting", kind: "outline", family: "'Lucida Handwriting', cursive" },
 ];
+const DEFAULT_TEXT_FONT_VALUE = "arial-black";
 const TEXT_FILL_LINE_STEP_MM = 0.12;
+const TEXT_SETTINGS_VERSION = 2;
 
 function updateJobAnalysisNow(extra = "") {
   if (jobAnalysisTimer) {
@@ -1016,17 +1018,31 @@ function textFontDefinitions() {
 }
 
 function textFontDefinitionByValue(value) {
-  const normalized = value || "laser-single";
+  const normalized = value || DEFAULT_TEXT_FONT_VALUE;
   if (normalized.startsWith("custom:")) {
     const id = normalized.slice("custom:".length);
     const font = state.customFonts.find((item) => item.id === id);
     if (font) return { ...font, kind: "outline", custom: true, value: normalized };
   }
-  return textFontDefinitions().find((item) => textFontValue(item) === normalized) || curatedFontDefinitions()[0];
+  const definitions = textFontDefinitions();
+  return definitions.find((item) => textFontValue(item) === normalized)
+    || definitions.find((item) => textFontValue(item) === DEFAULT_TEXT_FONT_VALUE)
+    || curatedFontDefinitions()[0];
 }
 
 function selectedTextFontDefinition() {
-  return textFontDefinitionByValue(refs.textFont?.value || "laser-single");
+  return textFontDefinitionByValue(refs.textFont?.value || DEFAULT_TEXT_FONT_VALUE);
+}
+
+function filledTextFontDefinition() {
+  return textFontDefinitionByValue(DEFAULT_TEXT_FONT_VALUE);
+}
+
+function textFontForOperation(font, operation) {
+  const normalizedOperation = normalizeOperation(operation, "engrave_line");
+  return font?.kind === "single" && normalizedOperation !== "engrave_line"
+    ? filledTextFontDefinition()
+    : font;
 }
 
 function textFontCssFamily(font) {
@@ -1077,7 +1093,7 @@ function textFontValueForPattern(pattern) {
   return byName ? textFontValue(byName) : settings.mode === "single-line" ? "laser-single" : "arial";
 }
 
-function updateTextFontSelectionUi(value = refs.textFont?.value || "laser-single") {
+function updateTextFontSelectionUi(value = refs.textFont?.value || DEFAULT_TEXT_FONT_VALUE) {
   const font = textFontDefinitionByValue(value);
   if (refs.textFontButtonLabel) {
     refs.textFontButtonLabel.textContent = font.name || font.label;
@@ -1091,7 +1107,7 @@ function updateTextFontSelectionUi(value = refs.textFont?.value || "laser-single
 function setTextFontControlValue(value) {
   if (!refs.textFont) return;
   const values = Array.from(refs.textFont.options).map((option) => option.value);
-  refs.textFont.value = values.includes(value) ? value : "laser-single";
+  refs.textFont.value = values.includes(value) ? value : DEFAULT_TEXT_FONT_VALUE;
   updateTextFontSelectionUi(refs.textFont.value);
   updateTextFontHint();
 }
@@ -1293,7 +1309,7 @@ function appendTextFontGroup(label, fonts) {
 function renderTextFontOptions(selectedValue = "") {
   const select = refs.textFont;
   if (!select) return;
-  const selected = selectedValue || select.value || "laser-single";
+  const selected = selectedValue || select.value || DEFAULT_TEXT_FONT_VALUE;
   select.innerHTML = "";
   if (refs.textFontOptions) refs.textFontOptions.innerHTML = "";
   const appendGroup = (label, fonts) => {
@@ -1327,7 +1343,7 @@ function renderTextFontOptions(selectedValue = "") {
   }
   appendGroup("Yüklenen fontlar", customFontDefinitions());
   const values = Array.from(select.options).map((option) => option.value);
-  select.value = values.includes(selected) ? selected : "laser-single";
+  select.value = values.includes(selected) ? selected : DEFAULT_TEXT_FONT_VALUE;
   updateTextFontSelectionUi(select.value);
   updateTextFontHint();
   filterTextFontOptions(refs.textFontSearch?.value || "");
@@ -1358,7 +1374,7 @@ async function loadSystemFonts(preferredValue = "") {
     state.systemFontsLoaded = true;
     const activeText = editableTextPattern();
     const selected = activeText ? textFontValueForPattern(activeText) : preferredValue || refs.textFont?.value;
-    renderTextFontOptions(selected || "laser-single");
+    renderTextFontOptions(selected || DEFAULT_TEXT_FONT_VALUE);
     if (refs.textFontLoading) {
       refs.textFontLoading.textContent = `${state.systemFonts.length.toLocaleString("tr-TR")} sistem fontu hazır.`;
       window.setTimeout(() => refs.textFontLoading?.classList.add("hidden"), 1400);
@@ -1377,7 +1393,9 @@ function updateTextFontHint() {
   if (!hint) return;
   const font = selectedTextFontDefinition();
   const op = refs.textOperation?.value || "engrave_line";
-  if (font.kind === "single") {
+  if (font.kind === "single" && op !== "engrave_line") {
+    hint.textContent = "Dolgu veya kesim seçildiğinde Arial Black kontur fontu otomatik kullanılacak.";
+  } else if (font.kind === "single") {
     hint.textContent = "Laser tek çizgi font hızlı kazıma içindir; kesim/dolgu için kontur font seç.";
   } else if (op === "cut") {
     hint.textContent = `"${font.name || font.label}" kontur olarak kesime çevrilecek. İnce yazılarda küçük iç adalar düşmeyebilir.`;
@@ -2400,6 +2418,7 @@ async function discardRecoveryProject() {
 
 function loadUiSettings() {
   let saved = {};
+  let migratedTextDefaults = false;
   try {
     const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     saved = parsed && typeof parsed === "object" ? parsed : {};
@@ -2417,6 +2436,18 @@ function loadUiSettings() {
         else input.value = value;
       }
     }
+    if (
+      saved.textSettingsVersion !== TEXT_SETTINGS_VERSION
+      && (!saved.textFont || saved.textFont === "laser-single")
+      && (!saved.textOperation || saved.textOperation === "engrave_line")
+    ) {
+      refs.textFont.value = DEFAULT_TEXT_FONT_VALUE;
+      refs.textOperation.value = "engrave_fill";
+      saved.textFont = DEFAULT_TEXT_FONT_VALUE;
+      saved.textOperation = "engrave_fill";
+      saved.textSettingsVersion = TEXT_SETTINGS_VERSION;
+      migratedTextDefaults = true;
+    }
     if (saved.laserCmd) state.laserCmd = saved.laserCmd;
     if (["object", "contour"].includes(saved.canvasSelectionMode)) {
       state.canvasSelectionMode = saved.canvasSelectionMode;
@@ -2427,6 +2458,7 @@ function loadUiSettings() {
   enforceAirAssistDefaults();
   syncVectorProfessionalModeUi();
   syncCanvasSelectionModeUi();
+  if (migratedTextDefaults) saveUiSettings();
   return saved;
 }
 
@@ -2436,6 +2468,7 @@ function saveUiSettings() {
     laserCmd: state.laserCmd,
     canvasSelectionMode: state.canvasSelectionMode,
     vectorSettingsVersion: VECTOR_SETTINGS_VERSION,
+    textSettingsVersion: TEXT_SETTINGS_VERSION,
   };
   for (const id of persistedInputIds) {
     const input = refs[id];
@@ -8963,9 +8996,16 @@ function setPatternOperationDefaults(pattern, operation) {
 }
 
 function wholeTextFillSettings(pattern) {
-  const overallOperation = patternOperation(pattern);
   const defaultPower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
   const defaultFeed = Math.max(1, mm("engraveFeed", 1800));
+  if (!patternUsesCustomProcess(pattern)) {
+    return {
+      power: defaultPower,
+      feed: defaultFeed,
+      lineStep: textFillLineStep(pattern),
+    };
+  }
+  const overallOperation = patternOperation(pattern);
   return {
     power: clamp(Math.round(Number(pattern?.engravePower ?? (overallOperation === "cut" ? defaultPower : pattern?.power ?? defaultPower))), 0, 1000),
     feed: Math.max(1, Number(pattern?.engraveFeed ?? (overallOperation === "cut" ? defaultFeed : pattern?.feed ?? defaultFeed))),
@@ -8980,9 +9020,9 @@ function wholeTextFillActionHtml(pattern) {
     return `<div class="operation-card text-fill-action-card">
       <div>
         <strong>Kalın yazı kazıma</strong>
-        <span>Tek çizgi fontun içi yoktur. Kalın kazıma için Metin &amp; Şekil sekmesinden Arial Black, Impact veya başka bir kontur font seçin.</span>
+        <span>Tek çizgi yazı otomatik olarak Arial Black konturuna çevrilir ve bütün harf gövdeleri yakılarak doldurulur.</span>
       </div>
-      <button id="panelOpenTextFillTools">Kontur Font Seç</button>
+      <button id="panelApplyWholeTextFill" class="primary">Yazıyı Dolgulu Kazımaya Çevir</button>
     </div>`;
   }
   const settings = wholeTextFillSettings(textPattern);
@@ -9002,11 +9042,29 @@ function wholeTextFillActionHtml(pattern) {
   </div>`;
 }
 
-function applyWholeTextFill(pattern, options = {}) {
-  const textPattern = outlineTextPattern(pattern);
+async function applyWholeTextFill(pattern, options = {}) {
+  let textPattern = editableTextPattern(pattern);
+  if (!textPattern) return false;
+  const defaults = wholeTextFillSettings(textPattern);
+  const power = clamp(Math.round(Number(options.power ?? document.getElementById("wholeTextFillPower")?.value ?? defaults.power)), 0, 1000);
+  const feed = Math.max(1, Number(options.feed ?? document.getElementById("wholeTextFillFeed")?.value ?? defaults.feed));
+  const lineStep = clamp(Number(options.lineStep ?? document.getElementById("wholeTextFillStep")?.value ?? defaults.lineStep), 0.05, 1);
+  let undoCaptured = false;
+
+  if (!outlineTextPattern(textPattern)) {
+    const converted = await applyFontToSelectedText(textPattern, DEFAULT_TEXT_FONT_VALUE, {
+      operation: "engrave_fill",
+      fillLineStep: lineStep,
+      undoLabel: "Tüm yazıyı kalın kazı",
+      deferUi: true,
+      suppressSuccess: true,
+    });
+    if (!converted) return false;
+    textPattern = outlineTextPattern(converted);
+    undoCaptured = true;
+  }
   if (!textPattern) {
-    activateRibbonTab("metin");
-    setStatus("Kalın yazı kazıma için önce tek çizgi olmayan bir kontur font seçin.", "warn");
+    setStatus("Yazı dolgu konturuna çevrilemedi.", "danger");
     return false;
   }
   const fillablePaths = (textPattern.vectorPaths || []).filter((vectorPath) => !vectorPath.removed && vectorPathSupportsFill(vectorPath));
@@ -9014,18 +9072,17 @@ function applyWholeTextFill(pattern, options = {}) {
     setStatus("Bu yazıda doldurulabilecek kapalı harf gövdesi bulunamadı.", "warn");
     return false;
   }
-  const defaults = wholeTextFillSettings(textPattern);
-  const power = clamp(Math.round(Number(options.power ?? document.getElementById("wholeTextFillPower")?.value ?? defaults.power)), 0, 1000);
-  const feed = Math.max(1, Number(options.feed ?? document.getElementById("wholeTextFillFeed")?.value ?? defaults.feed));
-  const lineStep = clamp(Number(options.lineStep ?? document.getElementById("wholeTextFillStep")?.value ?? defaults.lineStep), 0.05, 1);
 
-  pushUndo("Tüm yazıyı kalın kazı");
+  if (!undoCaptured) pushUndo("Tüm yazıyı kalın kazı");
   textPattern.operation = "engrave_fill";
   textPattern.vectorEngraveMode = "fill";
   textPattern.power = power;
   textPattern.feed = feed;
   textPattern.engravePower = power;
   textPattern.engraveFeed = feed;
+  textPattern.processOverride = patternUsesCustomProcess(textPattern)
+    || power !== clamp(Math.round(mm("engravePower", 250)), 0, 1000)
+    || feed !== Math.max(1, mm("engraveFeed", 1800));
   textPattern.lineStep = lineStep;
   textPattern.vectorStats = { ...(textPattern.vectorStats || {}), filledTraceInvert: false };
   textPattern.textSettings = {
@@ -9036,6 +9093,7 @@ function applyWholeTextFill(pattern, options = {}) {
   for (const vectorPath of textPattern.vectorPaths || []) {
     if (vectorPath.removed) continue;
     vectorPath.operation = vectorPathSupportsFill(vectorPath) ? "engrave_fill" : "engrave_line";
+    delete vectorPath.powerOverride;
     vectorPath.operationManual = true;
     vectorPath.regionOperation = "manual";
   }
@@ -9046,7 +9104,7 @@ function applyWholeTextFill(pattern, options = {}) {
 }
 
 function bindWholeTextFillAction(pattern) {
-  document.getElementById("panelApplyWholeTextFill")?.addEventListener("click", () => applyWholeTextFill(pattern));
+  document.getElementById("panelApplyWholeTextFill")?.addEventListener("click", () => void applyWholeTextFill(pattern));
   document.getElementById("panelOpenTextFillTools")?.addEventListener("click", () => {
     activateRibbonTab("metin");
     refs.textFontButton?.focus();
@@ -9078,7 +9136,7 @@ function applyPatternOperation(pattern, operation) {
   const nextOperation = normalizeOperation(operation, pattern?.kind === "raster" ? "engrave_fill" : "engrave_line");
   if (!pattern) return;
   if (nextOperation === "engrave_fill" && editableTextPattern(pattern)) {
-    applyWholeTextFill(pattern);
+    void applyWholeTextFill(pattern);
     return;
   }
   const needsPathSync =
@@ -13363,21 +13421,22 @@ async function buildOutlineTextGeometry(text, options) {
 
 async function buildEditableTextGeometry(text, font, options = {}) {
   const requestedOperation = options.operation || "engrave_line";
+  const effectiveFont = textFontForOperation(font, requestedOperation);
   const height = Math.max(2, Number(options.height) || 20);
   const tracking = Number(options.tracking) || 0;
   const weight = String(options.weight || "400");
   const style = options.style || "normal";
-  const fontValue = options.fontValue || textFontValue(font);
-  if (font.kind === "single") {
+  const fontValue = textFontValue(effectiveFont);
+  if (effectiveFont.kind === "single") {
     const geometry = window.LaserGeometry?.buildText(text, { height, tracking });
     if (geometry?.vectorPaths) geometry.vectorPaths.forEach((path) => { path.operation = "engrave_line"; });
     if (geometry) {
       geometry.textSettings = {
         mode: "single-line",
         text,
-        font: font.name || font.label,
+        font: effectiveFont.name || effectiveFont.label,
         fontValue,
-        family: font.family || "",
+        family: effectiveFont.family || "",
         height,
         tracking,
         weight,
@@ -13385,11 +13444,11 @@ async function buildEditableTextGeometry(text, font, options = {}) {
         operation: "engrave_line",
       };
     }
-    return { geometry, operation: "engrave_line" };
+    return { geometry, operation: "engrave_line", font: effectiveFont };
   }
   await installCustomFonts();
   const geometry = await buildOutlineTextGeometry(text, {
-    font,
+    font: effectiveFont,
     fontValue,
     height,
     tracking,
@@ -13397,12 +13456,38 @@ async function buildEditableTextGeometry(text, font, options = {}) {
     style,
     operation: requestedOperation,
     fillLineStep: options.fillLineStep,
-    name: options.name || `Metin ${font.name || font.label}`,
+    name: options.name || `Metin ${effectiveFont.name || effectiveFont.label}`,
   });
-  return { geometry, operation: requestedOperation };
+  return { geometry, operation: requestedOperation, font: effectiveFont };
 }
 
-async function applyFontToSelectedText(pattern, value) {
+function replaceEditableTextGeometry(current, geometry, operation) {
+  const centerX = current.x + current.width / 2;
+  const centerY = current.y + current.height / 2;
+  current.sourceWidth = geometry.sourceWidth;
+  current.sourceHeight = geometry.sourceHeight;
+  current.originalWidth = geometry.sourceWidth;
+  current.originalHeight = geometry.sourceHeight;
+  current.width = geometry.sourceWidth;
+  current.height = geometry.sourceHeight;
+  current.x = centerX - current.width / 2;
+  current.y = centerY - current.height / 2;
+  resetPatternVectorModel(current);
+  current.vectorPaths = cloneVectorPaths(geometry.vectorPaths);
+  current.originalVectorPaths = cloneVectorPaths(geometry.vectorPaths);
+  current.operation = operation;
+  current.vectorEngraveMode = operation === "engrave_fill" ? "fill" : "contour";
+  current.generated = true;
+  current.generatedKind = "text";
+  current.textSettings = geometry.textSettings;
+  current.vectorStats = { ...(geometry.vectorStats || {}), filledTraceInvert: false };
+  if (operation === "engrave_fill") current.lineStep = textFillLineStep(current);
+  state.images.delete(current.id);
+  activeTextFontPreview = null;
+  return current;
+}
+
+async function applyFontToSelectedText(pattern, value, options = {}) {
   const patternId = pattern?.id;
   const text = editableTextValue(pattern);
   if (!patternId || !text) {
@@ -13410,57 +13495,42 @@ async function applyFontToSelectedText(pattern, value) {
     return;
   }
   const token = ++textFontApplyToken;
-  const font = textFontDefinitionByValue(value);
+  const requestedFont = textFontDefinitionByValue(value);
   const settings = pattern.textSettings || {};
-  setStatus(`${font.name || font.label} hazırlanıyor...`);
+  const requestedOperation = options.operation || settings.operation || patternOperation(pattern);
+  const effectiveFont = textFontForOperation(requestedFont, requestedOperation);
+  setStatus(`${effectiveFont.name || effectiveFont.label} hazırlanıyor...`);
   try {
-    const { geometry, operation } = await buildEditableTextGeometry(text, font, {
-      fontValue: value,
+    const { geometry, operation, font } = await buildEditableTextGeometry(text, effectiveFont, {
+      fontValue: textFontValue(effectiveFont),
       height: Number(settings.height) || Number(refs.textHeight?.value) || 20,
       tracking: Number.isFinite(Number(settings.tracking)) ? Number(settings.tracking) : Number(refs.textTracking?.value) || 0,
       weight: settings.weight || refs.textWeight?.value || "400",
       style: settings.style || refs.textStyle?.value || "normal",
-      operation: settings.operation || patternOperation(pattern),
-      fillLineStep: Number(settings.fillLineStep) || textFillLineStep(pattern),
+      operation: requestedOperation,
+      fillLineStep: Number(options.fillLineStep ?? settings.fillLineStep) || textFillLineStep(pattern),
       name: pattern.name,
     });
-    if (token !== textFontApplyToken || editableTextPattern()?.id !== patternId) return;
+    if (token !== textFontApplyToken || editableTextPattern()?.id !== patternId) return null;
     if (!geometry?.vectorPaths?.length) throw new Error("Bu font seçili metin için vektör üretemedi.");
     const current = patternById(patternId);
-    if (!current) return;
-    const centerX = current.x + current.width / 2;
-    const centerY = current.y + current.height / 2;
-    pushUndo("Metin fontunu degistir");
-    current.sourceWidth = geometry.sourceWidth;
-    current.sourceHeight = geometry.sourceHeight;
-    current.originalWidth = geometry.sourceWidth;
-    current.originalHeight = geometry.sourceHeight;
-    current.width = geometry.sourceWidth;
-    current.height = geometry.sourceHeight;
-    current.x = centerX - current.width / 2;
-    current.y = centerY - current.height / 2;
-    resetPatternVectorModel(current);
-    current.vectorPaths = cloneVectorPaths(geometry.vectorPaths);
-    current.originalVectorPaths = cloneVectorPaths(geometry.vectorPaths);
-    current.operation = operation;
-    current.vectorEngraveMode = operation === "engrave_fill" ? "fill" : "contour";
-    current.generated = true;
-    current.generatedKind = "text";
-    current.textSettings = geometry.textSettings;
-    current.vectorStats = { ...(geometry.vectorStats || {}), filledTraceInvert: false };
-    if (operation === "engrave_fill") current.lineStep = textFillLineStep(current);
-    state.images.delete(patternId);
-    activeTextFontPreview = null;
-    syncTextControlsFromPattern(current);
-    updateSelectionPanel();
-    updateJobAnalysisNow();
-    draw();
-    setStatus(`Seçili metin ${font.name || font.label} fontuyla güncellendi.`, "ok");
+    if (!current) return null;
+    pushUndo(options.undoLabel || "Metin fontunu degistir");
+    replaceEditableTextGeometry(current, geometry, operation);
+    if (!options.deferUi) {
+      syncTextControlsFromPattern(current);
+      updateSelectionPanel();
+      updateJobAnalysisNow();
+      draw();
+    }
+    if (!options.suppressSuccess) setStatus(`Seçili metin ${font.name || font.label} fontuyla güncellendi.`, "ok");
+    return current;
   } catch (error) {
-    if (token !== textFontApplyToken) return;
+    if (token !== textFontApplyToken) return null;
     activeTextFontPreview = null;
     draw();
     setStatus(error.message || "Metin fontu değiştirilemedi.", "danger");
+    return null;
   }
 }
 
@@ -13480,20 +13550,23 @@ async function addTextPattern() {
   const tracking = Number(refs.textTracking?.value) || 0;
   const selectedFont = selectedTextFontDefinition();
   const requestedOperation = refs.textOperation?.value || "engrave_line";
-  if (selectedFont.kind === "single" && requestedOperation !== "engrave_line") {
-    setStatus("Tek çizgi font sadece yakma çizgi olarak üretilir; kesim veya dolgu için kontur font seç.", "warn");
-  } else if (selectedFont.kind !== "single") {
+  const effectiveFont = textFontForOperation(selectedFont, requestedOperation);
+  if (effectiveFont !== selectedFont) {
+    setTextFontControlValue(textFontValue(effectiveFont));
+    saveUiSettings();
+    setStatus(`${effectiveFont.name || effectiveFont.label} dolgu konturu hazırlanıyor...`);
+  } else if (effectiveFont.kind !== "single") {
     setStatus("Font konturu vektöre çevriliyor...");
   }
-  const { geometry, operation } = await buildEditableTextGeometry(text, selectedFont, {
-    fontValue: refs.textFont?.value || "laser-single",
+  const { geometry, operation, font } = await buildEditableTextGeometry(text, effectiveFont, {
+    fontValue: textFontValue(effectiveFont),
     height,
     tracking,
     weight: refs.textWeight?.value || "400",
     style: refs.textStyle?.value || "normal",
     operation: requestedOperation,
     fillLineStep: TEXT_FILL_LINE_STEP_MM,
-    name: `Metin ${selectedFont.name || selectedFont.label}`,
+    name: `Metin ${effectiveFont.name || effectiveFont.label}`,
   });
   if (!geometry) {
     setStatus("Bu metinden çizgi üretilemedi.");
@@ -13501,7 +13574,7 @@ async function addTextPattern() {
   }
   const name = `Metin: ${text.length > 18 ? text.slice(0, 18) + "…" : text}`;
   const pattern = addGeneratedVector(geometry, { name, operation, textSettings: geometry.textSettings });
-  if (pattern) setStatus(`${name} eklendi: ${selectedFont.name || selectedFont.label}.`, "ok");
+  if (pattern) setStatus(`${name} eklendi: ${font.name || font.label}, ${operation === "engrave_fill" ? "içi dolgulu yakma" : operationLabel(operation)}.`, "ok");
 }
 
 function addShapePattern(kind) {
@@ -16393,7 +16466,7 @@ function bindControls() {
   document.getElementById("fillSelectedTextBtn")?.addEventListener("click", () => {
     const pattern = editableTextPattern();
     if (pattern) {
-      applyWholeTextFill(pattern);
+      void applyWholeTextFill(pattern);
       return;
     }
     if (refs.textOperation) refs.textOperation.value = "engrave_fill";
@@ -16438,6 +16511,9 @@ function bindControls() {
   refs.textWeight?.addEventListener("change", updateTextFontHint);
   refs.textStyle?.addEventListener("change", updateTextFontHint);
   refs.textOperation?.addEventListener("change", () => {
+    if (refs.textOperation.value !== "engrave_line" && selectedTextFontDefinition().kind === "single") {
+      setTextFontControlValue(DEFAULT_TEXT_FONT_VALUE);
+    }
     updateTextFontHint();
     saveUiSettings();
   });
@@ -16621,7 +16697,7 @@ loadActivityState();
 installClientErrorBoundary();
 renderTextFontOptions();
 const savedUiSettings = loadUiSettings();
-const preferredStartupFont = savedUiSettings.textFont || refs.textFont?.value || "laser-single";
+const preferredStartupFont = savedUiSettings.textFont || refs.textFont?.value || DEFAULT_TEXT_FONT_VALUE;
 renderTextFontOptions(preferredStartupFont);
 void loadSystemFonts(preferredStartupFont);
 state.layout.appliedSettings = layoutSettingsSnapshot();

@@ -108,7 +108,7 @@
               <label class="rib-field wide">Font
                 <span id="textFontPicker" class="font-picker">
                   <button id="textFontButton" class="font-picker-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="textFontMenu">
-                    <span id="textFontButtonLabel">Laser tek çizgi</span>
+                    <span id="textFontButtonLabel">Arial Black</span>
                     <span class="font-picker-chevron" aria-hidden="true"></span>
                   </button>
                   <select id="textFont" class="font-native-select" tabindex="-1" aria-hidden="true" hidden></select>
@@ -118,7 +118,7 @@
               <label class="rib-field">Aralık<span class="unit-input"><input id="textTracking" type="number" value="0" min="-2" step="0.2" /><b>mm</b></span></label>
               <label class="rib-field">Ağırlık<select id="textWeight"><option value="400">Normal</option><option value="600">Kalın</option><option value="700">Bold</option><option value="900">Siyah</option></select></label>
               <label class="rib-field">Stil<select id="textStyle"><option value="normal">Düz</option><option value="italic">İtalik</option></select></label>
-              <label class="rib-field">Çıktı<select id="textOperation"><option value="engrave_line">Çizgi kazıma</option><option value="engrave_fill">Kalın dolgu kazıma</option><option value="cut">Kesim kontur</option></select></label>
+              <label class="rib-field">Çıktı<select id="textOperation"><option value="engrave_line">Çizgi kazıma</option><option value="engrave_fill" selected>Kalın dolgu kazıma</option><option value="cut">Kesim kontur</option></select></label>
               <button id="addTextBtn" class="primary">Metni Ekle</button>
               <button id="fillSelectedTextBtn" title="Seçili metnin bütün harf gövdelerini sık taramayla dolu kazımaya çevirir.">Seçili Yazıyı Kalın Kazı</button>
             </div>
@@ -1097,6 +1097,6 @@
     <script src="/static/product_tour.js?v=20260716-product-tour-v2"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
     <script src="/static/vector_edit.js?v=20260716-thick-text-v1"></script>
-    <script src="/static/app.js?v=20260716-contour-power-v1"></script>
+    <script src="/static/app.js?v=20260716-text-fill-v3"></script>
   </body>
 </html>
