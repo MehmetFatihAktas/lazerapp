@@ -5761,6 +5761,28 @@ function drawPlacements() {
   }
 }
 
+function drawSelectedPlacementFrames() {
+  const placements = selectedPlacementObjects();
+  if (!placements.length) return;
+  const palette = canvasPalette();
+  ctx.save();
+  ctx.strokeStyle = palette.selection;
+  ctx.lineWidth = 2.2;
+  ctx.setLineDash([7, 4]);
+  for (const placement of placements) {
+    const bounds = placementBounds(placement);
+    const topLeft = worldToScreen({ x: bounds.minX, y: bounds.maxY });
+    const bottomRight = worldToScreen({ x: bounds.maxX, y: bounds.minY });
+    ctx.strokeRect(
+      Math.min(topLeft.x, bottomRight.x),
+      Math.min(topLeft.y, bottomRight.y),
+      Math.abs(bottomRight.x - topLeft.x),
+      Math.abs(bottomRight.y - topLeft.y),
+    );
+  }
+  ctx.restore();
+}
+
 function drawPlacementCenterGuides(placement, size) {
   const palette = canvasPalette();
   const center = placementCenter(placement);
@@ -5870,7 +5892,7 @@ function drawPatterns() {
       });
     }
 
-    if (selectedIs("pattern", pattern.id)) {
+    if (patternObjectSelectedForCanvas(pattern)) {
       drawPatternSelectionOutline(selectionPattern, state.selected?.type === "pattern" && state.selected.id === pattern.id);
     }
     if (isCadLineArtPattern(pattern) && state.selected?.id === pattern.id) {
@@ -5878,6 +5900,13 @@ function drawPatterns() {
     }
     ctx.restore();
   }
+}
+
+function patternObjectSelectedForCanvas(pattern) {
+  if (!pattern) return false;
+  if (state.selected?.type === "pattern" && state.selected.id === pattern.id) return true;
+  if (["vectorPath", "vectorObject"].includes(state.selected?.type) && state.selected.id === pattern.id) return false;
+  return state.selectedItems.some((item) => item.type === "pattern" && item.id === pattern.id);
 }
 
 function drawCadCutRegionMarkers(pattern) {
@@ -7930,6 +7959,7 @@ function draw() {
   drawGrid();
   drawPatterns();
   drawPlacements();
+  drawSelectedPlacementFrames();
   drawSelectedVectorGroupBounds();
   drawObjectSelectionMarquee();
   drawVectorSelectionMarquee();
@@ -8018,6 +8048,24 @@ function selectedVectorMoveTargets() {
   return selectedVectorMoveTargetsCache;
 }
 
+function selectedVectorFrameSelection() {
+  if (state.selected?.type !== "vectorObject") return selectedVectorMoveTargets();
+  const targets = selectedVectorOperationEntries()
+    .filter((entry) => !entry.vectorPath.removed)
+    .map((entry) => {
+      const points = vectorWorldPath(entry.pattern, entry.vectorPath);
+      return { ...entry, points, bounds: boundsFromPoints(points) };
+    })
+    .filter((entry) => entry.bounds && entry.points.length >= 2);
+  return {
+    targets,
+    bounds: boundsFromPoints(targets.flatMap((target) => [
+      { x: target.bounds.minX, y: target.bounds.minY },
+      { x: target.bounds.maxX, y: target.bounds.maxY },
+    ])),
+  };
+}
+
 function pointInsideExpandedBounds(point, bounds, padding = 0) {
   return Boolean(bounds)
     && point.x >= bounds.minX - padding
@@ -8048,9 +8096,9 @@ function selectedVectorMoveHit(worldPoint) {
 }
 
 function drawSelectedVectorGroupBounds() {
-  if (state.drag?.mode === "vectorMarquee" || state.drag?.mode === "moveVectorPaths") return;
-  const selection = selectedVectorMoveTargets();
-  if (selection.targets.length < 2 || !selection.bounds) return;
+  if (state.drag?.mode === "vectorMarquee") return;
+  const selection = selectedVectorFrameSelection();
+  if (!selection.targets.length || !selection.bounds) return;
   const topLeft = worldToScreen({ x: selection.bounds.minX, y: selection.bounds.minY });
   const bottomRight = worldToScreen({ x: selection.bounds.maxX, y: selection.bounds.maxY });
   const palette = canvasPalette();
@@ -8398,8 +8446,11 @@ function selectedVectorOperationEntries() {
     const edgeIds = new Set((selectedObject.vectorObject.edgeRefs || []).map((item) => String(item.edgeId || "")));
     return (selectedObject.pattern.vectorPaths || [])
       .filter((vectorPath) => (
-        String(vectorPath.objectId || vectorPath.provenance?.objectId || "") === String(selectedObject.vectorObject.id)
-        || edgeIds.has(String(vectorPath.edgeId || vectorPath.provenance?.edgeId || ""))
+        !vectorPath.removed
+        && (
+          String(vectorPath.objectId || vectorPath.provenance?.objectId || "") === String(selectedObject.vectorObject.id)
+          || edgeIds.has(String(vectorPath.edgeId || vectorPath.provenance?.edgeId || ""))
+        )
       ))
       .map((vectorPath) => ({ pattern: selectedObject.pattern, vectorPath }));
   }
@@ -8421,12 +8472,7 @@ function selectedVectorOperationEntries() {
 
 function vectorFillSettings(entries = selectedVectorOperationEntries()) {
   const pattern = entries[0]?.pattern || selectedVectorPattern() || selectedPatternObjects().find(vectorPatternHasPaths);
-  const overallOperation = patternOperation(pattern);
-  const defaultPower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
-  const defaultFeed = Math.max(1, mm("engraveFeed", 1800));
   return {
-    power: clamp(Math.round(Number(pattern?.engravePower ?? (overallOperation === "cut" ? defaultPower : pattern?.power ?? defaultPower))), 0, 1000),
-    feed: Math.max(1, Number(pattern?.engraveFeed ?? (overallOperation === "cut" ? defaultFeed : pattern?.feed ?? defaultFeed))),
     lineStep: Math.max(0.05, Number(pattern?.lineStep ?? mm("lineStep", 0.25))),
   };
 }
@@ -8434,8 +8480,6 @@ function vectorFillSettings(entries = selectedVectorOperationEntries()) {
 function vectorFillSettingsHtml(entries) {
   const settings = vectorFillSettings(entries);
   return `<div class="vector-fill-settings">
-    <label>Dolgu gücü S <input id="vectorSelectionFillPower" type="number" min="0" max="1000" step="10" value="${settings.power}" /></label>
-    <label>Dolgu hızı F <input id="vectorSelectionFillFeed" type="number" min="1" step="50" value="${settings.feed}" /></label>
     <label>Tarama aralığı <span class="unit-input"><input id="vectorSelectionFillStep" type="number" min="0.05" max="5" step="0.05" value="${settings.lineStep.toFixed(2)}" /><b>mm</b></span></label>
   </div>`;
 }
@@ -8443,10 +8487,123 @@ function vectorFillSettingsHtml(entries) {
 function readVectorFillSettings(entries) {
   const defaults = vectorFillSettings(entries);
   return {
-    power: clamp(Math.round(Number(document.getElementById("vectorSelectionFillPower")?.value ?? defaults.power)), 0, 1000),
-    feed: Math.max(1, Number(document.getElementById("vectorSelectionFillFeed")?.value ?? defaults.feed)),
     lineStep: clamp(Number(document.getElementById("vectorSelectionFillStep")?.value ?? defaults.lineStep), 0.05, 5),
   };
+}
+
+function patternUsesCustomProcess(pattern) {
+  return Boolean(pattern?.processOverride);
+}
+
+function enablePatternProcessOverride(pattern) {
+  if (!pattern || patternUsesCustomProcess(pattern)) return;
+  const cutPower = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
+  const cutFeed = Math.max(1, mm("cutFeed", 500));
+  const engravePower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
+  const engraveFeed = Math.max(1, mm("engraveFeed", 1800));
+  pattern.cutPower = cutPower;
+  pattern.cutFeed = cutFeed;
+  pattern.engravePower = engravePower;
+  pattern.engraveFeed = engraveFeed;
+  const cutPattern = patternOperation(pattern) === "cut";
+  pattern.power = cutPattern ? cutPower : engravePower;
+  pattern.feed = cutPattern ? cutFeed : engraveFeed;
+  pattern.processOverride = true;
+}
+
+function vectorEntryDefaultPower(entry) {
+  const operation = vectorPathOperation(entry.vectorPath, entry.pattern);
+  if (operation === "cut") {
+    const globalPower = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
+    if (!patternUsesCustomProcess(entry.pattern)) return globalPower;
+    const fallback = patternOperation(entry.pattern) === "cut" ? entry.pattern?.power : globalPower;
+    const value = Number(entry.pattern?.cutPower ?? fallback);
+    return clamp(Math.round(Number.isFinite(value) ? value : globalPower), 0, 1000);
+  }
+  const globalPower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
+  if (!patternUsesCustomProcess(entry.pattern)) return globalPower;
+  const fallback = patternOperation(entry.pattern) !== "cut" ? entry.pattern?.power : globalPower;
+  const value = Number(entry.pattern?.engravePower ?? fallback);
+  return clamp(Math.round(Number.isFinite(value) ? value : globalPower), 0, 1000);
+}
+
+function vectorPowerOverrideSettings(entries = selectedVectorOperationEntries()) {
+  const validEntries = expandVectorPowerEntries(entries)
+    .filter((entry) => entry?.pattern && entry.vectorPath && !entry.vectorPath.removed);
+  const overrideFlags = validEntries.map((entry) => (
+    entry.vectorPath.powerOverride !== undefined
+    && entry.vectorPath.powerOverride !== null
+    && entry.vectorPath.powerOverride !== ""
+    && Number.isFinite(Number(entry.vectorPath.powerOverride))
+  ));
+  const overrides = validEntries.map((entry, index) => overrideFlags[index] ? Number(entry.vectorPath.powerOverride) : NaN);
+  const inherited = validEntries.map(vectorEntryDefaultPower);
+  const allOverride = overrideFlags.length > 0 && overrideFlags.every(Boolean);
+  const anyOverride = overrideFlags.some(Boolean);
+  const commonOverride = allOverride && overrides.every((value) => value === overrides[0]) ? overrides[0] : null;
+  const commonInherited = inherited.length && inherited.every((value) => value === inherited[0]) ? inherited[0] : null;
+  return {
+    enabled: allOverride,
+    mixed: anyOverride && (!allOverride || commonOverride === null),
+    power: clamp(Math.round(commonOverride ?? commonInherited ?? inherited[0] ?? mm("engravePower", 250)), 0, 1000),
+    inheritedLabel: commonInherited === null ? "işleme göre" : `S${commonInherited}`,
+  };
+}
+
+function vectorPowerOverrideHtml(entries) {
+  const settings = vectorPowerOverrideSettings(entries);
+  return `<div class="operation-card vector-power-override-card">
+    <div>
+      <strong>Kontur lazer gücü</strong>
+      <span>Özel güç kapalıyken Kesim &amp; Kazıma sekmesindeki veya desenin varsayılan ${settings.inheritedLabel} değeri kullanılır. Dolgu iç boşlukları aynı bileşik grupla korunur.</span>
+    </div>
+    <label class="checkline">
+      <input id="vectorSelectionPowerOverrideEnabled" type="checkbox" ${settings.enabled ? "checked" : ""} />
+      <span>Bu kontur grubu için özel güç kullan</span>
+    </label>
+    <label>Güç S <input id="vectorSelectionPowerOverride" type="number" min="0" max="1000" step="10" value="${settings.power}" ${settings.enabled ? "" : "disabled"} /></label>
+  </div>`;
+}
+
+function applyVectorPowerOverride(entries, enabled, rawPower) {
+  const validEntries = expandVectorPowerEntries(entries)
+    .filter((entry) => entry?.pattern && entry.vectorPath && !entry.vectorPath.removed);
+  if (!validEntries.length) return false;
+  const power = clamp(Math.round(Number(rawPower) || 0), 0, 1000);
+  pushUndo(enabled ? "Kontur gücü" : "Kontur gücünü varsayılana döndür");
+  for (const entry of validEntries) {
+    if (enabled) entry.vectorPath.powerOverride = power;
+    else delete entry.vectorPath.powerOverride;
+  }
+  syncMovedVectorPatterns(validEntries.map((entry) => entry.pattern.id));
+  updateSelectionPanel();
+  updateJobAnalysisNow();
+  draw();
+  setStatus(
+    enabled
+      ? `${validEntries.length} kontur için özel lazer gücü S${power} uygulandı.`
+      : `${validEntries.length} kontur Kesim & Kazıma varsayılan gücüne döndü.`,
+    "ok"
+  );
+  return true;
+}
+
+function bindVectorPowerOverride(entries) {
+  const enabled = document.getElementById("vectorSelectionPowerOverrideEnabled");
+  const input = document.getElementById("vectorSelectionPowerOverride");
+  if (!enabled || !input) return;
+  const settings = vectorPowerOverrideSettings(entries);
+  enabled.indeterminate = settings.mixed;
+  const apply = () => {
+    enabled.indeterminate = false;
+    input.disabled = !enabled.checked;
+    applyVectorPowerOverride(entries, enabled.checked, input.value);
+  };
+  enabled.addEventListener("change", apply);
+  input.addEventListener("change", () => {
+    input.value = String(clamp(Math.round(Number(input.value) || 0), 0, 1000));
+    if (enabled.checked) apply();
+  });
 }
 
 function expandVectorFillEntries(entries) {
@@ -8475,6 +8632,49 @@ function expandVectorFillEntries(entries) {
   return expanded;
 }
 
+function expandVectorPowerEntries(entries) {
+  const grouped = new Map();
+  const expanded = [];
+  const seen = new Set();
+  const add = (pattern, vectorPath) => {
+    if (!pattern || !vectorPath || vectorPath.removed) return;
+    const key = vectorPathSelectionKey(pattern.id, vectorPath.id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    expanded.push({ pattern, vectorPath, patternId: pattern.id, pathId: vectorPath.id });
+  };
+  for (const entry of entries || []) {
+    if (!entry?.pattern || !entry.vectorPath) continue;
+    if (!grouped.has(entry.pattern)) grouped.set(entry.pattern, []);
+    grouped.get(entry.pattern).push(entry.vectorPath);
+  }
+  for (const [pattern, selectedPaths] of grouped.entries()) {
+    const fillPaths = (pattern.vectorPaths || []).filter((vectorPath) => (
+      !vectorPath.removed
+      && vectorPath.closed
+      && vectorPathOperation(vectorPath, pattern) === "engrave_fill"
+    ));
+    const classified = fillPaths.length ? classifiedVectorFillPaths(pattern, fillPaths) : [];
+    for (const selectedPath of selectedPaths) {
+      const selectedEntry = classified.find((entry) => entry.path === selectedPath);
+      if (!selectedEntry) {
+        add(pattern, selectedPath);
+        continue;
+      }
+      let rootEntry = selectedEntry;
+      if (selectedEntry.depth % 2 === 1) {
+        const parentCandidates = classified
+          .filter((entry) => entry.depth === selectedEntry.depth - 1 && entry.depth % 2 === 0)
+          .filter((entry) => window.LaserVectorEdit.expandNestedClosedPaths(fillPaths, [entry.path]).includes(selectedPath));
+        if (parentCandidates.length) rootEntry = parentCandidates.sort((first, second) => first.area - second.area)[0];
+      }
+      const compoundPaths = window.LaserVectorEdit.expandNestedClosedPaths(fillPaths, [rootEntry.path]);
+      compoundPaths.forEach((vectorPath) => add(pattern, vectorPath));
+    }
+  }
+  return expanded;
+}
+
 function applySelectedVectorOperation(operation, options = {}) {
   let entries = selectedVectorOperationEntries();
   if (!entries.length) {
@@ -8483,6 +8683,7 @@ function applySelectedVectorOperation(operation, options = {}) {
     return null;
   }
   const nextOperation = normalizeOperation(operation, "engrave_line");
+  const selectedPowerSettings = vectorPowerOverrideSettings(entries);
   const explicitPathSelection = selectedVectorPathEntries().length > 0;
   const originalEntryCount = entries.length;
   if (nextOperation === "engrave_fill") entries = expandVectorFillEntries(entries);
@@ -8501,6 +8702,9 @@ function applySelectedVectorOperation(operation, options = {}) {
     entries.map((entry) => entry.vectorPath),
     nextOperation,
   );
+  if (nextOperation === "engrave_fill" && selectedPowerSettings.enabled) {
+    for (const entry of entries) entry.vectorPath.powerOverride = selectedPowerSettings.power;
+  }
   if (nextOperation === "engrave_fill" && explicitPathSelection && autoNestedCount) {
     setVectorPathSelection(
       entries.map((entry) => ({ patternId: entry.pattern.id, pathId: entry.vectorPath.id })),
@@ -8513,13 +8717,7 @@ function applySelectedVectorOperation(operation, options = {}) {
     if (patternOperation(pattern) === "ignore") pattern.operation = "engrave_line";
     pattern.vectorEngraveMode = "contour";
     if (fillSettings) {
-      pattern.engravePower = fillSettings.power;
-      pattern.engraveFeed = fillSettings.feed;
       pattern.lineStep = fillSettings.lineStep;
-      if (patternOperation(pattern) !== "cut") {
-        pattern.power = fillSettings.power;
-        pattern.feed = fillSettings.feed;
-      }
     }
     const remainingOperations = (pattern.vectorPaths || [])
       .filter((vectorPath) => !vectorPath.removed && (vectorPath.points || []).length >= 2)
@@ -8734,6 +8932,7 @@ function setPatternOperationDefaults(pattern, operation) {
   if (!pattern) return;
   const nextOperation = normalizeOperation(operation, pattern.kind === "raster" ? "engrave_fill" : "engrave_line");
   pattern.operation = nextOperation;
+  pattern.processOverride = false;
   if (vectorPatternHasPaths(pattern) && nextOperation !== "ignore") {
     for (const vectorPath of pattern.vectorPaths || []) {
       if (!vectorPath.removed) vectorPath.operation = nextOperation;
@@ -8742,10 +8941,14 @@ function setPatternOperationDefaults(pattern, operation) {
   if (nextOperation === "cut") {
     pattern.power = clamp(Math.round(mm("cutPower", 1000)), 0, 1000);
     pattern.feed = Math.max(1, mm("cutFeed", 500));
+    pattern.cutPower = pattern.power;
+    pattern.cutFeed = pattern.feed;
     pattern.vectorEngraveMode = "contour";
   } else if (nextOperation === "engrave_line" || nextOperation === "engrave_fill") {
     pattern.power = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
     pattern.feed = Math.max(1, mm("engraveFeed", 1800));
+    pattern.engravePower = pattern.power;
+    pattern.engraveFeed = pattern.feed;
     pattern.vectorEngraveMode = nextOperation === "engrave_fill" ? "fill" : "contour";
   }
   const textPattern = editableTextPattern(pattern);
@@ -9608,13 +9811,18 @@ function renderPatternPanel(pattern) {
         </div>
       </div>`
     : "";
+  const customProcess = patternUsesCustomProcess(pattern);
+  const cutPowerValue = customProcess ? Number(pattern.cutPower ?? pattern.power ?? mm("cutPower", 1000)) : mm("cutPower", 1000);
+  const cutFeedValue = customProcess ? Number(pattern.cutFeed ?? pattern.feed ?? mm("cutFeed", 500)) : mm("cutFeed", 500);
+  const engravePowerValue = customProcess ? Number(pattern.engravePower ?? pattern.power ?? mm("engravePower", 250)) : mm("engravePower", 250);
+  const engraveFeedValue = customProcess ? Number(pattern.engraveFeed ?? pattern.feed ?? mm("engraveFeed", 1800)) : mm("engraveFeed", 1800);
   const processControls = cadLineArt
-    ? `<label>Kesim gücü S <input data-pattern="cutPower" type="number" min="0" max="1000" step="10" value="${Number(pattern.cutPower ?? mm("cutPower", 1000))}" /></label>
-       <label>Kesim hızı F <input data-pattern="cutFeed" type="number" min="1" step="50" value="${Number(pattern.cutFeed ?? mm("cutFeed", 500))}" /></label>
-       <label>Kazıma gücü S <input data-pattern="engravePower" type="number" min="0" max="1000" step="10" value="${Number(pattern.engravePower ?? mm("engravePower", 250))}" /></label>
-       <label>Kazıma hızı F <input data-pattern="engraveFeed" type="number" min="1" step="50" value="${Number(pattern.engraveFeed ?? mm("engraveFeed", 1800))}" /></label>`
-    : `<label>${operation === "cut" ? "Kesim gücü S" : "Kazıma gücü S"} <input data-pattern="power" type="number" min="0" max="1000" step="10" value="${pattern.power}" /></label>
-       <label>${operation === "cut" ? "Kesim hızı F" : "Kazıma hızı F"} <input data-pattern="feed" type="number" min="1" step="50" value="${pattern.feed}" /></label>`;
+    ? `<label>Kesim gücü S <input data-pattern="cutPower" type="number" min="0" max="1000" step="10" value="${cutPowerValue}" /></label>
+       <label>Kesim hızı F <input data-pattern="cutFeed" type="number" min="1" step="50" value="${cutFeedValue}" /></label>
+       <label>Kazıma gücü S <input data-pattern="engravePower" type="number" min="0" max="1000" step="10" value="${engravePowerValue}" /></label>
+       <label>Kazıma hızı F <input data-pattern="engraveFeed" type="number" min="1" step="50" value="${engraveFeedValue}" /></label>`
+    : `<label>${operation === "cut" ? "Kesim gücü S" : "Kazıma gücü S"} <input data-pattern="power" type="number" min="0" max="1000" step="10" value="${operation === "cut" ? cutPowerValue : engravePowerValue}" /></label>
+       <label>${operation === "cut" ? "Kesim hızı F" : "Kazıma hızı F"} <input data-pattern="feed" type="number" min="1" step="50" value="${operation === "cut" ? cutFeedValue : engraveFeedValue}" /></label>`;
   refs.selectionPanel.innerHTML = `
     <div class="property-title"><strong>${escapeHtml(pattern.name || "Desen")}</strong><span data-pattern-geometry-summary>${kindText} · ${patternOperationDisplayLabel(pattern)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm${multiSelectionText}</span></div>
     ${wholeTextFillActionHtml(pattern)}
@@ -9702,6 +9910,7 @@ function renderVectorPathMultiPanel(entries) {
       </div>
       ${vectorFillSettingsHtml(entries)}
     </div>
+    ${vectorPowerOverrideHtml(entries)}
     <div class="operation-card vector-move-card">
       <div><strong>Grup konumu</strong><span>Dünya koordinatında mm hareket</span></div>
       <div class="form-grid">
@@ -9720,6 +9929,7 @@ function renderVectorPathMultiPanel(entries) {
     </div>
   `;
   bindWholeTextFillAction(singlePattern);
+  bindVectorPowerOverride(entries);
   refs.selectionPanel.querySelectorAll("[data-vector-selection-operation]").forEach((button) => {
     button.addEventListener("click", () => applySelectedVectorOperation(button.dataset.vectorSelectionOperation));
   });
@@ -9808,6 +10018,7 @@ function renderVectorPathPanel(pattern, vectorPath) {
       </div>
       ${vectorFillSettingsHtml([{ pattern, vectorPath }])}
     </div>
+    ${vectorPowerOverrideHtml([{ pattern, vectorPath }])}
     ${microTabControl}
     <label class="checkline">
       <input id="panelVectorPathLocked" type="checkbox" ${vectorPath.locked ? "checked" : ""} />
@@ -9886,6 +10097,7 @@ function renderVectorPathPanel(pattern, vectorPath) {
     </div>
   `;
   bindWholeTextFillAction(pattern);
+  bindVectorPowerOverride([{ pattern, vectorPath }]);
   refs.selectionPanel.querySelectorAll("[data-vector-path-operation]").forEach((button) => {
     button.addEventListener("click", () => applySelectedVectorOperation(button.dataset.vectorPathOperation));
   });
@@ -10051,6 +10263,7 @@ function renderVectorObjectPanel(pattern, vectorObject) {
   const translationLocked = vectorObject.locked || attachmentPolicy !== "detached";
   const sharedTransformLocked = vectorObject.locked || (attachmentPolicy === "shared-joint" && attachmentCount > 1);
   const maskCount = (pattern.occlusionMasks || []).filter((mask) => String(mask.ownerObjectId || "") === String(vectorObject.id)).length;
+  const powerEntries = selectedVectorOperationEntries();
   refs.selectionPanel.innerHTML = `
     <div class="property-title">
       <strong>${escapeHtml(vectorObject.name || "Ayrılmış nesne")}</strong>
@@ -10081,6 +10294,7 @@ function renderVectorObjectPanel(pattern, vectorObject) {
         <button data-vector-object-operation="ignore" class="${operation === "ignore" ? "active" : ""}">Yok say</button>
       </div>
     </div>
+    ${vectorPowerOverrideHtml(powerEntries)}
     <div class="operation-card vector-object-transform-card">
       <div>
         <strong>Bağımsız dönüşüm</strong>
@@ -10108,6 +10322,7 @@ function renderVectorObjectPanel(pattern, vectorObject) {
     </div>
   `;
 
+  bindVectorPowerOverride(powerEntries);
   const applyTransform = (updates, label = "Vektör nesnesi dönüşümü") => {
     if (vectorObject.locked) {
       setStatus("Nesnenin kilidini kaldırmadan dönüşüm uygulanamaz.", "warn");
@@ -10212,6 +10427,8 @@ function bindPatternPanel(pattern) {
     input.addEventListener("input", () => {
       const key = input.dataset.pattern;
       const value = Number(input.value) || 0;
+      const processEdit = ["power", "feed", "powerMin", "cutPower", "cutFeed", "engravePower", "engraveFeed"].includes(key);
+      if (processEdit) enablePatternProcessOverride(pattern);
       const geometryEdit = ["x", "y", "width", "height", "rotation"].includes(key);
       if (geometryEdit) {
         beginCanvasInteraction("pattern-panel-geometry", {
@@ -10228,6 +10445,14 @@ function bindPatternPanel(pattern) {
         pattern[key] = clamp(Math.round(pattern[key]), 0, 1000);
       }
       if (["feed", "cutFeed", "engraveFeed"].includes(key)) pattern[key] = Math.max(1, pattern[key]);
+      if (key === "power") {
+        if (patternOperation(pattern) === "cut") pattern.cutPower = pattern.power;
+        else pattern.engravePower = pattern.power;
+      }
+      if (key === "feed") {
+        if (patternOperation(pattern) === "cut") pattern.cutFeed = pattern.feed;
+        else pattern.engraveFeed = pattern.feed;
+      }
       if (key === "engravePower") pattern.power = pattern.engravePower;
       if (key === "engraveFeed") pattern.feed = pattern.engraveFeed;
       if (key === "gamma") pattern[key] = Math.max(0.2, Math.min(4, pattern[key]));
@@ -12619,6 +12844,7 @@ function closeCalibration() {
 
 function setCalibrationPatternProcess(pattern, operation, power, feed) {
   pattern.operation = operation;
+  pattern.processOverride = true;
   pattern.power = power;
   pattern.feed = feed;
   if (operation === "cut") {
@@ -13484,6 +13710,7 @@ function setPatternVectorObjectAttachmentPolicy(pattern, objectId, policy) {
 function clonePatternPayload(pattern) {
   const payload = {
     ...pattern,
+    processOverride: patternUsesCustomProcess(pattern),
     vectorPaths: cloneVectorPaths(pattern.vectorPaths || []),
     originalVectorPaths: cloneVectorPaths(pattern.originalVectorPaths || []),
     debugPreviews: (pattern.debugPreviews || []).map((preview) => ({ ...preview })),
@@ -15027,6 +15254,7 @@ function onPointerMove(event) {
       if (!pattern || !vectorPath) continue;
       applyVectorPathWorldDelta(pattern, vectorPath, startPath.points, dx, dy);
     }
+    invalidateSelectedVectorMoveTargets();
     canvas.style.cursor = "none";
     showSelectionCursor(screen, "move");
     requestCanvasDraw();
@@ -15437,7 +15665,10 @@ function restoreProject(project, options = {}) {
   }
   state.parts = clonePlain(project.parts || []);
   state.placements = clonePlain(project.placements || []);
-  state.patterns = (project.patterns || []).map((pattern) => clonePatternPayload(pattern));
+  state.patterns = (project.patterns || []).map((pattern) => clonePatternPayload({
+    ...pattern,
+    processOverride: pattern.processOverride === undefined ? true : Boolean(pattern.processOverride),
+  }));
   state.lastGeneratedRevision = null;
   state.lastGeneratedPath = "";
   ensureStateEntityIdentities();
@@ -15607,6 +15838,7 @@ async function generateGcode() {
     setStatus("G-code oluşturuluyor...");
     const productionPlacementIds = new Set(analysis.productionPlacements.map((item) => item.placement.id));
     const productionPatternIds = new Set(analysis.productionPatterns.map((item) => item.pattern.id));
+    const settings = getSettings();
     const payload = {
       parts: state.parts.map((part) => clonePartPayload(part)),
       placements: state.placements.map((placement) => ({
@@ -15616,11 +15848,20 @@ async function generateGcode() {
       patterns: state.patterns.map((pattern) => {
         const payloadPattern = clonePatternPayload(pattern);
         payloadPattern.operation = productionPatternIds.has(pattern.id) ? patternOperation(pattern) : "ignore";
+        if (!patternUsesCustomProcess(pattern)) {
+          payloadPattern.cutPower = settings.power;
+          payloadPattern.cutFeed = settings.feed;
+          payloadPattern.engravePower = settings.engravePower;
+          payloadPattern.engraveFeed = settings.engraveFeed;
+          const cutPattern = patternOperation(pattern) === "cut";
+          payloadPattern.power = cutPattern ? settings.power : settings.engravePower;
+          payloadPattern.feed = cutPattern ? settings.feed : settings.engraveFeed;
+        }
         const editedRaster = pattern.kind === "raster" ? state.images.get(pattern.id) : null;
         if (editedRaster?.src?.startsWith("data:image/")) payloadPattern.dataUrl = editedRaster.src;
         return payloadPattern;
       }),
-      settings: getSettings(),
+      settings,
       outputPath,
       overwriteConfirmed: true,
     };
@@ -16334,9 +16575,15 @@ function bindControls() {
     input.addEventListener("change", saveUiSettings);
   });
 
+  ["cutPower", "cutFeed", "engravePower", "engraveFeed"].forEach((id) => {
+    refs[id]?.addEventListener("input", () => {
+      if (["pattern", "vectorPath", "vectorObject"].includes(state.selected?.type)) updateSelectionPanel();
+    });
+  });
   ["cutPower", "engravePower"].forEach((id) => {
-    refs[id].addEventListener("change", () => {
+    refs[id]?.addEventListener("change", () => {
       refs[id].value = clamp(Math.round(mm(id, 0)), 0, 1000);
+      if (["pattern", "vectorPath", "vectorObject"].includes(state.selected?.type)) updateSelectionPanel();
     });
   });
   const updateKerfUi = () => {

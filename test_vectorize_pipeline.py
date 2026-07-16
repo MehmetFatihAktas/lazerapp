@@ -1160,6 +1160,18 @@ def test_vector_fill_scan_segments_support_inverted_fill():
     assert_true(any(abs(a[0] - 20) < 1e-6 and abs(b[0] - 30) < 1e-6 for a, b in inverted), "inverted fill should engrave after the hole")
 
 
+def test_vector_fill_scan_segments_keeps_thin_region_between_regular_rows():
+    paths = [
+        {"points": [[4, 11], [24, 11], [24, 12], [4, 12]], "closed": True, "removed": False},
+    ]
+
+    segments = core.vector_fill_scan_segments(paths, 30, 30, 10, fill_invert=False)
+
+    assert_true(len(segments) == 1, "a thin closed region between hatch rows should receive one interior scanline")
+    assert_true(abs(segments[0][0][1] - 11.5) < 1e-6, "the recovery scanline should pass through the region center")
+    assert_true(abs(segments[0][0][0] - 4) < 1e-6 and abs(segments[0][1][0] - 24) < 1e-6, "the recovery scanline should stay inside the fill")
+
+
 def test_vector_fill_scan_segments_preserve_text_counter_holes():
     paths = [
         {"points": [[0, 0], [30, 0], [30, 30], [0, 30]], "closed": True, "operation": "engrave_fill"},
@@ -1466,6 +1478,100 @@ def test_vector_path_operations_mix_cut_engrave_and_ignore():
     assert_true("F500" in text, "cut path should use cut feed")
     assert_true("S250" in text, "engrave path should use engrave power")
     assert_true("X30" not in text and "X38" not in text, "ignored path should not be emitted")
+
+
+def test_vector_path_power_override_changes_only_selected_contour():
+    item = {
+        "path": "vector",
+        "name": "path-power",
+        "x": 0,
+        "y": 0,
+        "width": 30,
+        "height": 10,
+        "rotation": 0,
+        "power": 250,
+        "feed": 1000,
+        "engravePower": 250,
+        "engraveFeed": 1000,
+        "sourceWidth": 30,
+        "sourceHeight": 10,
+        "vectorPaths": [
+            {"operation": "engrave_line", "powerOverride": 375, "points": [[1, 2], [10, 2]], "closed": False, "removed": False},
+            {"operation": "engrave_line", "points": [[12, 2], [20, 2]], "closed": False, "removed": False},
+        ],
+    }
+
+    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+
+    assert_true("S375" in lines, "the selected contour should emit its custom power")
+    assert_true("S250" in lines, "a contour without an override should keep the default engraving power")
+
+
+def test_thin_fill_path_uses_group_power_override():
+    item = {
+        "path": "vector",
+        "name": "thin-fill-power",
+        "x": 0,
+        "y": 0,
+        "width": 30,
+        "height": 3,
+        "rotation": 0,
+        "power": 250,
+        "feed": 1000,
+        "engravePower": 250,
+        "engraveFeed": 1000,
+        "lineStep": 1,
+        "sourceWidth": 30,
+        "sourceHeight": 30,
+        "vectorPaths": [
+            {
+                "operation": "engrave_fill",
+                "powerOverride": 420,
+                "points": [[4, 11], [24, 11], [24, 12], [4, 12]],
+                "closed": True,
+                "removed": False,
+            },
+        ],
+    }
+
+    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+
+    assert_true("S420" in lines, "thin filled contour should keep its group-specific power")
+    assert_true(any("vector fill end" in line for line in lines), "thin filled contour should produce a complete fill block")
+
+
+def test_fill_power_group_keeps_counter_hole_open():
+    outer = {
+        "id": "outer",
+        "operation": "engrave_fill",
+        "powerOverride": 420,
+        "points": [[0, 0], [30, 0], [30, 30], [0, 30]],
+        "closed": True,
+        "removed": False,
+    }
+    counter = {
+        "id": "counter",
+        "operation": "engrave_fill",
+        "points": [[8, 8], [22, 8], [22, 22], [8, 22]],
+        "closed": True,
+        "removed": False,
+    }
+
+    groups = core._group_fill_paths_by_power(
+        [outer, counter],
+        250,
+        lambda vector_path, default: int(vector_path.get("powerOverride", default)),
+    )
+    segments = core.vector_fill_scan_segments(groups[420], 30, 30, 5, fill_invert=False)
+    middle = [(start, end) for start, end in segments if abs(start[1] - 15) < 1e-6]
+
+    assert_true(250 not in groups, "a negative-space counter must not become an independent default-power fill")
+    assert_true([path["id"] for path in groups[420]] == ["outer", "counter"], "the counter should inherit its filled parent's power group")
+    assert_true(
+        any(abs(start[0]) < 1e-6 and abs(end[0] - 8) < 1e-6 for start, end in middle)
+        and any(abs(start[0] - 22) < 1e-6 and abs(end[0] - 30) < 1e-6 for start, end in middle),
+        "the custom-power fill must preserve the counter as an open hole",
+    )
 
 
 def test_vector_path_operation_fill_uses_scanlines():
@@ -2915,6 +3021,7 @@ def main():
         test_svg_export_can_write_filled_compound_paths,
         test_svg_export_can_invert_filled_compound_paths,
         test_vector_fill_scan_segments_support_inverted_fill,
+        test_vector_fill_scan_segments_keeps_thin_region_between_regular_rows,
         test_vector_fill_scan_segments_preserve_text_counter_holes,
         test_vector_fill_scan_segments_union_overlapping_thick_glyphs,
         test_generated_text_never_inverts_fill_into_its_background,
@@ -2927,6 +3034,9 @@ def main():
         test_convert_engrave_vector_gcode_to_cut_file,
         test_convert_gcode_rejects_raster_or_fill_engraving,
         test_vector_path_operations_mix_cut_engrave_and_ignore,
+        test_vector_path_power_override_changes_only_selected_contour,
+        test_thin_fill_path_uses_group_power_override,
+        test_fill_power_group_keeps_counter_hole_open,
         test_vector_path_operation_fill_uses_scanlines,
         test_open_vector_path_fill_falls_back_to_line_engrave,
         test_raster_photo_engrave_modulates_power_by_grayscale,

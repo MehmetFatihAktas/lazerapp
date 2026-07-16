@@ -589,6 +589,25 @@ function testMovingOneSharedEdgeCreatesAValidDetachedNode() {
   assert.deepEqual(after.find((path) => path.edgeId === "edge:b").points, [[5, 0], [5, 5]]);
 }
 
+function testContourPowerOverrideSurvivesCanonicalReconcile() {
+  const model = migrateVectorPathsToModel([
+    {
+      id: "powered",
+      points: [[0, 0], [5, 0], [5, 5]],
+      closed: false,
+      operation: "engrave_line",
+      powerOverride: 320,
+    },
+  ], { sourceWidth: 10, sourceHeight: 10 });
+  const firstCompile = compileVectorObjects(model);
+  assert.equal(firstCompile.vectorPaths[0].powerOverride, 320);
+
+  firstCompile.vectorPaths[0].powerOverride = 460;
+  const reconciled = reconcileVectorModel(model, firstCompile.vectorPaths);
+  assert.equal(reconciled.changed, true);
+  assert.equal(compileVectorObjects(reconciled.model).vectorPaths[0].powerOverride, 460);
+}
+
 testOpenPathRepairsOnlyMarkedArc();
 testClosedPathKeepsOppositeSide();
 testInvalidRepairLeavesPathUntouched();
@@ -624,7 +643,8 @@ testPinnedAndSharedJointPoliciesEnforceAnchors();
 testCanonicalSelectionTranslationSurvivesObjectTransform();
 testMaskedFragmentsTranslateThroughCanonicalEdge();
 testMovingOneSharedEdgeCreatesAValidDetachedNode();
+testContourPowerOverrideSurvivesCanonicalReconcile();
 testSelectedClosedPathsBecomeFillWhileOpenPathsStayLines();
 testSelectedOuterPathIncludesNestedTextCounters();
 testClosedPathNestingKeepsOverlappingGlyphBodiesAsOuterShapes();
-console.log("vector edit tests: 38 passed");
+console.log("vector edit tests: 39 passed");

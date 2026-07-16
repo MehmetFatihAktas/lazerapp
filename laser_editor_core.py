@@ -6162,6 +6162,7 @@ def _classify_fill_polygons(vector_paths: list[dict[str, Any]]) -> list[dict[str
                 "area": abs(signed_area),
                 "bounds": _fill_polygon_bounds(points),
                 "depth": 0,
+                "vectorPath": item,
             }
         )
     for candidate in polygons:
@@ -6171,6 +6172,40 @@ def _classify_fill_polygons(vector_paths: list[dict[str, Any]]) -> list[dict[str
             if parent is not candidate and _fill_polygon_contains(parent, candidate)
         )
     return polygons
+
+
+def _group_fill_paths_by_power(vector_paths: list[dict[str, Any]],
+                               default_power: int,
+                               power_resolver: Any) -> dict[int, list[dict[str, Any]]]:
+    polygons = _classify_fill_polygons(vector_paths)
+    groups: dict[int, list[dict[str, Any]]] = {}
+    outer_power: dict[int, int] = {}
+
+    for polygon in polygons:
+        if int(polygon["depth"]) % 2 != 0:
+            continue
+        power = int(power_resolver(polygon["vectorPath"], default_power))
+        outer_power[id(polygon)] = power
+        groups.setdefault(power, []).append(polygon["vectorPath"])
+
+    for polygon in polygons:
+        depth = int(polygon["depth"])
+        if depth % 2 == 0:
+            continue
+        direct_parents = [
+            candidate
+            for candidate in polygons
+            if int(candidate["depth"]) == depth - 1
+            and int(candidate["depth"]) % 2 == 0
+            and _fill_polygon_contains(candidate, polygon)
+        ]
+        if not direct_parents:
+            continue
+        parent = min(direct_parents, key=lambda candidate: float(candidate["area"]))
+        power = outer_power[id(parent)]
+        groups.setdefault(power, []).append(polygon["vectorPath"])
+
+    return groups
 
 
 def _polygon_scan_intervals(points: list[Point], y: float, source_width: float) -> list[tuple[float, float]]:
@@ -6237,6 +6272,34 @@ def _invert_scan_intervals(intervals: list[tuple[float, float]],
     return inverted
 
 
+def _fill_scan_y_values(polygons: list[dict[str, Any]],
+                        source_height: float,
+                        source_step: float) -> list[float]:
+    values: list[float] = []
+    y = 0.0
+    while y <= source_height + 1e-6:
+        values.append(min(source_height, y))
+        y += source_step
+
+    # A scaled-down or naturally thin closed region can sit completely between
+    # two regular hatch rows. Add one interior row only for such outer regions;
+    # this preserves the normal grid while guaranteeing a valid fill path.
+    for polygon in polygons:
+        if int(polygon.get("depth", 0)) % 2 != 0 or float(polygon.get("area", 0.0)) <= 1e-10:
+            continue
+        bounds = polygon["bounds"]
+        min_y = max(0.0, min(source_height, float(bounds[1])))
+        max_y = max(0.0, min(source_height, float(bounds[3])))
+        if max_y - min_y <= 1e-8:
+            continue
+        epsilon = min(1e-4, max(1e-8, (max_y - min_y) * 1e-6))
+        if any(min_y + epsilon < candidate < max_y - epsilon for candidate in values):
+            continue
+        values.append((min_y + max_y) / 2.0)
+
+    return sorted({round(value, 9) for value in values})
+
+
 def vector_fill_scan_segments(vector_paths: list[dict[str, Any]],
                               source_width: float,
                               source_height: float,
@@ -6247,13 +6310,11 @@ def vector_fill_scan_segments(vector_paths: list[dict[str, Any]],
     source_step = max(0.05, float(source_step))
     polygons = _classify_fill_polygons(vector_paths)
     segments: list[tuple[Point, Point]] = []
-    y = 0.0
-    while y <= source_height + 1e-6:
+    for y in _fill_scan_y_values(polygons, source_height, source_step):
         intervals = _filled_scan_intervals(polygons, y, source_width)
         if fill_invert:
             intervals = _invert_scan_intervals(intervals, source_width)
         segments.extend(((start, y), (end, y)) for start, end in intervals)
-        y += source_step
     return segments
 
 
@@ -6667,6 +6728,17 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
     engrave_feed = _float(item.get("engraveFeed", item.get("feed", pattern.feed)), pattern.feed)
     cut_power = _int(item.get("cutPower", item.get("power", pattern.power)), pattern.power)
     cut_feed = _float(item.get("cutFeed", item.get("feed", pattern.feed)), pattern.feed)
+    converter.validate_power(engrave_power)
+    converter.validate_power(cut_power)
+
+    def path_power(vector_path: dict[str, Any], default_power: int) -> int:
+        raw_value = vector_path.get("powerOverride")
+        if raw_value in (None, ""):
+            return default_power
+        value = _int(raw_value, default_power)
+        converter.validate_power(value)
+        return value
+
     emitted = 0
     current_point = pattern_point(pattern, 0.0, 0.0)
 
@@ -6676,32 +6748,46 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
         source_step = max(0.05, pattern.line_step * source_height / max(0.001, pattern.height))
         text_settings = item.get("textSettings") if isinstance(item.get("textSettings"), dict) else {}
         generated_text = str(item.get("generatedKind") or "").lower() == "text" or bool(text_settings.get("mode"))
-        segments = vector_fill_scan_segments(
-            fill_paths,
-            source_width=source_width,
-            source_height=source_height,
-            source_step=source_step,
-            fill_invert=bool(vector_stats.get("filledTraceInvert")) and not generated_text,
-        )
-        if not segments:
+        fill_invert = bool(vector_stats.get("filledTraceInvert")) and not generated_text
+        if fill_invert:
+            fill_groups = {engrave_power: fill_paths}
+        else:
+            # Hole contours are negative space, so they inherit the power of
+            # their nearest filled parent instead of becoming a separate fill.
+            fill_groups = _group_fill_paths_by_power(fill_paths, engrave_power, path_power)
+        fill_segment_count = 0
+        for fill_power, group_paths in fill_groups.items():
+            segments = vector_fill_scan_segments(
+                group_paths,
+                source_width=source_width,
+                source_height=source_height,
+                source_step=source_step,
+                fill_invert=fill_invert,
+            )
+            if not segments:
+                continue
+            fill_segment_count += len(segments)
+            if fill_power != engrave_power:
+                lines.append(f"(contour group power S{fill_power})")
+            reverse = False
+            for start_source, end_source in segments:
+                start_point = [end_source[0], end_source[1]] if reverse else [start_source[0], start_source[1]]
+                end_point = [start_source[0], start_source[1]] if reverse else [end_source[0], end_source[1]]
+                start = embedded_vector_point(pattern, start_point, source_width, source_height)
+                end = embedded_vector_point(pattern, end_point, source_width, source_height)
+                for clipped_start, clipped_end in clip_segment_to_region(start, end, clip_region):
+                    append_powered_polyline(
+                        lines,
+                        [clipped_start, clipped_end],
+                        fill_power,
+                        engrave_feed,
+                        travel_feed,
+                    )
+                    emitted += 1
+                    current_point = clipped_end
+                reverse = not reverse
+        if fill_segment_count == 0:
             raise ValueError("Dolgulu vektor desen icin kazima satiri olusmadi.")
-        reverse = False
-        for start_source, end_source in segments:
-            start_point = [end_source[0], end_source[1]] if reverse else [start_source[0], start_source[1]]
-            end_point = [start_source[0], start_source[1]] if reverse else [end_source[0], end_source[1]]
-            start = embedded_vector_point(pattern, start_point, source_width, source_height)
-            end = embedded_vector_point(pattern, end_point, source_width, source_height)
-            for clipped_start, clipped_end in clip_segment_to_region(start, end, clip_region):
-                append_powered_polyline(
-                    lines,
-                    [clipped_start, clipped_end],
-                    engrave_power,
-                    engrave_feed,
-                    travel_feed,
-                )
-                emitted += 1
-                current_point = clipped_end
-            reverse = not reverse
         lines.append(f"({op_label} vector fill end)")
         lines.append("S0")
 
@@ -6730,6 +6816,7 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
                     "vectorPath": vector_path,
                     "path": clipped,
                     "closedSource": closed_source,
+                    "power": path_power(vector_path, cut_power if current_operation == "cut" else engrave_power),
                     "preserveStart": current_operation == "cut"
                     and _int(vector_path.get("tabCount", vector_path.get("microTabCount", 0)), 0) > 0,
                 }
@@ -6765,17 +6852,18 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
         vector_path = entry["vectorPath"]
         clipped = entry["path"]
         closed_source = bool(entry["closedSource"])
+        entry_power = int(entry["power"])
         if current_operation == "cut":
             tab_count = _int(vector_path.get("tabCount", vector_path.get("microTabCount", 0)), 0)
             tab_width = _float(vector_path.get("tabWidth", vector_path.get("microTabWidth", 0.0)), 0.0)
             if closed_source and tab_count > 0 and tab_width > 0 and clipped and converter.dist(clipped[0], clipped[-1]) <= 0.05:
                 lines.append(f"(micro tabs {tab_count} x {fmt(tab_width)}mm)")
                 for tabbed in apply_micro_tabs_to_polyline(clipped, tab_count, tab_width):
-                    append_powered_polyline(lines, tabbed, cut_power, cut_feed, travel_feed)
+                    append_powered_polyline(lines, tabbed, entry_power, cut_feed, travel_feed)
             else:
-                append_powered_polyline(lines, clipped, cut_power, cut_feed, travel_feed)
+                append_powered_polyline(lines, clipped, entry_power, cut_feed, travel_feed)
         else:
-            append_powered_polyline(lines, clipped, engrave_power, engrave_feed, travel_feed)
+            append_powered_polyline(lines, clipped, entry_power, engrave_feed, travel_feed)
         current_point = clipped[-1]
         emitted += 1
     if active_path_group:
