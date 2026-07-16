@@ -1174,6 +1174,57 @@ def test_vector_fill_scan_segments_preserve_text_counter_holes():
     assert_true(not any(start[0] < 15 < end[0] for start, end in middle), "the inner counter of O/A/B-like text must remain unengraved")
 
 
+def test_vector_fill_scan_segments_union_overlapping_thick_glyphs():
+    paths = [
+        {"points": [[0, 0], [12, 0], [12, 10], [0, 10]], "closed": True, "operation": "engrave_fill"},
+        {"points": [[8, 0], [20, 0], [20, 10], [8, 10]], "closed": True, "operation": "engrave_fill"},
+    ]
+
+    segments = core.vector_fill_scan_segments(paths, 20, 10, 5, fill_invert=False)
+    middle = [(start, end) for start, end in segments if abs(start[1] - 5) < 1e-6]
+
+    assert_true(len(middle) == 1, "overlapping thick glyph bodies should produce one continuous scan segment")
+    assert_true(abs(middle[0][0][0]) < 1e-6 and abs(middle[0][1][0] - 20) < 1e-6, "overlap must be unioned instead of cut out by even-odd parity")
+
+
+def test_generated_text_never_inverts_fill_into_its_background():
+    item = {
+        "path": "vector",
+        "name": "thick-text",
+        "generatedKind": "text",
+        "textSettings": {"mode": "outline", "text": "O"},
+        "x": 0,
+        "y": 0,
+        "width": 30,
+        "height": 30,
+        "rotation": 0,
+        "power": 250,
+        "feed": 1000,
+        "lineStep": 5,
+        "sourceWidth": 30,
+        "sourceHeight": 30,
+        "vectorEngraveMode": "fill",
+        "vectorStats": {"filledTraceInvert": True},
+        "vectorPaths": [
+            {"operation": "engrave_fill", "points": [[10, 10], [20, 10], [20, 20], [10, 20]], "closed": True, "removed": False},
+        ],
+    }
+
+    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+    powered_x: list[float] = []
+    laser_on = False
+    for line in lines:
+        if line.startswith("S") and line[1:].isdigit():
+            laser_on = int(line[1:]) > 0
+        if laser_on and line.startswith("G1 ") and "X" in line:
+            match = re.search(r"\bX(-?\d+(?:\.\d+)?)", line)
+            if match:
+                powered_x.append(float(match.group(1)))
+
+    assert_true(powered_x, "filled text should emit powered scan moves")
+    assert_true(all(10 - 1e-6 <= x <= 20 + 1e-6 for x in powered_x), "text fill must stay inside the glyph even when stale vector stats request inversion")
+
+
 def test_potrace_vector_gcode_uses_fill_scanlines():
     item = {
         "path": "vector",
@@ -2865,6 +2916,8 @@ def main():
         test_svg_export_can_invert_filled_compound_paths,
         test_vector_fill_scan_segments_support_inverted_fill,
         test_vector_fill_scan_segments_preserve_text_counter_holes,
+        test_vector_fill_scan_segments_union_overlapping_thick_glyphs,
+        test_generated_text_never_inverts_fill_into_its_background,
         test_potrace_vector_gcode_uses_fill_scanlines,
         test_potrace_vector_engrave_defaults_to_contours,
         test_potrace_vector_cut_uses_contours_not_fill_scanlines,

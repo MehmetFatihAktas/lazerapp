@@ -5,6 +5,7 @@ const {
   assignPathOperation,
   appendOpenPathToVectorModel,
   anchorPointToVectorModel,
+  classifyClosedPathNesting,
   compileVectorObjects,
   edgeIdsInRect,
   expandNestedClosedPaths,
@@ -56,6 +57,17 @@ function testSelectedOuterPathIncludesNestedTextCounters() {
   assert.deepEqual(expandNestedClosedPaths(paths, [outer]), [outer, counter, nestedIsland]);
   assert.deepEqual(expandNestedClosedPaths(paths, [counter]), [counter, nestedIsland]);
   assert.deepEqual(expandNestedClosedPaths(paths, [openStroke]), [openStroke]);
+}
+
+function testClosedPathNestingKeepsOverlappingGlyphBodiesAsOuterShapes() {
+  const firstGlyph = { id: "first", points: [[0, 0], [12, 0], [12, 10], [0, 10]], closed: true };
+  const secondGlyph = { id: "second", points: [[8, 0], [20, 0], [20, 10], [8, 10]], closed: true };
+  const counter = { id: "counter", points: [[2, 2], [5, 2], [5, 8], [2, 8]], closed: true };
+  const island = { id: "island", points: [[3, 3], [4, 3], [4, 7], [3, 7]], closed: true };
+  const classified = classifyClosedPathNesting([firstGlyph, secondGlyph, counter, island]);
+  const depths = Object.fromEntries(classified.map((entry) => [entry.path.id, entry.depth]));
+
+  assert.deepEqual(depths, { first: 0, second: 0, counter: 1, island: 2 });
 }
 
 function testOpenPathRepairsOnlyMarkedArc() {
@@ -614,4 +626,5 @@ testMaskedFragmentsTranslateThroughCanonicalEdge();
 testMovingOneSharedEdgeCreatesAValidDetachedNode();
 testSelectedClosedPathsBecomeFillWhileOpenPathsStayLines();
 testSelectedOuterPathIncludesNestedTextCounters();
-console.log("vector edit tests: 37 passed");
+testClosedPathNestingKeepsOverlappingGlyphBodiesAsOuterShapes();
+console.log("vector edit tests: 38 passed");

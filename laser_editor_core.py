@@ -6101,6 +6101,142 @@ def embedded_vector_point(pattern: RasterPattern,
     return pattern_point(pattern, local_x, local_y)
 
 
+def _fill_polygon_points(item: dict[str, Any]) -> list[Point]:
+    points = [
+        (float(point[0]), float(point[1]))
+        for point in item.get("points", [])
+        if isinstance(point, (list, tuple)) and len(point) >= 2
+    ]
+    if len(points) > 3 and math.dist(points[0], points[-1]) <= 1e-8:
+        points.pop()
+    return points
+
+
+def _fill_polygon_signed_area(points: list[Point]) -> float:
+    return sum(
+        points[index][0] * points[(index + 1) % len(points)][1]
+        - points[(index + 1) % len(points)][0] * points[index][1]
+        for index in range(len(points))
+    ) / 2.0
+
+
+def _fill_polygon_bounds(points: list[Point]) -> tuple[float, float, float, float]:
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _fill_polygon_contains(parent: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    if candidate["area"] <= 1e-10 or parent["area"] <= candidate["area"] + 1e-10:
+        return False
+    outer = parent["bounds"]
+    inner = candidate["bounds"]
+    epsilon = 1e-7
+    if (
+        inner[0] < outer[0] - epsilon
+        or inner[1] < outer[1] - epsilon
+        or inner[2] > outer[2] + epsilon
+        or inner[3] > outer[3] + epsilon
+    ):
+        return False
+    sample_step = max(1, len(candidate["points"]) // 32)
+    return all(
+        point_in_polygon(candidate["points"][index], parent["points"])
+        for index in range(0, len(candidate["points"]), sample_step)
+    )
+
+
+def _classify_fill_polygons(vector_paths: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    polygons: list[dict[str, Any]] = []
+    for item in vector_paths:
+        if item.get("removed") or not item.get("closed", True):
+            continue
+        points = _fill_polygon_points(item)
+        if len(points) < 3:
+            continue
+        signed_area = _fill_polygon_signed_area(points)
+        polygons.append(
+            {
+                "points": points,
+                "signedArea": signed_area,
+                "area": abs(signed_area),
+                "bounds": _fill_polygon_bounds(points),
+                "depth": 0,
+            }
+        )
+    for candidate in polygons:
+        candidate["depth"] = sum(
+            1
+            for parent in polygons
+            if parent is not candidate and _fill_polygon_contains(parent, candidate)
+        )
+    return polygons
+
+
+def _polygon_scan_intervals(points: list[Point], y: float, source_width: float) -> list[tuple[float, float]]:
+    intersections: list[float] = []
+    for index, (x1, y1) in enumerate(points):
+        x2, y2 = points[(index + 1) % len(points)]
+        if abs(y2 - y1) < 1e-9:
+            continue
+        if y < min(y1, y2) or y >= max(y1, y2):
+            continue
+        x = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+        if -1e-6 <= x <= source_width + 1e-6:
+            intersections.append(max(0.0, min(source_width, x)))
+    intersections.sort()
+    return [
+        (intersections[index], intersections[index + 1])
+        for index in range(0, len(intersections) - 1, 2)
+        if intersections[index + 1] - intersections[index] >= 1e-8
+    ]
+
+
+def _filled_scan_intervals(polygons: list[dict[str, Any]],
+                           y: float,
+                           source_width: float) -> list[tuple[float, float]]:
+    events: list[tuple[float, int]] = []
+    for polygon in polygons:
+        sign = 1 if int(polygon["depth"]) % 2 == 0 else -1
+        for start, end in _polygon_scan_intervals(polygon["points"], y, source_width):
+            events.append((start, sign))
+            events.append((end, -sign))
+    if not events:
+        return []
+    events.sort(key=lambda event: event[0])
+    intervals: list[tuple[float, float]] = []
+    score = 0
+    previous_x = events[0][0]
+    index = 0
+    while index < len(events):
+        x = events[index][0]
+        if score > 0 and x - previous_x >= 0.05:
+            if intervals and abs(intervals[-1][1] - previous_x) <= 1e-9:
+                intervals[-1] = (intervals[-1][0], x)
+            else:
+                intervals.append((previous_x, x))
+        delta = 0
+        while index < len(events) and abs(events[index][0] - x) <= 1e-9:
+            delta += events[index][1]
+            index += 1
+        score += delta
+        previous_x = x
+    return intervals
+
+
+def _invert_scan_intervals(intervals: list[tuple[float, float]],
+                           source_width: float) -> list[tuple[float, float]]:
+    inverted: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in intervals:
+        if start - cursor >= 0.05:
+            inverted.append((cursor, start))
+        cursor = max(cursor, end)
+    if source_width - cursor >= 0.05:
+        inverted.append((cursor, source_width))
+    return inverted
+
+
 def vector_fill_scan_segments(vector_paths: list[dict[str, Any]],
                               source_width: float,
                               source_height: float,
@@ -6109,37 +6245,14 @@ def vector_fill_scan_segments(vector_paths: list[dict[str, Any]],
     source_width = max(0.001, float(source_width))
     source_height = max(0.001, float(source_height))
     source_step = max(0.05, float(source_step))
-    polygons = [
-        [[float(point[0]), float(point[1])] for point in item.get("points", [])]
-        for item in vector_paths
-        if not item.get("removed") and item.get("closed", True) and len(item.get("points", [])) >= 3
-    ]
+    polygons = _classify_fill_polygons(vector_paths)
     segments: list[tuple[Point, Point]] = []
     y = 0.0
     while y <= source_height + 1e-6:
-        intersections: list[float] = []
+        intervals = _filled_scan_intervals(polygons, y, source_width)
         if fill_invert:
-            intersections.extend([0.0, source_width])
-        for points in polygons:
-            count = len(points)
-            for index in range(count):
-                x1, y1 = points[index]
-                x2, y2 = points[(index + 1) % count]
-                if abs(y2 - y1) < 1e-9:
-                    continue
-                low_y = min(y1, y2)
-                high_y = max(y1, y2)
-                if y < low_y or y >= high_y:
-                    continue
-                x = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
-                if -1e-6 <= x <= source_width + 1e-6:
-                    intersections.append(max(0.0, min(source_width, x)))
-        intersections.sort()
-        for index in range(0, len(intersections) - 1, 2):
-            x_start = intersections[index]
-            x_end = intersections[index + 1]
-            if x_end - x_start >= 0.05:
-                segments.append(((x_start, y), (x_end, y)))
+            intervals = _invert_scan_intervals(intervals, source_width)
+        segments.extend(((start, y), (end, y)) for start, end in intervals)
         y += source_step
     return segments
 
@@ -6561,12 +6674,14 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
     if fill_paths:
         lines.append("(engrave fill begin)")
         source_step = max(0.05, pattern.line_step * source_height / max(0.001, pattern.height))
+        text_settings = item.get("textSettings") if isinstance(item.get("textSettings"), dict) else {}
+        generated_text = str(item.get("generatedKind") or "").lower() == "text" or bool(text_settings.get("mode"))
         segments = vector_fill_scan_segments(
             fill_paths,
             source_width=source_width,
             source_height=source_height,
             source_step=source_step,
-            fill_invert=bool(vector_stats.get("filledTraceInvert")),
+            fill_invert=bool(vector_stats.get("filledTraceInvert")) and not generated_text,
         )
         if not segments:
             raise ValueError("Dolgulu vektor desen icin kazima satiri olusmadi.")

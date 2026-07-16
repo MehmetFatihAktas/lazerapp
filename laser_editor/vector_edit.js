@@ -47,14 +47,18 @@
     return polygon.length >= 3 ? polygon : null;
   }
 
-  function polygonAreaMagnitude2d(polygon) {
+  function polygonSignedArea2d(polygon) {
     let area = 0;
     for (let index = 0; index < polygon.length; index += 1) {
       const current = polygon[index];
       const next = polygon[(index + 1) % polygon.length];
       area += current[0] * next[1] - next[0] * current[1];
     }
-    return Math.abs(area / 2);
+    return area / 2;
+  }
+
+  function polygonAreaMagnitude2d(polygon) {
+    return Math.abs(polygonSignedArea2d(polygon));
   }
 
   function polygonBounds2d(polygon) {
@@ -71,12 +75,22 @@
     return { minX, minY, maxX, maxY };
   }
 
-  function polygonContainsClosedPath(parent, candidate) {
-    const parentArea = polygonAreaMagnitude2d(parent);
-    const candidateArea = polygonAreaMagnitude2d(candidate);
-    if (candidateArea <= 1e-10 || parentArea <= candidateArea + 1e-10) return false;
-    const outer = polygonBounds2d(parent);
-    const inner = polygonBounds2d(candidate);
+  function closedPolygonEntry(path) {
+    const polygon = normalizedClosedPathPolygon(path);
+    if (!polygon) return null;
+    return {
+      path,
+      polygon,
+      signedArea: polygonSignedArea2d(polygon),
+      area: polygonAreaMagnitude2d(polygon),
+      bounds: polygonBounds2d(polygon),
+    };
+  }
+
+  function polygonEntryContains(parent, candidate) {
+    if (candidate.area <= 1e-10 || parent.area <= candidate.area + 1e-10) return false;
+    const outer = parent.bounds;
+    const inner = candidate.bounds;
     const epsilon = 1e-7;
     if (
       inner.minX < outer.minX - epsilon
@@ -86,11 +100,25 @@
     ) {
       return false;
     }
-    const sampleStep = Math.max(1, Math.floor(candidate.length / 32));
-    for (let index = 0; index < candidate.length; index += sampleStep) {
-      if (!pointInPolygon2d(candidate[index], parent)) return false;
+    const sampleStep = Math.max(1, Math.floor(candidate.polygon.length / 32));
+    for (let index = 0; index < candidate.polygon.length; index += sampleStep) {
+      if (!pointInPolygon2d(candidate.polygon[index], parent.polygon)) return false;
     }
     return true;
+  }
+
+  function classifyClosedPathNesting(paths) {
+    const entries = (Array.isArray(paths) ? paths : [])
+      .filter((path) => path && !path.removed)
+      .map(closedPolygonEntry)
+      .filter(Boolean);
+    for (const candidate of entries) {
+      candidate.depth = entries.reduce(
+        (depth, parent) => depth + (parent !== candidate && polygonEntryContains(parent, candidate) ? 1 : 0),
+        0,
+      );
+    }
+    return entries;
   }
 
   function expandNestedClosedPaths(allPaths, selectedPaths) {
@@ -105,16 +133,14 @@
     };
     selected.forEach(add);
 
-    const selectedPolygons = selected
-      .map((path) => ({ path, polygon: normalizedClosedPathPolygon(path) }))
-      .filter((entry) => entry.polygon);
+    const selectedPolygons = selected.map(closedPolygonEntry).filter(Boolean);
     if (!selectedPolygons.length) return result;
 
     for (const path of sourcePaths) {
       if (seen.has(path) || path.removed) continue;
-      const polygon = normalizedClosedPathPolygon(path);
-      if (!polygon) continue;
-      if (selectedPolygons.some((entry) => polygonContainsClosedPath(entry.polygon, polygon))) add(path);
+      const candidate = closedPolygonEntry(path);
+      if (!candidate) continue;
+      if (selectedPolygons.some((entry) => polygonEntryContains(entry, candidate))) add(path);
     }
     return result;
   }
@@ -1948,6 +1974,7 @@
     affinePoint,
     affineVector,
     compileVectorObjects,
+    classifyClosedPathNesting,
     edgeIdsInRect,
     expandNestedClosedPaths,
     fitOpenPolyline,

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Lazer İş Editörü</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260716-professional-tour-v3" />
+    <link rel="stylesheet" href="/static/style.css?v=20260716-thick-text-v1" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -118,8 +118,9 @@
               <label class="rib-field">Aralık<span class="unit-input"><input id="textTracking" type="number" value="0" min="-2" step="0.2" /><b>mm</b></span></label>
               <label class="rib-field">Ağırlık<select id="textWeight"><option value="400">Normal</option><option value="600">Kalın</option><option value="700">Bold</option><option value="900">Siyah</option></select></label>
               <label class="rib-field">Stil<select id="textStyle"><option value="normal">Düz</option><option value="italic">İtalik</option></select></label>
-              <label class="rib-field">Çıktı<select id="textOperation"><option value="engrave_line">Çizgi kazıma</option><option value="engrave_fill">Dolgu Motif</option><option value="cut">Kesim kontur</option></select></label>
+              <label class="rib-field">Çıktı<select id="textOperation"><option value="engrave_line">Çizgi kazıma</option><option value="engrave_fill">Kalın dolgu kazıma</option><option value="cut">Kesim kontur</option></select></label>
               <button id="addTextBtn" class="primary">Metni Ekle</button>
+              <button id="fillSelectedTextBtn" title="Seçili metnin bütün harf gövdelerini sık taramayla dolu kazımaya çevirir.">Seçili Yazıyı Kalın Kazı</button>
             </div>
             <div class="rib-row">
               <label class="rib-field wide">Font yükle<input id="textFontUpload" type="file" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2" multiple /></label>
@@ -310,7 +311,7 @@
               <button id="vectorizePhotoBtn" class="primary">Foto Seç ve Vektörleştir</button>
               <button id="revectorizeBtn" title="Konturlar fareyle tarandıysa yalnız seçili alanı; desen seçiliyse tüm vektörü yeniden işler.">Seçili Vektörü Yeniden İşle</button>
               <button id="vectorAutoPresetBtn">Otomatik ayar</button>
-              <button id="fillSelectedVectorBtn" title="Seçili kapalı konturları taramalı dolgu kazımaya dönüştürür. Metin ve SVG vektörlerinde iç boşlukları korur.">Seçileni Dolgu Motif Yap</button>
+              <button id="fillSelectedVectorBtn" title="Yalnız seçili kapalı konturları taramalı dolgu kazımaya dönüştürür. Bütün bir yazı için Metin sekmesindeki Kalın Yazı komutunu kullanın.">Seçili Konturları Doldur</button>
               <button id="saveVectorSvgBtn">Seçili Vektörü SVG Kaydet</button>
             </div>
             <span class="ribbon-group-title">Eylemler</span>
@@ -1079,7 +1080,7 @@
     <script src="/static/selection_layout.js?v=20260716-selection-layout-v1"></script>
     <script src="/static/product_tour.js?v=20260716-product-tour-v2"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
-    <script src="/static/vector_edit.js?v=20260716-vector-fill-v2"></script>
-    <script src="/static/app.js?v=20260716-professional-tour-v3"></script>
+    <script src="/static/vector_edit.js?v=20260716-thick-text-v1"></script>
+    <script src="/static/app.js?v=20260716-thick-text-v1"></script>
   </body>
 </html>

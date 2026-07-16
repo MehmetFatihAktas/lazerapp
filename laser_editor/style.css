@@ -1634,8 +1634,43 @@ details > .wide-action {
 .vector-fill-settings input { width: 100%; }
 .vector-fill-settings label:last-child { grid-column: 1 / -1; }
 
+.text-fill-action-card {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border));
+  background: color-mix(in srgb, var(--success-bg) 72%, var(--panel));
+}
+
+.text-fill-action-card.is-active {
+  box-shadow: inset 3px 0 0 var(--success);
+}
+
+.text-fill-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.text-fill-settings label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.text-fill-settings input { width: 100%; }
+.text-fill-settings label:last-child { grid-column: 1 / -1; }
+
+.text-fill-note {
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.text-fill-action-card > button {
+  width: 100%;
+}
+
 @media (max-width: 760px) {
-  .vector-fill-settings { grid-template-columns: minmax(0, 1fr); }
+  .vector-fill-settings,
+  .text-fill-settings { grid-template-columns: minmax(0, 1fr); }
 }
 
 .preflight-panel {

@@ -502,6 +502,7 @@ const TEXT_FONT_PRESETS = [
   { id: "brush", label: "Brush Script MT", kind: "outline", family: "'Brush Script MT', cursive" },
   { id: "lucida", label: "Lucida Handwriting", kind: "outline", family: "'Lucida Handwriting', cursive" },
 ];
+const TEXT_FILL_LINE_STEP_MM = 0.12;
 
 function updateJobAnalysisNow(extra = "") {
   if (jobAnalysisTimer) {
@@ -985,6 +986,21 @@ function editableTextPattern(pattern = selectedPattern()) {
   return pattern.generatedKind === "text" || pattern.textSettings?.mode ? pattern : null;
 }
 
+function outlineTextPattern(pattern = selectedPattern()) {
+  const textPattern = editableTextPattern(pattern);
+  return textPattern?.textSettings?.mode === "outline" ? textPattern : null;
+}
+
+function textFillLineStep(pattern) {
+  const saved = Number(pattern?.textSettings?.fillLineStep);
+  if (Number.isFinite(saved) && saved > 0) return clamp(saved, 0.05, 1);
+  const current = Number(pattern?.lineStep);
+  if (patternOperation(pattern) === "engrave_fill" && Number.isFinite(current) && current > 0 && current <= 0.2) {
+    return clamp(current, 0.05, 1);
+  }
+  return TEXT_FILL_LINE_STEP_MM;
+}
+
 function textFontValueForPattern(pattern) {
   const settings = pattern?.textSettings || {};
   const definitions = textFontDefinitions();
@@ -1216,7 +1232,7 @@ function updateTextFontHint() {
   } else if (op === "cut") {
     hint.textContent = `"${font.name || font.label}" kontur olarak kesime çevrilecek. İnce yazılarda küçük iç adalar düşmeyebilir.`;
   } else if (op === "engrave_fill") {
-    hint.textContent = `"${font.name || font.label}" dolu alan yakma vektörü olarak üretilecek.`;
+    hint.textContent = `"${font.name || font.label}" bütün harf gövdesi ${TEXT_FILL_LINE_STEP_MM.toFixed(2)} mm sık taramayla kalın kazınacak.`;
   } else {
     hint.textContent = `"${font.name || font.label}" dış kontur çizgisi olarak yakılacak.`;
   }
@@ -7105,12 +7121,55 @@ function drawVectorSelectionMarquee() {
   ctx.restore();
 }
 
+const vectorFillNestingCache = new WeakMap();
+
+function classifiedVectorFillPaths(pattern, fillPaths) {
+  const cached = vectorFillNestingCache.get(pattern);
+  const unchanged = cached
+    && cached.paths.length === fillPaths.length
+    && cached.paths.every((entry, index) => {
+      const path = fillPaths[index];
+      const points = path?.points || [];
+      return entry.path === path
+        && entry.points === points
+        && entry.length === points.length
+        && entry.area === Number(path.area || 0)
+        && entry.firstX === Number(points[0]?.[0] || 0)
+        && entry.firstY === Number(points[0]?.[1] || 0)
+        && entry.lastX === Number(points[points.length - 1]?.[0] || 0)
+        && entry.lastY === Number(points[points.length - 1]?.[1] || 0);
+    });
+  if (unchanged) return cached.classified;
+  const classified = window.LaserVectorEdit.classifyClosedPathNesting(fillPaths);
+  vectorFillNestingCache.set(pattern, {
+    paths: fillPaths.map((path) => ({
+      path,
+      points: path.points,
+      length: (path.points || []).length,
+      area: Number(path.area || 0),
+      firstX: Number(path.points?.[0]?.[0] || 0),
+      firstY: Number(path.points?.[0]?.[1] || 0),
+      lastX: Number(path.points?.[(path.points || []).length - 1]?.[0] || 0),
+      lastY: Number(path.points?.[(path.points || []).length - 1]?.[1] || 0),
+    })),
+    classified,
+  });
+  return classified;
+}
+
 function drawVectorFillShape(pattern, alpha = 1) {
   const palette = canvasPalette();
+  const fillPaths = (pattern.vectorPaths || []).filter((vectorPath) => (
+    vectorPathIsActive(vectorPath, pattern)
+    && vectorPathOperation(vectorPath, pattern) === "engrave_fill"
+    && vectorPath.closed
+  ));
+  if (!fillPaths.length) return;
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.beginPath();
-  if (vectorPatternFillInvert(pattern)) {
+  const inverted = vectorPatternFillInvert(pattern);
+  if (inverted) {
     const corners = patternCorners(pattern).map(worldToScreen);
     corners.forEach((point, index) => {
       if (index === 0) ctx.moveTo(point.x, point.y);
@@ -7118,9 +7177,15 @@ function drawVectorFillShape(pattern, alpha = 1) {
     });
     ctx.closePath();
   }
-  for (const vectorPath of pattern.vectorPaths || []) {
-    if (!vectorPathIsActive(vectorPath, pattern) || vectorPathOperation(vectorPath, pattern) !== "engrave_fill" || !vectorPath.closed) continue;
-    const points = vectorWorldPath(pattern, vectorPath).map(worldToScreen);
+  const classified = classifiedVectorFillPaths(pattern, fillPaths);
+  for (const entry of classified) {
+    const wantsPositiveArea = entry.depth % 2 === 0;
+    const pointsSource = (entry.signedArea > 0) === wantsPositiveArea
+      ? entry.polygon
+      : [...entry.polygon].reverse();
+    const points = pointsSource
+      .map((point) => patternWorldPoint(pattern, vectorLocalPoint(pattern, point)))
+      .map(worldToScreen);
     if (points.length < 3) continue;
     points.forEach((point, index) => {
       if (index === 0) ctx.moveTo(point.x, point.y);
@@ -7129,7 +7194,7 @@ function drawVectorFillShape(pattern, alpha = 1) {
     ctx.closePath();
   }
   ctx.fillStyle = colorWithAlpha(palette.engraveFill, 0.58);
-  ctx.fill("evenodd");
+  ctx.fill(inverted ? "evenodd" : "nonzero");
   ctx.setLineDash([]);
   ctx.restore();
 }
@@ -7216,6 +7281,34 @@ function createInteractionVectorBitmap(pattern) {
     else bitmapContext.lineTo(x, y);
   };
 
+  const fillPaths = (pattern.vectorPaths || []).filter((vectorPath) => (
+    vectorPathIsActive(vectorPath, pattern)
+    && vectorPathOperation(vectorPath, pattern) === "engrave_fill"
+    && vectorPath.closed
+  ));
+  if (fillPaths.length) {
+    const inverted = vectorPatternFillInvert(pattern);
+    bitmapContext.beginPath();
+    if (inverted) bitmapContext.rect(0, 0, bitmap.width, bitmap.height);
+    for (const entry of classifiedVectorFillPaths(pattern, fillPaths)) {
+      const wantsPositiveArea = entry.depth % 2 === 0;
+      const points = (entry.signedArea > 0) === wantsPositiveArea
+        ? entry.polygon
+        : [...entry.polygon].reverse();
+      if (points.length < 3) continue;
+      appendPoint(points[0], true);
+      let lastIndex = 0;
+      for (let index = stride; index < points.length; index += stride) {
+        appendPoint(points[index], false);
+        lastIndex = index;
+      }
+      if (lastIndex !== points.length - 1) appendPoint(points[points.length - 1], false);
+      bitmapContext.closePath();
+    }
+    bitmapContext.fillStyle = colorWithAlpha(palette.engraveFill, 0.42);
+    bitmapContext.fill(inverted ? "evenodd" : "nonzero");
+  }
+
   for (const vectorPath of pattern.vectorPaths || []) {
     if (vectorPath.removed) continue;
     const points = vectorPath.points || [];
@@ -7231,10 +7324,6 @@ function createInteractionVectorBitmap(pattern) {
     }
     if (lastIndex !== points.length - 1) appendPoint(points[points.length - 1], false);
     if (vectorPath.closed) bitmapContext.closePath();
-    if (operation === "engrave_fill" && vectorPath.closed) {
-      bitmapContext.fillStyle = colorWithAlpha(palette.engraveFill, 0.42);
-      bitmapContext.fill("evenodd");
-    }
     bitmapContext.strokeStyle = vectorStrokeColor(palette, operation, selectedPath);
     bitmapContext.lineWidth = selectedPath ? 2.6 : operation === "cut" ? 1.6 : 1.4;
     bitmapContext.setLineDash(operation === "ignore" ? [6, 4] : []);
@@ -7424,6 +7513,7 @@ function vectorCanFillEngrave(pattern) {
 }
 
 function vectorPatternFillInvert(pattern) {
+  if (editableTextPattern(pattern)) return false;
   return Boolean(pattern?.vectorStats?.filledTraceInvert);
 }
 
@@ -8346,7 +8436,10 @@ function patternOperationDisplayLabel(pattern) {
     return "Karma · dış kesim / iç kazıma";
   }
   const commonOperation = vectorPatternCommonOperation(pattern);
-  if (commonOperation) return operationLabel(commonOperation);
+  if (commonOperation) {
+    if (commonOperation === "engrave_fill" && editableTextPattern(pattern)) return "Kalın yazı kazıma";
+    return operationLabel(commonOperation);
+  }
   if (vectorPatternHasPaths(pattern)) {
     const operations = new Set(
       (pattern.vectorPaths || [])
@@ -8355,7 +8448,8 @@ function patternOperationDisplayLabel(pattern) {
     );
     if (operations.size > 1) return "Karma · kontur bazlı işlemler";
   }
-  return operationLabel(patternOperation(pattern));
+  const operation = patternOperation(pattern);
+  return operation === "engrave_fill" && editableTextPattern(pattern) ? "Kalın yazı kazıma" : operationLabel(operation);
 }
 
 function setPatternOperationDefaults(pattern, operation) {
@@ -8376,6 +8470,107 @@ function setPatternOperationDefaults(pattern, operation) {
     pattern.feed = Math.max(1, mm("engraveFeed", 1800));
     pattern.vectorEngraveMode = nextOperation === "engrave_fill" ? "fill" : "contour";
   }
+  const textPattern = editableTextPattern(pattern);
+  if (textPattern?.textSettings) {
+    textPattern.textSettings = { ...textPattern.textSettings, operation: nextOperation };
+    if (nextOperation === "engrave_fill" && textPattern.textSettings.mode === "outline") {
+      textPattern.lineStep = textFillLineStep(textPattern);
+      textPattern.textSettings.fillLineStep = textPattern.lineStep;
+      textPattern.vectorStats = { ...(textPattern.vectorStats || {}), filledTraceInvert: false };
+    }
+  }
+}
+
+function wholeTextFillSettings(pattern) {
+  const overallOperation = patternOperation(pattern);
+  const defaultPower = clamp(Math.round(mm("engravePower", 250)), 0, 1000);
+  const defaultFeed = Math.max(1, mm("engraveFeed", 1800));
+  return {
+    power: clamp(Math.round(Number(pattern?.engravePower ?? (overallOperation === "cut" ? defaultPower : pattern?.power ?? defaultPower))), 0, 1000),
+    feed: Math.max(1, Number(pattern?.engraveFeed ?? (overallOperation === "cut" ? defaultFeed : pattern?.feed ?? defaultFeed))),
+    lineStep: textFillLineStep(pattern),
+  };
+}
+
+function wholeTextFillActionHtml(pattern) {
+  const textPattern = editableTextPattern(pattern);
+  if (!textPattern) return "";
+  if (!outlineTextPattern(textPattern)) {
+    return `<div class="operation-card text-fill-action-card">
+      <div>
+        <strong>Kalın yazı kazıma</strong>
+        <span>Tek çizgi fontun içi yoktur. Kalın kazıma için Metin &amp; Şekil sekmesinden Arial Black, Impact veya başka bir kontur font seçin.</span>
+      </div>
+      <button id="panelOpenTextFillTools">Kontur Font Seç</button>
+    </div>`;
+  }
+  const settings = wholeTextFillSettings(textPattern);
+  const active = vectorPatternCommonOperation(textPattern) === "engrave_fill";
+  return `<div class="operation-card text-fill-action-card ${active ? "is-active" : ""}">
+    <div>
+      <strong>Tüm yazıyı kalın kazı</strong>
+      <span>Bütün harf gövdelerini tek bileşik alan yapar; üst üste binen harfleri birleştirir, A/O/B iç boşluklarını korur.</span>
+    </div>
+    <div class="text-fill-settings">
+      <label>Güç S <input id="wholeTextFillPower" type="number" min="0" max="1000" step="10" value="${settings.power}" /></label>
+      <label>Hız F <input id="wholeTextFillFeed" type="number" min="1" step="50" value="${settings.feed}" /></label>
+      <label>Tarama aralığı <span class="unit-input"><input id="wholeTextFillStep" type="number" min="0.05" max="1" step="0.01" value="${settings.lineStep.toFixed(2)}" /><b>mm</b></span></label>
+    </div>
+    <small class="text-fill-note">Dolu ve düzgün görünüm için önerilen aralık 0,10–0,15 mm. Büyük aralık çizgili sonuç verir.</small>
+    <button id="panelApplyWholeTextFill" class="primary">${active ? "Dolgu Ayarlarını Tüm Yazıya Uygula" : "Tüm Yazıyı Kalın Kazı"}</button>
+  </div>`;
+}
+
+function applyWholeTextFill(pattern, options = {}) {
+  const textPattern = outlineTextPattern(pattern);
+  if (!textPattern) {
+    activateRibbonTab("metin");
+    setStatus("Kalın yazı kazıma için önce tek çizgi olmayan bir kontur font seçin.", "warn");
+    return false;
+  }
+  const fillablePaths = (textPattern.vectorPaths || []).filter((vectorPath) => !vectorPath.removed && vectorPathSupportsFill(vectorPath));
+  if (!fillablePaths.length) {
+    setStatus("Bu yazıda doldurulabilecek kapalı harf gövdesi bulunamadı.", "warn");
+    return false;
+  }
+  const defaults = wholeTextFillSettings(textPattern);
+  const power = clamp(Math.round(Number(options.power ?? document.getElementById("wholeTextFillPower")?.value ?? defaults.power)), 0, 1000);
+  const feed = Math.max(1, Number(options.feed ?? document.getElementById("wholeTextFillFeed")?.value ?? defaults.feed));
+  const lineStep = clamp(Number(options.lineStep ?? document.getElementById("wholeTextFillStep")?.value ?? defaults.lineStep), 0.05, 1);
+
+  pushUndo("Tüm yazıyı kalın kazı");
+  textPattern.operation = "engrave_fill";
+  textPattern.vectorEngraveMode = "fill";
+  textPattern.power = power;
+  textPattern.feed = feed;
+  textPattern.engravePower = power;
+  textPattern.engraveFeed = feed;
+  textPattern.lineStep = lineStep;
+  textPattern.vectorStats = { ...(textPattern.vectorStats || {}), filledTraceInvert: false };
+  textPattern.textSettings = {
+    ...(textPattern.textSettings || {}),
+    operation: "engrave_fill",
+    fillLineStep: lineStep,
+  };
+  for (const vectorPath of textPattern.vectorPaths || []) {
+    if (vectorPath.removed) continue;
+    vectorPath.operation = vectorPathSupportsFill(vectorPath) ? "engrave_fill" : "engrave_line";
+    vectorPath.operationManual = true;
+    vectorPath.regionOperation = "manual";
+  }
+  select("pattern", textPattern.id);
+  updateJobAnalysisNow();
+  setStatus(`Tüm yazı kalın kazımaya alındı: ${lineStep.toFixed(2)} mm tarama, S${power}, F${feed}.`, "ok");
+  return true;
+}
+
+function bindWholeTextFillAction(pattern) {
+  document.getElementById("panelApplyWholeTextFill")?.addEventListener("click", () => applyWholeTextFill(pattern));
+  document.getElementById("panelOpenTextFillTools")?.addEventListener("click", () => {
+    activateRibbonTab("metin");
+    refs.textFontButton?.focus();
+    setStatus("Kalın yazı için Arial Black, Impact veya yüklediğiniz dolgun bir kontur font seçin.", "info");
+  });
 }
 
 function setCadLineArtDefaults(pattern) {
@@ -8401,6 +8596,10 @@ function setProfessionalPatternDefaults(pattern, professionalMode) {
 function applyPatternOperation(pattern, operation) {
   const nextOperation = normalizeOperation(operation, pattern?.kind === "raster" ? "engrave_fill" : "engrave_line");
   if (!pattern) return;
+  if (nextOperation === "engrave_fill" && editableTextPattern(pattern)) {
+    applyWholeTextFill(pattern);
+    return;
+  }
   const needsPathSync =
     vectorPatternHasPaths(pattern) &&
     nextOperation !== "ignore" &&
@@ -8860,6 +9059,7 @@ function bindPlacementPanel(placement) {
 }
 
 function patternPanelKindText(pattern) {
+  if (editableTextPattern(pattern)) return "Metin vektörü";
   if (pattern?.kind === "vector") return "Foto vektör";
   if (pattern?.kind === "svg") return "Temiz SVG vektör";
   return "Raster kazıma";
@@ -8905,23 +9105,27 @@ function renderPatternPanel(pattern) {
   const cadLineArt = isCadLineArtPattern(pattern);
   const canFillVectorEngrave = vectorCanFillEngrave(pattern);
   const filledVectorEngrave = operation === "engrave_fill" && vectorPatternFilledPreview(pattern);
+  const textPattern = editableTextPattern(pattern);
+  const fillOperationLabel = textPattern ? "Kalın yazı kazıma" : "Dolgu Motif";
   const operationText =
     operation === "cut"
       ? "Kesim: vektör konturlarını kırmızı kesim yolu olarak üretir."
       : operation === "engrave_fill"
-        ? "Dolgu Motif: kapalı vektör alanlarını, iç boşlukları koruyarak tarama satırlarıyla kazır."
+        ? textPattern
+          ? "Kalın yazı kazıma: bütün harf gövdelerini sık tarama satırlarıyla dolu olarak kazır."
+          : "Dolgu Motif: kapalı vektör alanlarını, iç boşlukları koruyarak tarama satırlarıyla kazır."
         : operation === "ignore"
           ? "Yok say: bu nesne G-code çıktısına dahil edilmez."
           : "Kazıma çizgi: mavi çizgi kazıma yolu olarak üretir.";
   const operationControl = cadLineArt ? "" : `<div class="operation-card">
         <div>
-          <strong>İşlem</strong>
+          <strong>${textPattern ? "Yazı üretim tipi" : "İşlem"}</strong>
           <span>${operationText}</span>
         </div>
         <div class="operation-toggle">
           ${isVectorLikePattern(pattern) ? `<button data-operation="cut" class="${operation === "cut" ? "active danger-mode" : ""}">Kesim</button>` : ""}
           <button data-operation="engrave_line" class="${operation === "engrave_line" ? "active" : ""}">Kazıma çizgi</button>
-          <button data-operation="engrave_fill" class="${operation === "engrave_fill" ? "active" : ""}" ${hasVectorPaths && !canFillVectorEngrave ? "disabled" : ""}>Dolgu Motif</button>
+          <button data-operation="engrave_fill" class="${operation === "engrave_fill" ? "active" : ""}" ${hasVectorPaths && !canFillVectorEngrave ? "disabled" : ""}>${fillOperationLabel}</button>
           <button data-operation="ignore" class="${operation === "ignore" ? "active" : ""}">Yok say</button>
         </div>
       </div>`;
@@ -8963,17 +9167,26 @@ function renderPatternPanel(pattern) {
   const vectorStats = pattern.vectorStats || {};
   const multiSelectionText = state.selectedItems.length > 1 ? ` · ${state.selectedItems.length} secili` : "";
   const vectorTiming = vectorStats.timings?.total ? ` · Süre: ${Number(vectorStats.timings.total).toFixed(2)} sn` : "";
+  const vectorReadyTitle = textPattern
+    ? "Metin konturları hazır"
+    : pattern.kind === "svg"
+      ? "SVG konturları hazır"
+      : "Foto vektör hazır";
+  const vectorSourceDetails = textPattern
+    ? `<span>Font: ${escapeHtml(textPattern.textSettings?.font || "Kontur font")} · Ağırlık ${escapeHtml(textPattern.textSettings?.weight || "400")} · ${textPattern.textSettings?.style === "italic" ? "İtalik" : "Düz"}</span>
+       <span>Dolgu: ${operation === "engrave_fill" ? `${textFillLineStep(textPattern).toFixed(2)} mm sık tarama` : "Kapalı"}</span>`
+    : `<span>Kaynak: ${Number(pattern.sourceWidth || 0).toFixed(0)} x ${Number(pattern.sourceHeight || 0).toFixed(0)} px</span>
+       <span>Mod: ${vectorSettings.mode || "outline"} · Eşik: ${vectorSettings.thresholdMode || "manual"} ${vectorSettings.usedThreshold > 0 ? `(${Number(vectorSettings.usedThreshold).toFixed(0)})` : ""}</span>
+       <span>Otomatik gizlenen: ${Number(vectorStats.removedBorder || 0) + Number(vectorStats.removedShortPost || 0)} · Çerçeve: ${vectorStats.removedBorder ?? 0} · Birleşen: ${vectorStats.stitchedGap ?? 0}${vectorTiming}</span>`;
   const vectorInfo =
     hasVectorPaths
       ? `<div class="svg-clean-info">
-          <strong>${pattern.kind === "svg" ? "SVG konturları hazır" : "Foto vektör hazır"}</strong>
+          <strong>${vectorReadyTitle}</strong>
           <span>Aktif kontur: ${activeVectorCount} / ${(pattern.vectorPaths || []).length}</span>
           <span>Nokta: ${Number(vectorStats.pointsKept || vectorPatternPointCount(pattern)).toLocaleString("tr-TR")}${vectorStats.detailPreservation ? " · İnce detay koruma açık" : ""}</span>
           <span>Korunan kontur: ${lockedVectorCount}</span>
           <span>Oynatilabilir kontur: ${deformableVectorCount}</span>
-          <span>Kaynak: ${Number(pattern.sourceWidth || 0).toFixed(0)} x ${Number(pattern.sourceHeight || 0).toFixed(0)} px</span>
-          <span>Mod: ${vectorSettings.mode || "outline"} · Eşik: ${vectorSettings.thresholdMode || "manual"} ${vectorSettings.usedThreshold > 0 ? `(${Number(vectorSettings.usedThreshold).toFixed(0)})` : ""}</span>
-          <span>Otomatik gizlenen: ${Number(vectorStats.removedBorder || 0) + Number(vectorStats.removedShortPost || 0)} · Çerçeve: ${vectorStats.removedBorder ?? 0} · Birleşen: ${vectorStats.stitchedGap ?? 0}${vectorTiming}</span>
+          ${vectorSourceDetails}
         </div>`
       : "";
   const vectorQualityCard = hasVectorPaths ? `<div class="svg-clean-info">${vectorQualityHtml(pattern)}</div>` : "";
@@ -9126,6 +9339,7 @@ function renderPatternPanel(pattern) {
        <label>${operation === "cut" ? "Kesim hızı F" : "Kazıma hızı F"} <input data-pattern="feed" type="number" min="1" step="50" value="${pattern.feed}" /></label>`;
   refs.selectionPanel.innerHTML = `
     <div class="property-title"><strong>${escapeHtml(pattern.name || "Desen")}</strong><span data-pattern-geometry-summary>${kindText} · ${patternOperationDisplayLabel(pattern)} · ${pattern.width.toFixed(2)} x ${pattern.height.toFixed(2)} mm${multiSelectionText}</span></div>
+    ${wholeTextFillActionHtml(pattern)}
     ${svgInfo}
     ${vectorInfo}
     ${vectorQualityCard}
@@ -9186,6 +9400,7 @@ function renderPatternPanel(pattern) {
 
 function renderVectorPathMultiPanel(entries) {
   const patternCount = new Set(entries.map((entry) => String(entry.pattern.id))).size;
+  const singlePattern = patternCount === 1 ? entries[0]?.pattern : null;
   const lockedCount = entries.filter((entry) => entry.vectorPath.locked).length;
   const fillableCount = entries.filter((entry) => vectorPathSupportsFill(entry.vectorPath)).length;
   const operations = entries.map((entry) => vectorPathOperation(entry.vectorPath, entry.pattern));
@@ -9195,9 +9410,10 @@ function renderVectorPathMultiPanel(entries) {
       <strong>Çoklu Kontur Seçimi</strong>
       <span>${entries.length} kontur · ${patternCount} desen · ${fillableCount} kapalı${lockedCount ? ` · ${lockedCount} kilitli` : ""}</span>
     </div>
+    ${wholeTextFillActionHtml(singlePattern)}
     <div class="operation-card vector-fill-operation-card">
       <div>
-        <strong>Seçili bölgenin işlemi</strong>
+        <strong>Yalnız seçili konturların işlemi</strong>
         <span>Dolgu Motif yalnız kapalı konturları tarayarak kazır. Harflerin iç boşlukları otomatik bulunur ve korunur.</span>
       </div>
       <div class="operation-toggle">
@@ -9225,6 +9441,7 @@ function renderVectorPathMultiPanel(entries) {
       <button id="panelDeleteVectorSelection" class="danger">Seçilenleri Sil</button>
     </div>
   `;
+  bindWholeTextFillAction(singlePattern);
   refs.selectionPanel.querySelectorAll("[data-vector-selection-operation]").forEach((button) => {
     button.addEventListener("click", () => applySelectedVectorOperation(button.dataset.vectorSelectionOperation));
   });
@@ -9288,6 +9505,7 @@ function renderVectorPathPanel(pattern, vectorPath) {
       : "";
   refs.selectionPanel.innerHTML = `
     <div class="property-title"><strong>Vektor konturu</strong><span>${escapeHtml(pattern.name || "Desen")}</span></div>
+    ${wholeTextFillActionHtml(pattern)}
     <div class="svg-clean-info">
       <strong>Secili kontur</strong>
       <span>Nokta: ${(vectorPath.points || []).length}</span>
@@ -9301,7 +9519,7 @@ function renderVectorPathPanel(pattern, vectorPath) {
     </div>
     <div class="operation-card">
       <div>
-        <strong>Kontur islemi</strong>
+        <strong>Yalnız bu konturun işlemi</strong>
         <span>${operationText}</span>
       </div>
       <div class="operation-toggle">
@@ -9389,6 +9607,7 @@ function renderVectorPathPanel(pattern, vectorPath) {
       <button id="panelSelectVectorPattern">Tum Deseni Sec</button>
     </div>
   `;
+  bindWholeTextFillAction(pattern);
   refs.selectionPanel.querySelectorAll("[data-vector-path-operation]").forEach((button) => {
     button.addEventListener("click", () => applySelectedVectorOperation(button.dataset.vectorPathOperation));
   });
@@ -9709,6 +9928,7 @@ function renderVectorObjectPanel(pattern, vectorObject) {
 }
 
 function bindPatternPanel(pattern) {
+  bindWholeTextFillAction(pattern);
   refs.selectionPanel.querySelectorAll("[data-pattern]").forEach((input) => {
     bindUndoBeforeEdit(input, "Desen ayari");
     input.addEventListener("input", () => {
@@ -9733,7 +9953,12 @@ function bindPatternPanel(pattern) {
       if (key === "engravePower") pattern.power = pattern.engravePower;
       if (key === "engraveFeed") pattern.feed = pattern.engraveFeed;
       if (key === "gamma") pattern[key] = Math.max(0.2, Math.min(4, pattern[key]));
-      if (key === "lineStep") pattern[key] = Math.max(0.05, pattern[key]);
+      if (key === "lineStep") {
+        pattern[key] = Math.max(0.05, pattern[key]);
+        if (outlineTextPattern(pattern)) {
+          pattern.textSettings = { ...(pattern.textSettings || {}), fillLineStep: pattern[key] };
+        }
+      }
       if (key === "threshold") pattern[key] = clamp(Math.round(pattern[key]), 0, 255);
       if (key === "clipMargin") pattern[key] = Math.max(0, pattern[key]);
       requestCanvasDraw();
@@ -11879,6 +12104,10 @@ function createGeneratedVectorPattern(geometry, options = {}) {
   pattern.generatedKind = geometry.kind;
   pattern.textSettings = options.textSettings || geometry.textSettings || null;
   pattern.vectorStats = geometry.vectorStats || pattern.vectorStats || null;
+  if (geometry.kind === "text" && pattern.textSettings?.mode === "outline") {
+    pattern.vectorStats = { ...(pattern.vectorStats || {}), filledTraceInvert: false };
+    if (pattern.operation === "engrave_fill") pattern.lineStep = textFillLineStep(pattern);
+  }
   pattern.layoutCanRotate = Boolean(options.layoutCanRotate);
   if (options.metadata) pattern.generatorMetadata = clonePlain(options.metadata);
   ProjectState.ensureEntityIdentity(pattern, "pattern", {
@@ -12599,6 +12828,7 @@ async function buildOutlineTextGeometry(text, options) {
   const vector = data.vector;
   if (!vector?.vectorPaths?.length) return null;
   const operation = options.operation || "engrave_line";
+  const fillLineStep = clamp(Number(options.fillLineStep) || TEXT_FILL_LINE_STEP_MM, 0.05, 1);
   const vectorPaths = cloneVectorPaths(vector.vectorPaths).map((path) => {
     path.points = (path.points || []).map(([x, y]) => [x / raster.pxPerMm, y / raster.pxPerMm]);
     path.operation = operation;
@@ -12621,8 +12851,9 @@ async function buildOutlineTextGeometry(text, options) {
       weight: options.weight || refs.textWeight?.value || "400",
       style: options.style || refs.textStyle?.value || "normal",
       operation,
+      fillLineStep,
     },
-    vectorStats: vector.stats || null,
+    vectorStats: { ...(vector.stats || {}), filledTraceInvert: false },
   };
 }
 
@@ -12661,6 +12892,7 @@ async function buildEditableTextGeometry(text, font, options = {}) {
     weight,
     style,
     operation: requestedOperation,
+    fillLineStep: options.fillLineStep,
     name: options.name || `Metin ${font.name || font.label}`,
   });
   return { geometry, operation: requestedOperation };
@@ -12685,6 +12917,7 @@ async function applyFontToSelectedText(pattern, value) {
       weight: settings.weight || refs.textWeight?.value || "400",
       style: settings.style || refs.textStyle?.value || "normal",
       operation: settings.operation || patternOperation(pattern),
+      fillLineStep: Number(settings.fillLineStep) || textFillLineStep(pattern),
       name: pattern.name,
     });
     if (token !== textFontApplyToken || editableTextPattern()?.id !== patternId) return;
@@ -12710,7 +12943,8 @@ async function applyFontToSelectedText(pattern, value) {
     current.generated = true;
     current.generatedKind = "text";
     current.textSettings = geometry.textSettings;
-    current.vectorStats = geometry.vectorStats || null;
+    current.vectorStats = { ...(geometry.vectorStats || {}), filledTraceInvert: false };
+    if (operation === "engrave_fill") current.lineStep = textFillLineStep(current);
     state.images.delete(patternId);
     activeTextFontPreview = null;
     syncTextControlsFromPattern(current);
@@ -12754,6 +12988,7 @@ async function addTextPattern() {
     weight: refs.textWeight?.value || "400",
     style: refs.textStyle?.value || "normal",
     operation: requestedOperation,
+    fillLineStep: TEXT_FILL_LINE_STEP_MM,
     name: `Metin ${selectedFont.name || selectedFont.label}`,
   });
   if (!geometry) {
@@ -15571,6 +15806,16 @@ function bindControls() {
     el.addEventListener("click", () => closeDxfQuantityDialog(null));
   });
   document.getElementById("addTextBtn")?.addEventListener("click", addTextPattern);
+  document.getElementById("fillSelectedTextBtn")?.addEventListener("click", () => {
+    const pattern = editableTextPattern();
+    if (pattern) {
+      applyWholeTextFill(pattern);
+      return;
+    }
+    if (refs.textOperation) refs.textOperation.value = "engrave_fill";
+    updateTextFontHint();
+    setStatus("Yeni kalın yazı için kontur font seçin, metni yazın ve Metni Ekle düğmesine basın.", "info");
+  });
   refs.textFont?.addEventListener("change", () => {
     updateTextFontSelectionUi();
     updateTextFontHint();
