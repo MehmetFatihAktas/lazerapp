@@ -14854,31 +14854,74 @@ function hitTestBounds(worldPoint) {
   return null;
 }
 
-function hitTest(worldPoint, mode = state.canvasSelectionMode) {
+function objectPatternHitCandidate(pattern, index, worldPoint, vectorHitDistance) {
+  if (!pointInPolygon(worldPoint, patternCorners(pattern))) return null;
+  const area = Math.max(0.000001, Math.abs(Number(pattern.width) * Number(pattern.height)));
+  if (editableTextPattern(pattern)) {
+    return { type: "pattern", id: pattern.id, priority: 0, area, z: index, hitKind: "text" };
+  }
+  if (!vectorPatternHasPaths(pattern)) {
+    return { type: "pattern", id: pattern.id, priority: 2, area, z: index, hitKind: "bitmap" };
+  }
+  for (let j = (pattern.vectorPaths || []).length - 1; j >= 0; j -= 1) {
+    const vectorPath = pattern.vectorPaths[j];
+    if (vectorPath.removed) continue;
+    const points = vectorWorldPath(pattern, vectorPath);
+    const pathHit = distanceToPolyline(worldPoint, points, Boolean(vectorPath.closed)) <= vectorHitDistance;
+    const fillHit = (
+      vectorPathOperation(vectorPath, pattern) === "engrave_fill"
+      && Boolean(vectorPath.closed)
+      && points.length >= 3
+      && pointInPolygon(worldPoint, points)
+    );
+    if (pathHit || fillHit) {
+      return { type: "pattern", id: pattern.id, priority: 1, area, z: index, hitKind: fillHit ? "fill" : "stroke" };
+    }
+  }
+  if (selectedIs("pattern", pattern.id)) {
+    return { type: "pattern", id: pattern.id, priority: 3, area, z: index, hitKind: "selected-bounds" };
+  }
+  return null;
+}
+
+function hitTest(worldPoint, mode = state.canvasSelectionMode, options = {}) {
   const objectMode = mode !== "contour";
   const vectorHitDistance = Math.max(2 / Math.max(0.001, state.view.scale), 0.3);
-  for (let i = state.patterns.length - 1; i >= 0; i -= 1) {
-    const pattern = state.patterns[i];
-    if (!pointInPolygon(worldPoint, patternCorners(pattern))) continue;
-    if (vectorPatternHasPaths(pattern)) {
-      if (objectMode && state.selected?.type === "pattern" && state.selected.id === pattern.id) {
-        return { type: "pattern", id: pattern.id };
-      }
-      const vectorPaths = pattern.vectorPaths || [];
-      for (let j = vectorPaths.length - 1; j >= 0; j -= 1) {
-        const vectorPath = vectorPaths[j];
-        if (vectorPath.removed) continue;
-        const points = vectorWorldPath(pattern, vectorPath);
-        const pathHit = distanceToPolyline(worldPoint, points, Boolean(vectorPath.closed)) <= vectorHitDistance;
-        const fillHit = Boolean(vectorPath.closed) && points.length >= 3 && pointInPolygon(worldPoint, points);
-        if (pathHit || (objectMode && fillHit)) {
-          if (objectMode) return { type: "pattern", id: pattern.id };
-          return { type: "vectorPath", id: pattern.id, pathId: vectorPath.id, objectId: vectorPath.objectId || vectorPath.provenance?.objectId || "" };
-        }
-      }
-      continue;
+  if (objectMode) {
+    const candidates = [];
+    for (let i = 0; i < state.patterns.length; i += 1) {
+      const candidate = objectPatternHitCandidate(state.patterns[i], i, worldPoint, vectorHitDistance);
+      if (candidate) candidates.push(candidate);
     }
-    return { type: "pattern", id: pattern.id };
+    const selectedId = state.selected?.type === "pattern" ? state.selected.id : "";
+    const chosen = window.LaserCanvasSelection?.chooseObjectCandidate(candidates, {
+      selectedId,
+      cycle: Boolean(options.cycle),
+    }) || candidates.sort((first, second) => (
+      first.priority - second.priority
+      || first.area - second.area
+      || second.z - first.z
+    ))[0];
+    if (chosen) return { type: "pattern", id: chosen.id };
+  }
+  if (!objectMode) {
+    for (let i = state.patterns.length - 1; i >= 0; i -= 1) {
+      const pattern = state.patterns[i];
+      if (!pointInPolygon(worldPoint, patternCorners(pattern))) continue;
+      if (vectorPatternHasPaths(pattern)) {
+        const vectorPaths = pattern.vectorPaths || [];
+        for (let j = vectorPaths.length - 1; j >= 0; j -= 1) {
+          const vectorPath = vectorPaths[j];
+          if (vectorPath.removed) continue;
+          const points = vectorWorldPath(pattern, vectorPath);
+          const pathHit = distanceToPolyline(worldPoint, points, Boolean(vectorPath.closed)) <= vectorHitDistance;
+          if (pathHit) {
+            return { type: "vectorPath", id: pattern.id, pathId: vectorPath.id, objectId: vectorPath.objectId || vectorPath.provenance?.objectId || "" };
+          }
+        }
+        continue;
+      }
+    }
   }
   for (let i = state.placements.length - 1; i >= 0; i -= 1) {
     const placement = state.placements[i];
@@ -15119,7 +15162,7 @@ function onPointerDown(event) {
     return;
   }
 
-  const hit = hitTest(world);
+  const hit = hitTest(world, state.canvasSelectionMode, { cycle: event.altKey });
   if (!hit) {
     if (canvasSelectionIsContour()) beginVectorMarquee(screen, world, event);
     else beginObjectMarquee(screen, world, event);
@@ -15279,9 +15322,9 @@ function onPointerMove(event) {
             : handle
               ? "nwse-resize"
               : "";
-    const boundsHit = hitTestBounds(world);
-    const wholeObjectMove = boundsHit?.type === "placement"
-      || (boundsHit?.type === "pattern" && state.selected?.type === "pattern" && state.selected.id === boundsHit.id);
+    const objectHit = canvasSelectionIsContour() ? hitTestBounds(world) : hitTest(world, "object");
+    const wholeObjectMove = objectHit?.type === "placement"
+      || (objectHit?.type === "pattern" && state.selected?.type === "pattern" && state.selected.id === objectHit.id);
     const vectorMoveHit = canvasSelectionIsContour() ? selectedVectorMoveHit(world) : null;
     if (handleCursor || wholeObjectMove) {
       hideSelectionCursor();
