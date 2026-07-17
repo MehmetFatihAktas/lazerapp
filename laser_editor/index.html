@@ -6,7 +6,7 @@
     <!-- LASER_APP_BOOTSTRAP -->
     <title>Lazer İş Editörü</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/static/style.css?v=20260717-release-safety-v1" />
+    <link rel="stylesheet" href="/static/style.css?v=20260717-parametric-box-v2" />
   </head>
   <body>
     <div class="app-shell ribbon-shell">
@@ -686,8 +686,8 @@
         <div class="flow-card box-maker-card">
           <header class="box-maker-header">
             <div>
-              <h3 id="boxMakerTitle">Kutu Üretici</h3>
-              <p>Milimetre ölçüsünde, karşılıklı parmak geçmeleri eşleşen kesim panelleri üretir.</p>
+              <h3 id="boxMakerTitle">Parametrik Kutu Üretici</h3>
+              <p>Bitmiş iç veya dış ölçüden, malzeme ve lazer payına uygun gerçek parmak geçmeli paneller üretir.</p>
             </div>
             <button type="button" data-box-maker-close>Kapat</button>
           </header>
@@ -696,12 +696,21 @@
               <fieldset>
                 <legend>Kutu tipi</legend>
                 <div id="boxMakerType" class="segmented box-type-control">
-                  <button type="button" data-box-type="open" class="active">Açık</button>
-                  <button type="button" data-box-type="closed">Kapaklı</button>
+                  <button type="button" data-box-type="open" class="active">Açık üst</button>
+                  <button type="button" data-box-type="closed">Kapalı · 6 panel</button>
                 </div>
+                <p class="box-maker-help">Kapalı tipte üst panel parmak geçmeyle sabitlenir; açılır kapak değildir.</p>
               </fieldset>
               <fieldset>
-                <legend>Gövde ölçüsü</legend>
+                <legend>Ölçü tanımı</legend>
+                <div id="boxMakerDimensionMode" class="segmented box-type-control">
+                  <button type="button" data-box-dimension="outer" class="active">Dış ölçü</button>
+                  <button type="button" data-box-dimension="inner">İç hacim</button>
+                </div>
+                <p class="box-maker-help">Dış ölçü bitmiş kutunun kapladığı alanı, iç hacim kullanılabilir boşluğu belirtir.</p>
+              </fieldset>
+              <fieldset>
+                <legend>Genişlik · derinlik · yükseklik</legend>
                 <div class="box-maker-grid">
                   <label>Genişlik <span class="unit-input"><input id="boxWidth" type="number" value="204" min="20" max="2000" step="0.1" /><b>mm</b></span></label>
                   <label>Derinlik <span class="unit-input"><input id="boxDepth" type="number" value="70" min="20" max="2000" step="0.1" /><b>mm</b></span></label>
@@ -709,19 +718,27 @@
                 </div>
               </fieldset>
               <fieldset>
-                <legend>Geçme</legend>
+                <legend>Malzeme ve geçme</legend>
                 <div class="box-maker-grid">
                   <label>Malzeme <span class="unit-input"><input id="boxThickness" type="number" value="3" min="0.5" max="30" step="0.1" /><b>mm</b></span></label>
                   <label>Parmak hedefi <span class="unit-input"><input id="boxFingerWidth" type="number" value="12" min="1" max="100" step="0.5" /><b>mm</b></span></label>
-                  <label>Geçme payı <span class="unit-input"><input id="boxFit" type="number" value="0.1" min="-1" max="2" step="0.01" /><b>mm</b></span></label>
+                  <label>Lazer kesim payı <span class="unit-input"><input id="boxKerf" type="number" value="0.12" min="0" max="1" step="0.01" /><b>mm</b></span></label>
+                  <label>Geçme boşluğu <span class="unit-input"><input id="boxFit" type="number" value="0.05" min="-1" max="2" step="0.01" /><b>mm</b></span></label>
                 </div>
-                <p class="box-maker-help">Pozitif geçme payı tırnakları daraltıp yuvaları genişletir. Kesimden önce küçük bir geçme testi önerilir.</p>
+                <p class="box-maker-help">Kerf kesilen çizginin toplam genişliğidir ve işe eklenince genel kesim ayarına aktarılır. Pozitif boşluk geçmeyi rahatlatır.</p>
               </fieldset>
               <div id="boxMakerValidation" class="box-maker-validation" aria-live="polite"></div>
             </form>
             <section class="box-maker-preview-panel" aria-label="Kutu parçaları önizlemesi">
+              <div class="box-maker-assembly">
+                <svg id="boxMakerAssemblyPreview" viewBox="0 0 240 132" aria-label="Bitmiş kutunun montaj görünümü"></svg>
+                <div>
+                  <strong>Bitmiş kutu</strong>
+                  <p id="boxMakerDimensionSummary"></p>
+                </div>
+              </div>
               <div class="box-maker-preview-heading">
-                <strong>2B Kesim Önizlemesi</strong>
+                <strong>Kesilecek paneller</strong>
                 <span id="boxMakerStats"></span>
               </div>
               <svg id="boxMakerPreview" viewBox="0 0 600 360" preserveAspectRatio="xMidYMid meet" aria-label="Üretilecek kutu panelleri"></svg>
@@ -1108,7 +1125,7 @@
     </div>
     <script src="/static/project_state.js?v=20260717-project-v4-v1"></script>
     <script src="/static/geometry.js?v=20260707-ribbon"></script>
-    <script src="/static/box_maker.js?v=20260715-box-maker-v1"></script>
+    <script src="/static/box_maker.js?v=20260717-parametric-box-v2"></script>
     <script src="/static/asset_library.js?v=20260715-library-v1"></script>
     <script src="/static/production_state.js?v=20260716-production-state-v1"></script>
     <script src="/static/calibration_grid.js?v=20260717-percent-power-v1"></script>
@@ -1118,6 +1135,6 @@
     <script src="/static/vector_edit.js?v=20260716-thick-text-v1"></script>
     <script src="/static/canvas_selection.js?v=20260716-object-hit-v1"></script>
     <script src="/static/text_geometry.js?v=20260716-text-bounds-v1"></script>
-    <script src="/static/app.js?v=20260717-release-safety-v1"></script>
+    <script src="/static/app.js?v=20260717-parametric-box-v2"></script>
   </body>
 </html>

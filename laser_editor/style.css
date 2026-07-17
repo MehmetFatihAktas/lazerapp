@@ -2322,7 +2322,7 @@ details > .wide-action {
 
 .box-maker-body {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns: 360px minmax(0, 1fr);
   min-height: 480px;
   overflow: auto;
 }
@@ -2391,10 +2391,55 @@ details > .wide-action {
 
 .box-maker-preview-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   padding: 18px;
   background: var(--canvas);
+}
+
+.box-maker-assembly {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+#boxMakerAssemblyPreview {
+  display: block;
+  width: 230px;
+  height: 132px;
+  overflow: visible;
+}
+
+#boxMakerAssemblyPreview .box-assembly-face {
+  stroke: var(--border-strong);
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+#boxMakerAssemblyPreview .box-assembly-back { fill: color-mix(in srgb, var(--info) 11%, var(--bed)); }
+#boxMakerAssemblyPreview .box-assembly-side { fill: color-mix(in srgb, var(--warning) 10%, var(--bed)); }
+#boxMakerAssemblyPreview .box-assembly-front { fill: color-mix(in srgb, var(--cut) 9%, var(--bed)); }
+#boxMakerAssemblyPreview .box-assembly-top { fill: color-mix(in srgb, var(--success) 10%, var(--bed)); }
+
+#boxMakerAssemblyPreview .box-assembly-opening {
+  fill: color-mix(in srgb, var(--bed) 58%, transparent);
+  stroke: var(--success);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.box-maker-assembly strong { color: var(--text); font-size: 12px; }
+
+.box-maker-assembly p {
+  margin: 7px 0 0;
+  color: var(--text-muted);
+  font: 11px/1.6 var(--font-mono);
+  white-space: pre-line;
 }
 
 .box-maker-preview-heading {
@@ -3571,6 +3616,8 @@ details > .wide-action {
   .preference-field { grid-template-columns: minmax(0, 1fr); }
   .project-info-row { grid-template-columns: minmax(0, 1fr); gap: 3px; }
   .box-maker-grid { grid-template-columns: minmax(0, 1fr); }
+  .box-maker-assembly { grid-template-columns: minmax(0, 1fr); }
+  #boxMakerAssemblyPreview { width: 100%; max-width: 280px; }
   .calibration-grid-fields { grid-template-columns: minmax(0, 1fr); }
   .box-maker-header { align-items: stretch; flex-direction: column; }
   .activity-header,

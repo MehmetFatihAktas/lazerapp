@@ -67,6 +67,8 @@ const refs = {
   boxMakerModal: document.getElementById("boxMakerModal"),
   boxMakerForm: document.getElementById("boxMakerForm"),
   boxMakerPreview: document.getElementById("boxMakerPreview"),
+  boxMakerAssemblyPreview: document.getElementById("boxMakerAssemblyPreview"),
+  boxMakerDimensionSummary: document.getElementById("boxMakerDimensionSummary"),
   boxMakerStats: document.getElementById("boxMakerStats"),
   boxMakerValidation: document.getElementById("boxMakerValidation"),
   boxWidth: document.getElementById("boxWidth"),
@@ -74,6 +76,7 @@ const refs = {
   boxHeight: document.getElementById("boxHeight"),
   boxThickness: document.getElementById("boxThickness"),
   boxFingerWidth: document.getElementById("boxFingerWidth"),
+  boxKerf: document.getElementById("boxKerf"),
   boxFit: document.getElementById("boxFit"),
   calibrationModal: document.getElementById("calibrationModal"),
   calibrationForm: document.getElementById("calibrationForm"),
@@ -449,6 +452,7 @@ const state = {
   },
   boxMaker: {
     closed: false,
+    dimensionMode: "outer",
     result: null,
   },
   library: {
@@ -13171,14 +13175,19 @@ function boxMakerOptions() {
     height: refs.boxHeight?.value,
     thickness: refs.boxThickness?.value,
     fingerWidth: refs.boxFingerWidth?.value,
-    fit: refs.boxFit?.value,
+    kerf: refs.boxKerf?.value,
+    clearance: refs.boxFit?.value,
     closed: state.boxMaker.closed,
+    dimensionMode: state.boxMaker.dimensionMode,
   };
 }
 
 function updateBoxMakerTypeButtons() {
   document.querySelectorAll("[data-box-type]").forEach((button) => {
     button.classList.toggle("active", (button.dataset.boxType === "closed") === state.boxMaker.closed);
+  });
+  document.querySelectorAll("[data-box-dimension]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.boxDimension === state.boxMaker.dimensionMode);
   });
 }
 
@@ -13188,13 +13197,54 @@ function createSvgElement(name, attributes = {}) {
   return element;
 }
 
+function renderBoxAssemblyPreview(result) {
+  const svg = refs.boxMakerAssemblyPreview;
+  if (!svg) return;
+  svg.replaceChildren();
+  if (!result?.panels?.length) return;
+  const outer = result.options.outer;
+  const scale = Math.min(138 / outer.width, 62 / outer.depth, 78 / outer.height);
+  const origin = [24, 116];
+  const project = (x, y, z) => [
+    origin[0] + x * scale + y * scale * 0.42,
+    origin[1] - z * scale - y * scale * 0.28,
+  ];
+  const pointString = (points) => points.map((point) => point.map((value) => value.toFixed(2)).join(",")).join(" ");
+  const polygon = (points, className) => createSvgElement("polygon", {
+    points: pointString(points),
+    class: className,
+  });
+  const bottomFrontLeft = project(0, 0, 0);
+  const bottomFrontRight = project(outer.width, 0, 0);
+  const bottomBackRight = project(outer.width, outer.depth, 0);
+  const bottomBackLeft = project(0, outer.depth, 0);
+  const topFrontLeft = project(0, 0, outer.height);
+  const topFrontRight = project(outer.width, 0, outer.height);
+  const topBackRight = project(outer.width, outer.depth, outer.height);
+  const topBackLeft = project(0, outer.depth, outer.height);
+  svg.append(
+    polygon([bottomBackLeft, bottomBackRight, topBackRight, topBackLeft], "box-assembly-face box-assembly-back"),
+    polygon([bottomFrontRight, bottomBackRight, topBackRight, topFrontRight], "box-assembly-face box-assembly-side"),
+    polygon([bottomFrontLeft, bottomFrontRight, topFrontRight, topFrontLeft], "box-assembly-face box-assembly-front")
+  );
+  if (result.options.closed) {
+    svg.append(polygon([topFrontLeft, topFrontRight, topBackRight, topBackLeft], "box-assembly-face box-assembly-top"));
+  } else {
+    svg.append(createSvgElement("polyline", {
+      points: pointString([topFrontLeft, topFrontRight, topBackRight, topBackLeft, topFrontLeft]),
+      class: "box-assembly-opening",
+    }));
+  }
+}
+
 function renderBoxMakerPreview() {
   const result = BoxMaker.buildBox(boxMakerOptions());
   state.boxMaker.result = result;
   updateBoxMakerTypeButtons();
+  renderBoxAssemblyPreview(result);
   if (refs.boxMakerValidation) {
     const messages = result.errors.length ? result.errors : result.warnings;
-    refs.boxMakerValidation.textContent = messages.join(" ") || "Ölçüler geçerli. Karşılıklı kenarlar aynı parmak bölünmesiyle üretilecek.";
+    refs.boxMakerValidation.textContent = messages.join(" ") || "Geometri geçerli. Eş kenarlar aynı aralıkta tamamlayıcı parmak ve yuvalarla üretilecek.";
     refs.boxMakerValidation.classList.toggle("danger", result.errors.length > 0);
     refs.boxMakerValidation.classList.toggle("warn", !result.errors.length && result.warnings.length > 0);
   }
@@ -13202,14 +13252,22 @@ function renderBoxMakerPreview() {
   if (addButton) addButton.disabled = result.errors.length > 0;
   if (refs.boxMakerStats) {
     refs.boxMakerStats.textContent = result.panels.length
-      ? `${result.panels.length} parça · yaklaşık ${result.stats.totalCutLength.toFixed(0)} mm kesim`
+      ? `${result.panels.length} parça · ${(result.stats.sheetArea / 100).toFixed(0)} cm² · ${result.stats.totalCutLength.toFixed(0)} mm kesim`
       : "Geçersiz ölçü";
+  }
+  if (refs.boxMakerDimensionSummary) {
+    const outer = result.options.outer;
+    const inner = result.options.inner;
+    const entered = result.options.dimensionMode === "inner" ? "İç hacim girildi" : "Dış ölçü girildi";
+    refs.boxMakerDimensionSummary.textContent = result.panels.length
+      ? `Dış: ${outer.width} × ${outer.depth} × ${outer.height} mm\nİç: ${inner.width} × ${inner.depth} × ${inner.height} mm\n${entered} · üretim kerfi ${result.options.kerf} mm`
+      : "Ölçüler düzeltilince bitmiş kutu değerleri burada gösterilir.";
   }
   if (!refs.boxMakerPreview) return;
   refs.boxMakerPreview.replaceChildren();
   if (!result.panels.length) return;
   const layout = BoxMaker.layoutPanels(result.panels, {
-    targetWidth: Math.max(320, result.options.width * 2.2),
+    targetWidth: Math.max(320, result.options.outer.width * 2.2),
     gap: Math.max(8, result.options.thickness * 3),
   });
   const padding = Math.max(12, result.options.thickness * 4);
@@ -13223,11 +13281,11 @@ function renderBoxMakerPreview() {
     });
     const label = createSvgElement("text", {
       x: item.panel.sourceWidth / 2,
-      y: Math.min(item.panel.sourceHeight - 4, 13),
+      y: item.panel.sourceHeight / 2 + 4,
       "text-anchor": "middle",
       class: "box-preview-label",
     });
-    label.textContent = item.panel.name;
+    label.textContent = `${item.panel.name} · ${item.panel.baseWidth} × ${item.panel.baseHeight} mm`;
     group.append(path, label);
     refs.boxMakerPreview.append(group);
   }
@@ -13235,6 +13293,8 @@ function renderBoxMakerPreview() {
 
 function openBoxMaker() {
   closeProjectHub();
+  const currentJobKerf = Math.min(1, Math.max(0, Number(refs.kerf?.value) || 0));
+  if (refs.boxKerf && currentJobKerf > 0) refs.boxKerf.value = currentJobKerf.toFixed(2);
   refs.boxMakerModal?.classList.remove("hidden");
   renderBoxMakerPreview();
 }
@@ -13250,11 +13310,13 @@ function addBoxToJob() {
     setStatus(result.errors[0] || "Kutu parçaları üretilemedi.", "danger");
     return;
   }
+  if (refs.kerf) refs.kerf.value = result.options.kerf.toFixed(2);
   const boxId = ProjectState.createId("box");
-  const dimensions = `${result.options.width}×${result.options.depth}×${result.options.height}`;
+  const outer = result.options.outer;
+  const dimensions = `${outer.width}×${outer.depth}×${outer.height}`;
   const patterns = addGeneratedVectorBatch(result.panels.map((panel) => ({
     geometry: panel,
-    name: `${panel.name} · ${dimensions}`,
+    name: `${panel.name} · dış ${dimensions}`,
     role: panel.role,
     operation: "cut",
     layoutCanRotate: true,
@@ -13265,6 +13327,7 @@ function addBoxToJob() {
       boxId,
       role: panel.role,
       dimensions: clonePlain(result.options),
+      finishedSize: { width: panel.finishedWidth, height: panel.finishedHeight },
       edges: clonePlain(panel.edges),
     },
   })), {
@@ -17145,6 +17208,12 @@ function bindControls() {
   document.querySelectorAll("[data-box-type]").forEach((button) => {
     button.addEventListener("click", () => {
       state.boxMaker.closed = button.dataset.boxType === "closed";
+      renderBoxMakerPreview();
+    });
+  });
+  document.querySelectorAll("[data-box-dimension]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.boxMaker.dimensionMode = button.dataset.boxDimension === "inner" ? "inner" : "outer";
       renderBoxMakerPreview();
     });
   });
