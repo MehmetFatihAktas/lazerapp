@@ -169,6 +169,60 @@ def test_project_storage_removes_browser_source_paths():
     assert "sourceHandle" not in sanitized["patterns"][0]
 
 
+def test_default_machine_profile_round_trip_requires_complete_motion_data():
+    with TemporaryDirectory() as directory:
+        original_file = server.MACHINE_PROFILE_FILE
+        server.MACHINE_PROFILE_FILE = Path(directory) / "machine-profile.json"
+        profile = {
+            "id": "grbl-test",
+            "name": "Test GRBL",
+            "maxS": 1000,
+            "travelX": 400,
+            "travelY": 400,
+            "stepsX": 80,
+            "stepsY": 80,
+            "maxRateX": 6000,
+            "maxRateY": 6000,
+            "accelerationX": 500,
+            "accelerationY": 500,
+            "accelerationValidated": True,
+            "verified": True,
+            "source": "connected-machine",
+        }
+        try:
+            stored = server.save_default_machine_profile(profile)
+            loaded = server.load_default_machine_profile()
+            assert stored == loaded
+            assert loaded["stepsX"] == 80
+            assert loaded["accelerationValidated"] is True
+            incomplete = {**profile, "accelerationY": None}
+            try:
+                server.save_default_machine_profile(incomplete)
+            except server.ApiRequestError as exc:
+                assert exc.code == "machine_profile_motion_incomplete"
+            else:
+                raise AssertionError("incomplete motion profiles must not replace the saved default")
+        finally:
+            server.MACHINE_PROFILE_FILE = original_file
+
+
+def test_default_machine_profile_falls_back_to_offline_production_profile():
+    with TemporaryDirectory() as directory:
+        original_file = server.MACHINE_PROFILE_FILE
+        server.MACHINE_PROFILE_FILE = Path(directory) / "missing-machine-profile.json"
+        try:
+            loaded = server.load_default_machine_profile()
+            assert loaded["id"] == "offline-grbl-s1000-400"
+            assert loaded["maxS"] == 1000
+            assert loaded["travelX"] == 400
+            assert loaded["travelY"] == 400
+            assert loaded["verified"] is True
+            assert loaded["accelerationValidated"] is False
+            assert all(loaded[field] > 0 for field in server.MACHINE_PROFILE_MOTION_FIELDS)
+        finally:
+            server.MACHINE_PROFILE_FILE = original_file
+
+
 def test_recent_projects_are_server_side_and_use_opaque_ids():
     with TemporaryDirectory() as directory:
         directory = Path(directory)
@@ -229,6 +283,8 @@ def main():
         test_gcode_info_contains_stable_file_identity_and_safety,
         test_atomic_write_replaces_complete_project_file,
         test_project_storage_removes_browser_source_paths,
+        test_default_machine_profile_round_trip_requires_complete_motion_data,
+        test_default_machine_profile_falls_back_to_offline_production_profile,
         test_recent_projects_are_server_side_and_use_opaque_ids,
         test_diagnostics_excludes_project_and_gcode_content,
         test_system_font_catalog_groups_faces_and_marks_thick_families,

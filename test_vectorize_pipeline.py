@@ -11,6 +11,24 @@ import laser_editor_core as core
 
 _production_generate_from_state = core.generate_from_state
 
+TEST_MACHINE_PROFILE = {
+    "id": "test-s1000",
+    "name": "Test S1000",
+    "maxS": 1000,
+    "travelX": 1000,
+    "travelY": 1000,
+    "stepsX": 80,
+    "stepsY": 80,
+    "maxRateX": 6000,
+    "maxRateY": 6000,
+    "accelerationX": 500,
+    "accelerationY": 500,
+    "accelerationValidated": True,
+    "requiresLaserMode": True,
+    "airAssist": {"supported": False, "onCommand": "M8", "offCommand": "M9"},
+    "verified": True,
+}
+
 
 def _legacy_test_power_payload(value):
     if isinstance(value, list):
@@ -30,14 +48,8 @@ def _generate_with_v4_profile(state):
     migrated = _legacy_test_power_payload(state)
     air_assist_enabled = bool((migrated.get("settings") or {}).get("airAssist"))
     migrated["machineProfile"] = {
-        "id": "test-s1000",
-        "name": "Test S1000",
-        "maxS": 1000,
-        "travelX": 1000,
-        "travelY": 1000,
-        "requiresLaserMode": True,
+        **TEST_MACHINE_PROFILE,
         "airAssist": {"supported": air_assist_enabled, "onCommand": "M8", "offCommand": "M9"},
-        "verified": True,
     }
     placements = migrated.get("placements") or []
     for part in migrated.get("parts") or []:
@@ -1269,16 +1281,14 @@ def test_generated_text_never_inverts_fill_into_its_background():
         ],
     }
 
-    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
-    powered_x: list[float] = []
-    laser_on = False
-    for line in lines:
-        if line.startswith("S") and line[1:].isdigit():
-            laser_on = int(line[1:]) > 0
-        if laser_on and line.startswith("G1 ") and "X" in line:
-            match = re.search(r"\bX(-?\d+(?:\.\d+)?)", line)
-            if match:
-                powered_x.append(float(match.group(1)))
+    lines = core.build_embedded_vector_engrave_lines(
+        item, travel_feed=3000, operation="engrave", machine_profile=TEST_MACHINE_PROFILE
+    )
+    powered_x = [
+        point[0]
+        for path in core.powered_toolpaths_from_gcode(lines)
+        for point in path
+    ]
 
     assert_true(powered_x, "filled text should emit powered scan moves")
     assert_true(all(10 - 1e-6 <= x <= 20 + 1e-6 for x in powered_x), "text fill must stay inside the glyph even when stale vector stats request inversion")
@@ -1305,10 +1315,12 @@ def test_potrace_vector_gcode_uses_fill_scanlines():
         ],
     }
 
-    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+    lines = core.build_embedded_vector_engrave_lines(
+        item, travel_feed=3000, operation="engrave", machine_profile=TEST_MACHINE_PROFILE
+    )
 
     assert_true(any("vector fill end" in line for line in lines), "Potrace vectors should use fill scanline engraving")
-    assert_true(sum(1 for line in lines if line.startswith("S250")) >= 2, "fill scanlines should create multiple powered moves")
+    assert_true(sum(1 for line in lines if "S250" in line) >= 2, "fill scanlines should create multiple powered moves")
 
 
 def test_potrace_vector_engrave_defaults_to_contours():
@@ -1331,7 +1343,9 @@ def test_potrace_vector_engrave_defaults_to_contours():
         ],
     }
 
-    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+    lines = core.build_embedded_vector_engrave_lines(
+        item, travel_feed=3000, operation="engrave", machine_profile=TEST_MACHINE_PROFILE
+    )
 
     assert_true(not any("vector fill end" in line for line in lines), "default Potrace engraving should follow contours, not hatch-fill")
     assert_true(sum(1 for line in lines if line.startswith("S250")) == 1, "default contour engraving should power once per path")
@@ -1518,7 +1532,9 @@ def test_vector_path_operations_mix_cut_engrave_and_ignore():
         ],
     }
 
-    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+    lines = core.build_embedded_vector_engrave_lines(
+        item, travel_feed=3000, operation="engrave", machine_profile=TEST_MACHINE_PROFILE
+    )
     text = "\n".join(lines)
 
     assert_true("S900" in text, "cut path should use cut power")
@@ -1581,9 +1597,11 @@ def test_thin_fill_path_uses_group_power_override():
         ],
     }
 
-    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+    lines = core.build_embedded_vector_engrave_lines(
+        item, travel_feed=3000, operation="engrave", machine_profile=TEST_MACHINE_PROFILE
+    )
 
-    assert_true("S420" in lines, "thin filled contour should keep its group-specific power")
+    assert_true(any("S420" in line for line in lines), "thin filled contour should keep its group-specific power")
     assert_true(any("vector fill end" in line for line in lines), "thin filled contour should produce a complete fill block")
 
 
@@ -1640,10 +1658,205 @@ def test_vector_path_operation_fill_uses_scanlines():
         ],
     }
 
-    lines = core.build_embedded_vector_engrave_lines(item, travel_feed=3000, operation="engrave")
+    lines = core.build_embedded_vector_engrave_lines(
+        item, travel_feed=3000, operation="engrave", machine_profile=TEST_MACHINE_PROFILE
+    )
 
     assert_true(any("vector fill end" in line for line in lines), "path-level fill operation should use fill scanlines")
-    assert_true(sum(1 for line in lines if line.startswith("S250")) >= 2, "path fill should create multiple powered scanlines")
+    assert_true(sum(1 for line in lines if "S250" in line) >= 2, "path fill should create multiple powered scanlines")
+
+
+def test_vector_fill_gcode_uses_bounded_one_way_overscan():
+    item = {
+        "path": "vector",
+        "name": "one-way-fill",
+        "x": 0,
+        "y": 0,
+        "width": 30,
+        "height": 30,
+        "rotation": 0,
+        "power": 250,
+        "feed": 1000,
+        "lineStep": 5,
+        "sourceWidth": 30,
+        "sourceHeight": 30,
+        "fillOverscan": 2,
+        "vectorPaths": [
+            {"operation": "engrave_fill", "points": [[1, 5], [20, 5], [20, 25], [1, 25]], "closed": True, "removed": False},
+            {"operation": "engrave_fill", "points": [[8, 10], [12, 10], [12, 20], [8, 20]], "closed": True, "removed": False},
+        ],
+    }
+
+    lines = core.build_embedded_vector_engrave_lines(
+        item,
+        travel_feed=3000,
+        operation="engrave",
+        motion_bounds=(0, 0, 30, 30),
+        machine_profile=TEST_MACHINE_PROFILE,
+    )
+    powered = core.powered_toolpaths_from_gcode(lines)
+    motion_points = []
+    for line in lines:
+        x_match = re.search(r"\bX(-?\d+(?:\.\d+)?)", line)
+        y_match = re.search(r"\bY(-?\d+(?:\.\d+)?)", line)
+        if x_match and y_match:
+            motion_points.append((float(x_match.group(1)), float(y_match.group(1))))
+
+    assert_true(len(powered) >= 2, "filled vector should produce multiple powered hatch rows")
+    assert_true(all(path[-1][0] > path[0][0] for path in powered), "every powered hatch row must engrave in the same X direction")
+    assert_true(
+        any("fixed-envelope one-way" in line and "return F1000 index F300" in line for line in lines),
+        "G-code should identify the acceleration-aware fixed-envelope strategy",
+    )
+    row_count = len({round(path[0][1], 6) for path in powered})
+    index_moves = [line for line in lines if line.startswith("G1 ") and "F300" in line and "S0" in line]
+    assert_true(len(index_moves) == row_count - 1, "each next hatch row should use one separate low-speed index move")
+    assert_true(not any("F3000" in line for line in lines), "fill return moves must never exceed scan feed")
+    assert_true(len(powered) > row_count, "the counter hole fixture should contain multiple powered intervals on a row")
+    powered_min_x = min(point[0] for path in powered for point in path)
+    powered_max_x = max(point[0] for path in powered for point in path)
+    assert_true(min(point[0] for point in motion_points) < powered_min_x, "laser-off lead-in should start before the filled edge")
+    assert_true(max(point[0] for point in motion_points) > powered_max_x, "laser-off tail should clear the filled edge")
+    assert_true(all(0 <= x <= 30 and 0 <= y <= 30 for x, y in motion_points), "overscan motion must remain inside machine bounds")
+
+
+def test_vector_fill_smooth_motion_caps_return_and_settles_each_row():
+    item = {
+        "path": "vector",
+        "name": "smooth-fill",
+        "x": 0,
+        "y": 0,
+        "width": 40,
+        "height": 20,
+        "rotation": 0,
+        "power": 250,
+        "feed": 1800,
+        "lineStep": 4,
+        "sourceWidth": 40,
+        "sourceHeight": 20,
+        "smoothMotion": True,
+        "smoothFillReturnFeed": 1200,
+        "fillSettleMs": 20,
+        "vectorPaths": [
+            {"operation": "engrave_fill", "points": [[5, 2], [35, 2], [35, 18], [5, 18]], "closed": True},
+        ],
+    }
+
+    lines = core.build_embedded_vector_engrave_lines(
+        item,
+        travel_feed=3000,
+        operation="engrave",
+        motion_bounds=(0, 0, 40, 20),
+        machine_profile=TEST_MACHINE_PROFILE,
+    )
+    powered = core.powered_toolpaths_from_gcode(lines)
+    row_count = len({round(path[0][1], 6) for path in powered})
+
+    assert_true(
+        any("return F1200 index F300 settle 20ms" in line for line in lines),
+        "smooth fill should advertise its capped return and settling profile",
+    )
+    assert_true(lines.count("G4 P0.02") == row_count, "every hatch reversal should settle with the laser off")
+    for index, line in enumerate(lines):
+        if line == "G4 P0.02":
+            assert_true(index > 0 and lines[index - 1].endswith("S0"), "settling must only happen after a laser-off move")
+
+    low_feed_item = {**item, "feed": 500}
+    low_feed_lines = core.build_embedded_vector_engrave_lines(
+        low_feed_item,
+        travel_feed=1200,
+        operation="engrave",
+        motion_bounds=(0, 0, 40, 20),
+        machine_profile=TEST_MACHINE_PROFILE,
+    )
+    assert_true(
+        any("return F1200 index F300 settle 20ms" in line for line in low_feed_lines),
+        "laser-off smooth return should not inherit an unnecessarily slow engraving feed",
+    )
+
+
+def test_vector_fill_overscan_uses_machine_acceleration():
+    profile = {**TEST_MACHINE_PROFILE, "accelerationX": 200, "accelerationValidated": True}
+    distance, effective_acceleration, _step = core.calculate_fill_overscan(1800, (1.0, 0.0), profile)
+    assert_true(abs(effective_acceleration - 200) < 1e-9, "validated $120 should be used directly")
+    assert_true(abs(distance - 3.3125) < 1e-9, "F1800 at 200 mm/s2 should use the physical overscan formula")
+
+    conservative = {**profile, "accelerationValidated": False}
+    conservative_distance, conservative_acceleration, _step = core.calculate_fill_overscan(1800, (1.0, 0.0), conservative)
+    assert_true(abs(conservative_acceleration - 160) < 1e-9, "unvalidated acceleration should receive a 20 percent safety derating")
+    assert_true(conservative_distance > distance, "an unvalidated machine must receive more overscan")
+
+
+def test_vector_fill_rejects_overscan_that_does_not_fit_machine_bounds():
+    item = {
+        "path": "vector",
+        "name": "edge-fill",
+        "x": 0,
+        "y": 5,
+        "width": 12,
+        "height": 5,
+        "rotation": 0,
+        "power": 250,
+        "feed": 1800,
+        "lineStep": 1,
+        "sourceWidth": 12,
+        "sourceHeight": 5,
+        "vectorPaths": [
+            {"operation": "engrave_fill", "points": [[0.1, 0], [10, 0], [10, 5], [0.1, 5]], "closed": True},
+        ],
+    }
+    slow_acceleration = {
+        **TEST_MACHINE_PROFILE,
+        "accelerationX": 100,
+        "accelerationValidated": True,
+    }
+    assert_raises_contains(
+        lambda: core.build_embedded_vector_engrave_lines(
+            item,
+            travel_feed=3000,
+            operation="engrave",
+            motion_bounds=(0, 0, 30, 30),
+            machine_profile=slow_acceleration,
+        ),
+        "overscan makine sinirlarina sigmiyor",
+    )
+
+
+def test_filled_text_gcode_keeps_unicode_and_verified_geometry_metadata():
+    item = {
+        "path": "vector",
+        "name": "Metin: SAİM",
+        "generatedKind": "text",
+        "textSettings": {"mode": "outline", "text": "SAİM"},
+        "exportRevision": 42,
+        "x": 20,
+        "y": 20,
+        "width": 30,
+        "height": 10,
+        "rotation": 0,
+        "power": 200,
+        "feed": 1800,
+        "lineStep": 0.1,
+        "sourceWidth": 30,
+        "sourceHeight": 10,
+        "vectorPaths": [
+            {"operation": "engrave_fill", "points": [[2, 1], [28, 1], [28, 9], [2, 9]], "closed": True},
+        ],
+    }
+    lines = core.build_embedded_vector_engrave_lines(
+        item,
+        travel_feed=3000,
+        operation="engrave",
+        motion_bounds=(0, 0, 100, 100),
+        machine_profile=TEST_MACHINE_PROFILE,
+    )
+    text = "\n".join(lines)
+    assert_true("(engrave vector Metin: SAIM" in text, "Turkish letters should be transliterated, not dropped from comments")
+    assert_true("(text_ascii=SAIM)" in text, "ASCII-safe text identity should be exported")
+    assert_true("(text_codepoints=0053-0041-0130-004D)" in text, "Unicode code points should preserve the exact source text")
+    assert_true("(text_revision=42)" in text, "text and geometry should share the export revision")
+    assert_true("(geometry_verified=source_scan_intervals)" in text, "source-to-G-code interval comparison should run during export")
+    assert_true(re.search(r"\(geometry_sha256=[0-9a-f]{64}\)", text) is not None, "verified powered geometry should be hashed")
 
 
 def test_open_vector_path_fill_falls_back_to_line_engrave():
@@ -1927,6 +2140,91 @@ def test_generate_preserves_per_pattern_calibration_power_and_feed():
         )
 
 
+def test_generate_prioritizes_text_before_other_engraving_and_cutting():
+    with TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "text-first.nc"
+        patterns = [
+            {
+                "id": "ornament-first-in-ui",
+                "kind": "vector",
+                "path": "embedded-ornament",
+                "name": "Ornament",
+                "x": 30,
+                "y": 5,
+                "width": 10,
+                "height": 10,
+                "rotation": 0,
+                "operation": "engrave_line",
+                "power": 200,
+                "feed": 1200,
+                "sourceWidth": 10,
+                "sourceHeight": 10,
+                "vectorPaths": [
+                    {"operation": "engrave_line", "closed": False, "points": [[0, 5], [10, 5]]},
+                ],
+            },
+            {
+                "id": "text-last-in-ui",
+                "kind": "vector",
+                "path": "embedded-text",
+                "name": "Metin: TEST",
+                "generatedKind": "text",
+                "textSettings": {"mode": "outline", "text": "TEST"},
+                "x": 5,
+                "y": 5,
+                "width": 10,
+                "height": 10,
+                "rotation": 0,
+                "operation": "engrave_line",
+                "power": 700,
+                "feed": 900,
+                "sourceWidth": 10,
+                "sourceHeight": 10,
+                "vectorPaths": [
+                    {"operation": "engrave_line", "closed": False, "points": [[0, 5], [10, 5]]},
+                ],
+            },
+            {
+                "id": "cut-after-text",
+                "kind": "vector",
+                "path": "embedded-cut",
+                "name": "Cut contour",
+                "x": 45,
+                "y": 5,
+                "width": 8,
+                "height": 8,
+                "rotation": 0,
+                "operation": "cut",
+                "power": 900,
+                "feed": 500,
+                "sourceWidth": 8,
+                "sourceHeight": 8,
+                "vectorPaths": [
+                    {"operation": "cut", "closed": True, "points": [[0, 0], [8, 0], [8, 8], [0, 8]]},
+                ],
+            },
+        ]
+
+        core.generate_from_state(
+            {
+                "parts": [],
+                "placements": [],
+                "patterns": patterns,
+                "settings": base_generation_settings(),
+                "outputPath": str(output_path),
+            }
+        )
+
+        lines = output_path.read_text(encoding="utf-8").splitlines()
+        powered_values = [
+            int(match.group(1))
+            for line in lines
+            for match in [re.fullmatch(r"S(\d+)", line.strip())]
+            if match and int(match.group(1)) > 0
+        ]
+        assert_true(powered_values[:3] == [700, 200, 900], f"text should engrave before other engraving and cutting: {powered_values}")
+
+
 def test_generate_mixed_vector_uses_dedicated_fill_and_cut_settings():
     with TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "mixed-fill.nc"
@@ -1969,9 +2267,55 @@ def test_generate_mixed_vector_uses_dedicated_fill_and_cut_settings():
 
         lines = output_path.read_text(encoding="utf-8").splitlines()
         assert_true(result["patternCount"] == 1, "the mixed vector should enter the job")
-        assert_true("S230" in lines and "S850" in lines, "fill and cut paths should keep their dedicated powers")
+        assert_true(
+            any("S230" in line for line in lines) and "S850" in lines,
+            "fill and cut paths should keep their dedicated powers",
+        )
         assert_true(any(line.startswith("G1 ") and "F1600" in line for line in lines), "filled text should use the engraving feed")
         assert_true(any(line.startswith("G1 ") and "F420" in line for line in lines), "cut contours should use the cut feed")
+
+
+def test_generate_return_origin_stays_inside_homing_boundary():
+    with TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "safe-return.nc"
+        settings = {**base_generation_settings(), "returnToOrigin": True, "margin": 1.5}
+        core.generate_from_state(
+            {
+                "parts": [],
+                "placements": [],
+                "patterns": [
+                    {
+                        "id": "line",
+                        "kind": "vector",
+                        "path": "embedded-line",
+                        "name": "Line",
+                        "x": 5,
+                        "y": 5,
+                        "width": 10,
+                        "height": 10,
+                        "rotation": 0,
+                        "operation": "engrave_line",
+                        "power": 250,
+                        "feed": 1000,
+                        "sourceWidth": 10,
+                        "sourceHeight": 10,
+                        "vectorPaths": [
+                            {"operation": "engrave_line", "closed": False, "points": [[0, 5], [10, 5]]},
+                        ],
+                    }
+                ],
+                "settings": settings,
+                "outputPath": str(output_path),
+            }
+        )
+
+        lines = output_path.read_text(encoding="utf-8").splitlines()
+        assert_true(
+            lines[-1] == "G1 X2 Y2 F1200 S0",
+            "smooth return should stay clear of the homing boundary and respect the safe travel cap",
+        )
+        assert_true(any("motion profile smooth travel F1200" in line for line in lines), "artifact should record the active motion profile")
+        assert_true("G0 X0 Y0" not in lines, "editor output must not drive directly onto the limit switch boundary")
 
 
 def test_generate_rejects_when_every_active_object_is_outside():
@@ -3085,6 +3429,11 @@ def main():
         test_thin_fill_path_uses_group_power_override,
         test_fill_power_group_keeps_counter_hole_open,
         test_vector_path_operation_fill_uses_scanlines,
+        test_vector_fill_gcode_uses_bounded_one_way_overscan,
+        test_vector_fill_smooth_motion_caps_return_and_settles_each_row,
+        test_vector_fill_overscan_uses_machine_acceleration,
+        test_vector_fill_rejects_overscan_that_does_not_fit_machine_bounds,
+        test_filled_text_gcode_keeps_unicode_and_verified_geometry_metadata,
         test_open_vector_path_fill_falls_back_to_line_engrave,
         test_raster_photo_engrave_modulates_power_by_grayscale,
         test_clip_segment_respects_part_margin,
@@ -3095,7 +3444,9 @@ def main():
         test_pattern_point_supports_mirroring,
         test_generate_excludes_active_placement_outside_bed,
         test_generate_preserves_per_pattern_calibration_power_and_feed,
+        test_generate_prioritizes_text_before_other_engraving_and_cutting,
         test_generate_mixed_vector_uses_dedicated_fill_and_cut_settings,
+        test_generate_return_origin_stays_inside_homing_boundary,
         test_generate_rejects_when_every_active_object_is_outside,
         test_generate_excludes_pattern_bound_to_outside_placement,
         test_generate_validates_available_area_polygon,

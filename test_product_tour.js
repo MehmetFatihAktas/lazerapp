@@ -7,7 +7,7 @@ function test(name, fn) {
 }
 
 test("tour starts only for unseen versions", () => {
-  assert.equal(ProductTour.TOUR_VERSION, 2);
+  assert.equal(ProductTour.TOUR_VERSION, 3);
   assert.equal(ProductTour.shouldAutoStart({}, 1), true);
   assert.equal(ProductTour.shouldAutoStart({ productTourVersion: 1 }, 1), false);
   assert.equal(ProductTour.shouldAutoStart({ productTourVersion: 1 }, 2), true);

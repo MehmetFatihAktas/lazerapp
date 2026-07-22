@@ -5,7 +5,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function createLaserProductTour() {
   "use strict";
 
-  const TOUR_VERSION = 2;
+  const TOUR_VERSION = 3;
 
   function finite(value, fallback = 0) {
     const parsed = Number(value);

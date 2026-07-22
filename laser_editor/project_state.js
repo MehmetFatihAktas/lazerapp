@@ -13,6 +13,15 @@
     maxS: 1000,
     travelX: 400,
     travelY: 400,
+    stepsX: null,
+    stepsY: null,
+    maxRateX: null,
+    maxRateY: null,
+    accelerationX: null,
+    accelerationY: null,
+    accelerationValidated: false,
+    laserOnDelayMs: 0,
+    laserOffDelayMs: 0,
     requiresLaserMode: true,
     airAssist: Object.freeze({ supported: false, onCommand: "M8", offCommand: "M9" }),
     focus: Object.freeze({
@@ -53,6 +62,12 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  function positiveFiniteOrNull(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
   function normalizeMachineProfile(value = {}, fallback = LEGACY_MACHINE_PROFILE) {
     const source = value && typeof value === "object" ? value : {};
     const airAssist = source.airAssist && typeof source.airAssist === "object" ? source.airAssist : fallback.airAssist;
@@ -63,6 +78,15 @@
       maxS: Math.max(1, finiteNumber(source.maxS, fallback.maxS)),
       travelX: Math.max(1, finiteNumber(source.travelX, fallback.travelX)),
       travelY: Math.max(1, finiteNumber(source.travelY, fallback.travelY)),
+      stepsX: positiveFiniteOrNull(source.stepsX ?? fallback.stepsX),
+      stepsY: positiveFiniteOrNull(source.stepsY ?? fallback.stepsY),
+      maxRateX: positiveFiniteOrNull(source.maxRateX ?? fallback.maxRateX),
+      maxRateY: positiveFiniteOrNull(source.maxRateY ?? fallback.maxRateY),
+      accelerationX: positiveFiniteOrNull(source.accelerationX ?? fallback.accelerationX),
+      accelerationY: positiveFiniteOrNull(source.accelerationY ?? fallback.accelerationY),
+      accelerationValidated: Boolean(source.accelerationValidated),
+      laserOnDelayMs: clamp(finiteNumber(source.laserOnDelayMs, fallback.laserOnDelayMs || 0), 0, 1000),
+      laserOffDelayMs: clamp(finiteNumber(source.laserOffDelayMs, fallback.laserOffDelayMs || 0), 0, 1000),
       requiresLaserMode: source.requiresLaserMode !== false,
       airAssist: {
         supported: Boolean(airAssist.supported),
@@ -81,6 +105,29 @@
       verifiedAt: source.verifiedAt || null,
       source: String(source.source || fallback.source || "manual"),
     };
+  }
+
+  function machineProfileHasMotionData(value = {}) {
+    const profile = normalizeMachineProfile(value);
+    return Boolean(
+      profile.verified
+      && [
+        profile.stepsX,
+        profile.stepsY,
+        profile.maxRateX,
+        profile.maxRateY,
+        profile.accelerationX,
+        profile.accelerationY,
+      ].every((item) => Number.isFinite(Number(item)) && Number(item) > 0)
+    );
+  }
+
+  function selectMachineProfile(projectProfile = {}, defaultProfile = null) {
+    const project = normalizeMachineProfile(projectProfile);
+    const savedDefault = defaultProfile ? normalizeMachineProfile(defaultProfile) : null;
+    if (machineProfileHasMotionData(project)) return project;
+    if (savedDefault && machineProfileHasMotionData(savedDefault)) return savedDefault;
+    return project;
   }
 
   function legacyPowerPercent(value) {
@@ -409,6 +456,8 @@
     markAutosaved,
     normalizePreferences,
     normalizeMachineProfile,
+    machineProfileHasMotionData,
+    selectMachineProfile,
     migrateProject,
     normalizeRecentProjects,
     upsertRecentProject,

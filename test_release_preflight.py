@@ -1,3 +1,4 @@
+import copy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -29,6 +30,13 @@ def machine_profile(max_s=1000):
         "maxS": max_s,
         "travelX": 400,
         "travelY": 400,
+        "stepsX": 80,
+        "stepsY": 80,
+        "maxRateX": 6000,
+        "maxRateY": 6000,
+        "accelerationX": 200,
+        "accelerationY": 200,
+        "accelerationValidated": False,
         "requiresLaserMode": True,
         "airAssist": {"supported": False, "onCommand": "M8", "offCommand": "M9"},
         "verified": True,
@@ -163,6 +171,59 @@ def test_preflight_blocks_outside_open_cut_and_unknown_profile():
     assert any(item["code"] == "machine_profile_invalid" for item in result.blockers)
 
 
+def test_filled_vector_preflight_requires_and_checks_motion_profile():
+    state = base_state()
+    state["patterns"] = [
+        {
+            "id": "text-1",
+            "kind": "vector",
+            "name": "Metin: SAİM",
+            "generatedKind": "text",
+            "textSettings": {"mode": "outline", "text": "SAİM"},
+            "x": 30,
+            "y": 30,
+            "width": 20,
+            "height": 8,
+            "sourceWidth": 20,
+            "sourceHeight": 8,
+            "lineStep": 0.1,
+            "operation": "engrave_fill",
+            "vectorPaths": [
+                {"id": "path-1", "closed": True, "operation": "engrave_fill", "points": [[0, 0], [20, 0], [20, 8], [0, 8]]}
+            ],
+        }
+    ]
+
+    ready = core.preflight_state(state)
+    assert not ready.blockers
+    assert any(item["code"] == "machine_acceleration_unvalidated" for item in ready.warnings)
+
+    incomplete = copy.deepcopy(state)
+    incomplete["machineProfile"]["accelerationX"] = None
+    blocked = core.preflight_state(incomplete)
+    assert any(item["code"] == "machine_motion_profile_incomplete" for item in blocked.blockers)
+
+    snapshot = {
+        "connected": True,
+        "lastStatus": {"state": "Idle"},
+        "statusAgeMs": 100,
+        "settings": {
+            "30": 1000,
+            "32": 1,
+            "100": 80,
+            "101": 80,
+            "110": 6000,
+            "111": 6000,
+            "120": 250,
+            "121": 200,
+            "130": 400,
+            "131": 400,
+        },
+    }
+    mismatch = core.preflight_state(state, machine_snapshot=snapshot, require_machine=True)
+    assert any(item["code"] == "machine_x_acceleration_mismatch" for item in mismatch.blockers)
+
+
 def test_authoritative_preflight_requires_source_decision():
     with TemporaryDirectory() as directory:
         path = Path(directory) / "part.dxf"
@@ -224,6 +285,7 @@ def main():
         test_svg_physical_units_and_aspect_ratio,
         test_percent_power_maps_to_machine_max_s,
         test_preflight_blocks_outside_open_cut_and_unknown_profile,
+        test_filled_vector_preflight_requires_and_checks_motion_profile,
         test_authoritative_preflight_requires_source_decision,
         test_authoritative_preflight_requires_embedded_raster_data,
         test_safe_gcode_copy_only_repairs_shutdown,

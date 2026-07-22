@@ -5,6 +5,7 @@ const {
   assignPathOperation,
   appendOpenPathToVectorModel,
   anchorPointToVectorModel,
+  coalesceDegreeTwoOpenEdges,
   classifyClosedPathNesting,
   compileVectorObjects,
   edgeIdsInRect,
@@ -247,6 +248,91 @@ function testManualOpenPathReusesExactGraphEndpoints() {
   const compiled = compileVectorObjects(appended.model);
   assert.deepEqual(compiled.errors, []);
   assert.equal(compiled.vectorPaths.find((path) => path.edgeId === appended.edgeId).operation, "engrave_line");
+}
+
+function testManualBridgeCoalescesIntoOneContinuousPath() {
+  const model = migrateVectorPathsToModel([
+    { id: "body", points: [[0, 0], [2, 0]], closed: false, operation: "engrave_line" },
+    { id: "foot", points: [[2, 3], [4, 3]], closed: false, operation: "engrave_line" },
+  ], { sourceWidth: 5, sourceHeight: 5, designWidth: 50, designHeight: 50 });
+  const bodyEdge = model.vectorGraph.edges.find((edge) => edge.id === "edge:body");
+  const footEdge = model.vectorGraph.edges.find((edge) => edge.id === "edge:foot");
+  const appended = appendOpenPathToVectorModel(model, {
+    id: "replacement-leg",
+    points: [[2, 0], [2.4, 1.4], [2, 3]],
+    closed: false,
+    operation: "engrave_line",
+  }, {
+    startNodeId: bodyEdge.endNodeId,
+    endNodeId: footEdge.startNodeId,
+  });
+  const joined = coalesceDegreeTwoOpenEdges(appended.model, appended.edgeId);
+  const compiled = compileVectorObjects(joined.model);
+
+  assert.equal(joined.mergedEdgeCount, 2);
+  assert.equal(joined.closed, false);
+  assert.equal(joined.model.vectorGraph.edges.length, 1);
+  assert.equal(joined.model.vectorObjects.length, 1);
+  assert.deepEqual(compiled.errors, []);
+  assert.equal(compiled.vectorPaths.length, 1);
+  assert.deepEqual(
+    compiled.vectorPaths[0].points.map((point) => point.map((value) => Number(value.toFixed(6)))),
+    [[0, 0], [2, 0], [2.4, 1.4], [2, 3], [4, 3]]
+  );
+}
+
+function testManualBridgeCanCloseOneOpenPath() {
+  const model = migrateVectorPathsToModel([
+    { id: "outline", points: [[0, 0], [4, 0], [4, 4]], closed: false, operation: "cut" },
+  ], { sourceWidth: 5, sourceHeight: 5, designWidth: 50, designHeight: 50 });
+  const outline = model.vectorGraph.edges.find((edge) => edge.id === "edge:outline");
+  const appended = appendOpenPathToVectorModel(model, {
+    id: "closing-side",
+    points: [[4, 4], [0, 4], [0, 0]],
+    closed: false,
+    operation: "cut",
+  }, {
+    startNodeId: outline.endNodeId,
+    endNodeId: outline.startNodeId,
+  });
+  const joined = coalesceDegreeTwoOpenEdges(appended.model, appended.edgeId);
+  const compiled = compileVectorObjects(joined.model);
+
+  assert.equal(joined.mergedEdgeCount, 1);
+  assert.equal(joined.closed, true);
+  assert.equal(joined.model.vectorGraph.edges.length, 1);
+  assert.equal(compiled.vectorPaths.length, 1);
+  assert.equal(compiled.vectorPaths[0].closed, true);
+  assert.deepEqual(compiled.vectorPaths[0].points, [[0, 0], [4, 0], [4, 4], [0, 4]]);
+}
+
+function testManualBridgeDoesNotFlattenAJunctionOrMixedOperation() {
+  const model = migrateVectorPathsToModel([
+    { id: "body", points: [[0, 0], [4, 0]], closed: false, operation: "engrave_line" },
+  ], { sourceWidth: 6, sourceHeight: 6, designWidth: 60, designHeight: 60 });
+  const anchored = anchorPointToVectorModel(model, [2, 0], { edgeId: "edge:body", snapTolerance: 0.01 });
+  const free = anchorPointToVectorModel(anchored.model, [2, 3], { allowFree: true, snapTolerance: 0.01 });
+  const appended = appendOpenPathToVectorModel(free.model, {
+    id: "branch",
+    points: [[2, 0], [2, 3]],
+    closed: false,
+    operation: "engrave_line",
+  }, { startNodeId: anchored.nodeId, endNodeId: free.nodeId });
+  const junction = coalesceDegreeTwoOpenEdges(appended.model, appended.edgeId);
+  assert.equal(junction.mergedEdgeCount, 0, "a degree-three junction must stay as separate graph edges");
+
+  const mixed = migrateVectorPathsToModel([
+    { id: "engrave", points: [[0, 0], [2, 0]], closed: false, operation: "engrave_line" },
+  ], { sourceWidth: 4, sourceHeight: 4, designWidth: 40, designHeight: 40 });
+  const engrave = mixed.vectorGraph.edges.find((edge) => edge.id === "edge:engrave");
+  const cut = appendOpenPathToVectorModel(mixed, {
+    id: "cut-extension",
+    points: [[2, 0], [4, 0]],
+    closed: false,
+    operation: "cut",
+  }, { startNodeId: engrave.endNodeId });
+  const mixedResult = coalesceDegreeTwoOpenEdges(cut.model, cut.edgeId);
+  assert.equal(mixedResult.mergedEdgeCount, 0, "different laser operations must not be flattened together");
 }
 
 function testAnchorSplitsOpenEdgeAndKeepsOwnership() {
@@ -622,6 +708,9 @@ testLocalWidenPreservesSharedGraphJunctions();
 testLocalWidenKeepsJunctionFixedBesideExcludedEdge();
 testLegacyMigrationPreservesOneObjectPerPath();
 testManualOpenPathReusesExactGraphEndpoints();
+testManualBridgeCoalescesIntoOneContinuousPath();
+testManualBridgeCanCloseOneOpenPath();
+testManualBridgeDoesNotFlattenAJunctionOrMixedOperation();
 testAnchorSplitsOpenEdgeAndKeepsOwnership();
 testAnchorCanCreateFreeEndpointWithoutChangingEdges();
 testAnchorRotatesClosedEdgeToSharedNode();
@@ -647,4 +736,4 @@ testContourPowerOverrideSurvivesCanonicalReconcile();
 testSelectedClosedPathsBecomeFillWhileOpenPathsStayLines();
 testSelectedOuterPathIncludesNestedTextCounters();
 testClosedPathNestingKeepsOverlappingGlyphBodiesAsOuterShapes();
-console.log("vector edit tests: 39 passed");
+console.log("vector edit tests: 42 passed");

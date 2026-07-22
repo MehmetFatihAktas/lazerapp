@@ -6,10 +6,47 @@
     <!-- LASER_APP_BOOTSTRAP -->
     <title>Lazer İş Editörü</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/static/style.css?v=20260717-parametric-box-v2" />
+    <link rel="stylesheet" href="/static/style.css?v=20260719-workspace-v4-1" />
   </head>
   <body>
-    <div class="app-shell ribbon-shell">
+    <!-- Lucide icon sprite (ISC). Kept local so the editor remains fully offline. -->
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></symbol>
+      <symbol id="icon-folder-open" viewBox="0 0 24 24"><path d="M6 14 8 10h11a2 2 0 0 1 1.9 2.6l-1.4 4.8A2 2 0 0 1 17.6 19H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4l2 3h7a2 2 0 0 1 2 2v2" /></symbol>
+      <symbol id="icon-save" viewBox="0 0 24 24"><path d="M15.2 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.8Z" /><path d="M17 21v-8H7v8M7 3v5h8" /></symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></symbol>
+      <symbol id="icon-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" /></symbol>
+      <symbol id="icon-bell" viewBox="0 0 24 24"><path d="M10.3 21h3.4M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /></symbol>
+      <symbol id="icon-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 1 1 5.8 1c0 2-3 2-3 4M12 18h.01" /></symbol>
+      <symbol id="icon-file-output" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h8M14 2v6h6M18 13v6M15 16l3 3 3-3" /></symbol>
+      <symbol id="icon-file-plus" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6M12 18v-6M9 15h6" /></symbol>
+      <symbol id="icon-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-5-5L5 21" /></symbol>
+      <symbol id="icon-wand" viewBox="0 0 24 24"><path d="m15 4 5 5L8 21l-5-5ZM6 13l5 5M6 3v4M4 5h4M19 14v4M17 16h4" /></symbol>
+      <symbol id="icon-box" viewBox="0 0 24 24"><path d="m21 8-9 5-9-5 9-5Z" /><path d="m3 8 9 5v9l-9-5ZM21 8l-9 5v9l9-5Z" /></symbol>
+      <symbol id="icon-library" viewBox="0 0 24 24"><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16" /></symbol>
+      <symbol id="icon-layout" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></symbol>
+      <symbol id="icon-type" viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16" /></symbol>
+      <symbol id="icon-pen-tool" viewBox="0 0 24 24"><path d="m12 19 7-7 3 3-7 7-3-3ZM18 13l-1.5-7.5L2 2l3.5 14.5L13 18M2 2l7.6 7.6M11 11a2 2 0 1 1-2.8-2.8A2 2 0 0 1 11 11Z" /></symbol>
+      <symbol id="icon-pencil" viewBox="0 0 24 24"><path d="m18 2 4 4L7 21H3v-4ZM14.5 5.5l4 4" /></symbol>
+      <symbol id="icon-ruler" viewBox="0 0 24 24"><path d="m14.5 2.5 7 7-12 12-7-7Z" /><path d="m12 5 2 2M9 8l2 2M6 11l2 2M15 8l2 2" /></symbol>
+      <symbol id="icon-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" /></symbol>
+      <symbol id="icon-file-check" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6M9 15l2 2 4-4" /></symbol>
+      <symbol id="icon-mouse" viewBox="0 0 24 24"><path d="m5 3 14 9-6 1-3 6Z" /></symbol>
+      <symbol id="icon-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 12h10" /></symbol>
+      <symbol id="icon-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3M11 8v6M8 11h6" /></symbol>
+      <symbol id="icon-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3M8 11h6" /></symbol>
+      <symbol id="icon-maximize" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></symbol>
+      <symbol id="icon-shrink" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" /></symbol>
+      <symbol id="icon-focus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3" /></symbol>
+      <symbol id="icon-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></symbol>
+      <symbol id="icon-rotate-cw" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8" /><path d="M21 3v5h-5" /></symbol>
+      <symbol id="icon-chevron-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6" /></symbol>
+      <symbol id="icon-layers" viewBox="0 0 24 24"><path d="m12 2 9 5-9 5-9-5ZM3 12l9 5 9-5M3 17l9 5 9-5" /></symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21h-4v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3.1 14H3v-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.5V3h4v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></symbol>
+      <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" /></symbol>
+      <symbol id="icon-shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3Z" /><path d="m9 12 2 2 4-4" /></symbol>
+    </svg>
+    <div class="app-shell ribbon-shell" data-active-workspace="design">
       <!-- ===================== BASLIK CUBUGU ===================== -->
       <header class="titlebar">
         <div class="brand">
@@ -23,18 +60,19 @@
           <span id="unitChip" class="status-chip locked">mm</span>
           <span id="bedChip" class="status-chip">Tabla: 400 × 400 mm</span>
           <span id="layoutChip" class="status-chip">Yerleşim yok</span>
-          <span id="warningChip" class="status-chip">Uyarı: 0</span>
+          <button id="warningChip" type="button" class="status-chip" title="İş uyarılarını aç">Uyarı: 0</button>
         </div>
         <div class="title-actions">
-          <button id="homeNavBtn">Projeler</button>
-          <button id="openProjectBtn">İşi Aç</button>
-          <button id="saveProjectBtn">İşi Kaydet</button>
-          <button id="projectInfoBtn" title="Proje bilgisi ve kayıt durumu">Bilgi</button>
-          <button id="productionHistoryBtn" title="Üretilen ve makineye gönderilen işleri göster">Geçmiş</button>
-          <button id="notificationsBtn" class="notification-button" title="Uyarılar ve makine bildirimleri">Bildirimler<span id="notificationBadge" class="notification-badge hidden">0</span></button>
-          <button id="productTourBtn" class="tour-launch-button" title="Uygulama özelliklerinin tanıtımını başlat">Tanıtım</button>
-          <button id="helpBtn" class="icon-title-button" title="Kısayollar ve tanılama" aria-label="Kısayollar ve tanılama">?</button>
-          <button id="generateBtn" class="accent">G-code Oluştur</button>
+          <button id="homeNavBtn" class="command-button"><svg class="ui-icon"><use href="#icon-folder" /></svg><span>Projeler</span></button>
+          <button id="openProjectBtn" class="icon-button" title="İş aç" aria-label="İş aç"><svg class="ui-icon"><use href="#icon-folder-open" /></svg></button>
+          <button id="saveProjectBtn" class="icon-button" title="İşi kaydet" aria-label="İşi kaydet"><svg class="ui-icon"><use href="#icon-save" /></svg></button>
+          <button id="projectInfoBtn" class="icon-button" title="Proje bilgisi ve kayıt durumu" aria-label="Proje bilgisi"><svg class="ui-icon"><use href="#icon-info" /></svg></button>
+          <button id="productionHistoryBtn" class="icon-button" title="Üretim geçmişi" aria-label="Üretim geçmişi"><svg class="ui-icon"><use href="#icon-history" /></svg></button>
+          <button id="notificationsBtn" class="icon-button notification-button" title="Uyarılar ve makine bildirimleri" aria-label="Bildirimler"><svg class="ui-icon"><use href="#icon-bell" /></svg><span id="notificationBadge" class="notification-badge hidden">0</span></button>
+          <button id="productTourBtn" class="tour-launch-button command-button" title="Uygulama tanıtımı"><svg class="ui-icon"><use href="#icon-help" /></svg><span>Tanıtım</span></button>
+          <button id="helpBtn" class="icon-button" title="Kısayollar ve tanılama" aria-label="Kısayollar ve tanılama"><svg class="ui-icon"><use href="#icon-settings" /></svg></button>
+          <button id="openCutSettingsBtn" class="cut-settings-shortcut command-button" title="Kesim ve kazıma ayarlarını aç"><svg class="ui-icon"><use href="#icon-sliders" /></svg><span>Kesim Ayarları</span></button>
+          <button id="generateBtn" class="accent command-button"><svg class="ui-icon"><use href="#icon-file-output" /></svg><span data-button-label>G-code Oluştur</span></button>
         </div>
       </header>
 
@@ -60,7 +98,7 @@
           <span class="workflow-connector" aria-hidden="true"></span>
           <button class="workflow-tab" data-workspace-mode="device">
             <span class="workflow-step-index">04</span>
-            <span class="workflow-step-copy"><strong>Cihaz</strong><small>Bağlantı ve üretim</small></span>
+            <span class="workflow-step-copy"><strong>Makine</strong><small>Bağlantı ve üretim</small></span>
             <span class="workflow-step-status" data-workflow-status="device">Bağlı değil</span>
           </button>
         </div>
@@ -71,33 +109,39 @@
       </nav>
 
       <!-- ===================== SERIT (RIBBON) ===================== -->
-      <nav class="ribbon-tabs" role="tablist">
-        <button class="ribbon-tab active" data-tab="ekle" role="tab" aria-selected="true"><strong>Ekle</strong><small>Dosya ve kütüphane</small></button>
-        <button class="ribbon-tab" data-tab="metin" role="tab" aria-selected="false"><strong>Metin &amp; Şekil</strong><small>Vektör içerik</small></button>
-        <button class="ribbon-tab" data-tab="tabla" role="tab" aria-selected="false"><strong>Tabla &amp; Yerleşim</strong><small>Üretim alanı</small></button>
-        <button class="ribbon-tab" data-tab="kesim" role="tab" aria-selected="false"><strong>Kesim &amp; Kazıma</strong><small>İşlem parametreleri</small></button>
-        <button class="ribbon-tab" data-tab="vektor" role="tab" aria-selected="false"><strong>Vektör</strong><small>Kontur işleme</small></button>
-        <button class="ribbon-tab" data-tab="gorsel" role="tab" aria-selected="false"><strong>Görsel</strong><small>Raster düzenleme</small></button>
-        <button class="ribbon-tab" data-tab="cizim" role="tab" aria-selected="false"><strong>Çizim</strong><small>Serbest araçlar</small></button>
-        <button class="ribbon-tab" data-tab="cikti" role="tab" aria-selected="false"><strong>Çıktı</strong><small>Kontrol ve üretim</small></button>
-      </nav>
+      <div class="tool-shelf-header">
+        <nav class="ribbon-tabs" role="tablist" aria-label="Aşama araçları">
+          <button class="ribbon-tab active" data-tab="ekle" data-workspace="design" role="tab" aria-selected="true"><svg class="ui-icon"><use href="#icon-file-plus" /></svg><strong>Ekle</strong></button>
+          <button class="ribbon-tab" data-tab="metin" data-workspace="design" role="tab" aria-selected="false"><svg class="ui-icon"><use href="#icon-type" /></svg><strong>Metin &amp; Şekil</strong></button>
+          <button class="ribbon-tab" data-tab="tabla" data-workspace="prepare" role="tab" aria-selected="false"><svg class="ui-icon"><use href="#icon-ruler" /></svg><strong>Tabla &amp; Yerleşim</strong></button>
+          <button class="ribbon-tab" data-tab="kesim" data-workspace="prepare" role="tab" aria-selected="false"><svg class="ui-icon"><use href="#icon-sliders" /></svg><strong>Kesim &amp; Kazıma</strong></button>
+          <button class="ribbon-tab" data-tab="vektor" data-workspace="design" role="tab" aria-selected="false"><svg class="ui-icon"><use href="#icon-pen-tool" /></svg><strong>Vektör</strong></button>
+          <button class="ribbon-tab" data-tab="gorsel" data-workspace="design" role="tab" aria-selected="false"><svg class="ui-icon"><use href="#icon-image" /></svg><strong>Görsel</strong></button>
+          <button class="ribbon-tab" data-tab="cizim" data-workspace="design" role="tab" aria-selected="false"><svg class="ui-icon"><use href="#icon-pencil" /></svg><strong>Çizim</strong></button>
+          <button class="ribbon-tab" data-tab="cikti" data-workspace="prepare" role="tab" aria-selected="false"><svg class="ui-icon"><use href="#icon-file-check" /></svg><strong>Çıktı</strong></button>
+        </nav>
+        <div class="tool-shelf-actions">
+          <button id="ribbonAdvancedBtn" class="icon-button shelf-advanced-button" type="button" title="Gelişmiş araçları göster" aria-label="Gelişmiş araçları göster" aria-pressed="false" hidden><svg class="ui-icon"><use href="#icon-sliders" /></svg></button>
+          <button id="ribbonCollapseBtn" class="icon-button shelf-collapse-button" type="button" title="Araç şeridini daralt" aria-label="Araç şeridini daralt" aria-expanded="true"><svg class="ui-icon"><use href="#icon-chevron-up" /></svg></button>
+        </div>
+      </div>
 
       <div class="ribbon-body">
         <!-- ---- EKLE ---- -->
         <div class="ribbon-panel active" data-tab="ekle">
           <div class="ribbon-group">
             <div class="rib-btn-row">
-              <button id="addDxfBtn" class="primary">DXF Ekle</button>
-              <button id="addImageBtn">Desen Ekle</button>
-              <button id="vectorizeBtn">Foto→Vektör</button>
-              <button id="openBoxMakerBtn">Kutu Üretici</button>
-              <button id="openLibraryBtn">Kütüphane</button>
+              <button id="addDxfBtn" class="primary command-button"><svg class="ui-icon"><use href="#icon-file-plus" /></svg><span>DXF Ekle</span></button>
+              <button id="addImageBtn" class="command-button"><svg class="ui-icon"><use href="#icon-image" /></svg><span>Desen Ekle</span></button>
+              <button id="vectorizeBtn" class="command-button"><svg class="ui-icon"><use href="#icon-wand" /></svg><span>Foto→Vektör</span></button>
+              <button id="openBoxMakerBtn" class="command-button"><svg class="ui-icon"><use href="#icon-box" /></svg><span>Kutu Üretici</span></button>
+              <button id="openLibraryBtn" class="command-button"><svg class="ui-icon"><use href="#icon-library" /></svg><span>Kütüphane</span></button>
             </div>
             <span class="ribbon-group-title">İçe Aktar</span>
           </div>
           <div class="ribbon-sep"></div>
           <div class="ribbon-group">
-            <div class="rib-btn-row"><button id="autoLayoutBtn" class="primary">Otomatik Yerleştir</button></div>
+            <div class="rib-btn-row"><button id="autoLayoutBtn" class="primary command-button"><svg class="ui-icon"><use href="#icon-layout" /></svg><span>Otomatik Yerleştir</span></button></div>
             <span class="ribbon-group-title">Yerleştir</span>
           </div>
         </div>
@@ -223,6 +267,7 @@
               <button id="saveProfileBtn">Kaydet</button>
               <button id="deleteProfileBtn" class="danger">Sil</button>
               <button id="openCalibrationBtn">Kalibrasyon Plakası</button>
+              <button id="openTextTestBtn" class="accent" title="Seçtiğiniz yazıyı farklı güç ve hızlarla deneyin">Yazı Testi</button>
             </div>
             <p class="hint" id="profileHint">Profil kesim + kazıma + kerf ayarlarını tek tıkla doldurur.</p>
             <span class="ribbon-group-title">Malzeme Profili</span>
@@ -235,7 +280,7 @@
               <label class="rib-field">Pas<input id="passes" type="number" value="1" min="1" step="1" /></label>
               <label class="rib-field">Bindirme<span class="unit-input"><input id="overcut" type="number" value="0.8" min="0" step="0.1" /><b>mm</b></span></label>
               <label class="rib-field">Kerf<span class="unit-input"><input id="kerf" type="number" value="0" min="0" max="1" step="0.05" /><b>mm</b></span></label>
-              <label class="rib-field">Boş hrkt<span class="unit-input"><input id="travelFeed" type="number" value="3000" min="1" step="50" /><b>mm/dk</b></span></label>
+              <label class="rib-field">Boş hrkt<span class="unit-input"><input id="travelFeed" type="number" value="1200" min="1" step="50" /><b>mm/dk</b></span></label>
               <label class="rib-field">Pierce<input id="pierceDelay" type="number" value="0" min="0" step="0.1" /></label>
             </div>
             <div class="rib-row">
@@ -245,7 +290,8 @@
             </div>
             <p class="hint laser-mode-hint" id="laserModeHint">M4 önerilir: hareket yavaşladığında güç düşer; duran kafada lazer söner.</p>
             <label class="checkline"><input id="innerFirst" type="checkbox" checked /> İç çizgiler önce</label>
-              <label class="checkline"><input id="returnOrigin" type="checkbox" /> Sonda X0 Y0</label>
+              <label class="checkline" title="Boş hareketi F1200, dolgu dönüşünü F900 ile sınırlar; tarama dönüşlerinde lazer kapalı 20 ms mekanik oturma uygular."><input id="smoothMotion" type="checkbox" checked /> Yumuşak hareket</label>
+              <label class="checkline"><input id="returnOrigin" type="checkbox" /> Sonda güvenli başlangıca dön</label>
               <label class="checkline hidden"><input id="airAssist" type="checkbox" checked disabled /> Hava</label>
               <label class="rib-field hidden">Hava<select id="airAssistCommand" disabled><option value="M8" selected>M8</option></select></label>
             </div>
@@ -410,6 +456,7 @@
               </select></label>
               <label class="rib-field">Yumuşatma<input id="drawingSmoothing" type="number" value="45" min="0" max="100" step="5" /></label>
               <label class="checkline"><input id="drawingClosePath" type="checkbox" /> Yolu kapat</label>
+              <label class="checkline"><input id="drawingAutoJoin" type="checkbox" checked /> Yakındaki vektöre bağla</label>
             </div>
             <div class="rib-btn-row">
               <button id="startDrawingBtn" type="button" class="primary">Çizime Başla</button>
@@ -448,10 +495,10 @@
       <!-- ===================== CALISMA ALANI ===================== -->
       <main class="workspace ribbon-workspace">
         <aside class="left-panel panel tree-panel">
-          <details open>
-            <summary>İş Özeti</summary>
-            <div id="jobSummaryGrid" class="summary-grid"></div>
-          </details>
+          <header class="panel-heading">
+            <div><span class="panel-eyebrow">İş yapısı</span><h2>Nesneler</h2></div>
+            <span id="objectCountBadge" class="count-badge">0</span>
+          </header>
           <details open>
             <summary>Parçalar</summary>
             <div class="section-title inline-title">
@@ -464,27 +511,26 @@
             <summary>Desenler</summary>
             <div id="patternsList" class="item-list"></div>
           </details>
-          <details open>
-            <summary>Uyarılar</summary>
-            <div id="warningsList" class="warning-list"></div>
-          </details>
         </aside>
 
         <section class="canvas-panel">
           <div class="canvas-toolbar">
             <div class="tool-group">
               <div id="canvasSelectionMode" class="selection-mode-switch" role="group" aria-label="Tuval seçim modu">
-                <button id="selectToolBtn" type="button" data-selection-mode="object" class="active" aria-pressed="true" title="Metin, SVG, görsel ve DXF parçalarını tek nesne olarak seçer. Üst üste nesnelerde Alt+tık diğer nesneye geçer.">Nesne</button>
-                <button id="contourSelectToolBtn" type="button" data-selection-mode="contour" aria-pressed="false" title="Vektörün içindeki tek tek konturları seçer">Kontur</button>
+                <button id="selectToolBtn" type="button" data-selection-mode="object" class="active" aria-pressed="true" title="Nesne seçimi"><svg class="ui-icon"><use href="#icon-mouse" /></svg><span>Nesne</span></button>
+                <button id="contourSelectToolBtn" type="button" data-selection-mode="contour" aria-pressed="false" title="Kontur seçimi"><svg class="ui-icon"><use href="#icon-scan" /></svg><span>Kontur</span></button>
               </div>
-              <button id="zoomInBtn">Yakınlaş</button>
-              <button id="zoomOutBtn">Uzaklaş</button>
-              <button id="fitViewBtn">Tabla’ya Sığdır</button>
-              <button id="centerBtn">Ortala</button>
-              <button id="fitBtn">Seçileni Sığdır</button>
-              <button id="rotateLeftBtn">-15°</button>
-              <button id="rotateRightBtn">+15°</button>
-              <button id="rotate90Btn">90°</button>
+              <span class="toolbar-separator" aria-hidden="true"></span>
+              <button id="zoomInBtn" class="icon-button" title="Yakınlaş" aria-label="Yakınlaş"><svg class="ui-icon"><use href="#icon-zoom-in" /></svg></button>
+              <button id="zoomOutBtn" class="icon-button" title="Uzaklaş" aria-label="Uzaklaş"><svg class="ui-icon"><use href="#icon-zoom-out" /></svg></button>
+              <button id="fitViewBtn" class="icon-button" title="Tablayı ekrana sığdır" aria-label="Tablayı ekrana sığdır"><svg class="ui-icon"><use href="#icon-maximize" /></svg></button>
+              <span class="toolbar-separator" aria-hidden="true"></span>
+              <button id="centerBtn" class="icon-button" title="Seçileni ortala" aria-label="Seçileni ortala"><svg class="ui-icon"><use href="#icon-focus" /></svg></button>
+              <button id="fitBtn" class="icon-button" title="Seçileni tablaya sığdır" aria-label="Seçileni tablaya sığdır"><svg class="ui-icon"><use href="#icon-shrink" /></svg></button>
+              <button id="rotateLeftBtn" class="icon-button" title="15° sola döndür" aria-label="15 derece sola döndür"><svg class="ui-icon"><use href="#icon-rotate-ccw" /></svg></button>
+              <button id="rotateRightBtn" class="icon-button" title="15° sağa döndür" aria-label="15 derece sağa döndür"><svg class="ui-icon"><use href="#icon-rotate-cw" /></svg></button>
+              <button id="rotate90Btn" class="icon-button rotate-90-button" title="90° döndür" aria-label="90 derece döndür"><svg class="ui-icon"><use href="#icon-rotate-cw" /></svg><small>90°</small></button>
+              <span class="toolbar-separator" aria-hidden="true"></span>
               <select id="selectionArrange" title="Çoklu seçimi hizala veya eşit dağıt" aria-label="Çoklu seçimi düzenle">
                 <option value="">Hizala…</option>
                 <option value="left">Sola hizala</option>
@@ -501,6 +547,15 @@
             <div class="canvas-readout" id="canvasReadout">400 × 400 mm</div>
           </div>
           <canvas id="editorCanvas"></canvas>
+          <div id="canvasEmptyState" class="canvas-empty-state" aria-live="polite">
+            <div class="empty-state-mark"><svg class="ui-icon"><use href="#icon-file-plus" /></svg></div>
+            <h2>Yeni iş</h2>
+            <div class="empty-state-actions">
+              <button type="button" class="primary command-button" data-command-target="addDxfBtn"><svg class="ui-icon"><use href="#icon-file-plus" /></svg><span>DXF Ekle</span></button>
+              <button type="button" class="command-button" data-command-target="addImageBtn"><svg class="ui-icon"><use href="#icon-image" /></svg><span>Görsel Ekle</span></button>
+              <button type="button" class="command-button" data-command-target="openBoxMakerBtn"><svg class="ui-icon"><use href="#icon-box" /></svg><span>Kutu Oluştur</span></button>
+            </div>
+          </div>
           <div id="selectionCursor" class="canvas-selection-cursor" hidden aria-hidden="true"><span></span></div>
           <div class="canvas-overlay">
             <div class="legend">
@@ -513,24 +568,42 @@
           </div>
         </section>
 
-        <aside class="right-panel panel">
-          <section>
-            <h2>Seçili Nesne</h2>
+        <aside class="right-panel panel inspector-panel">
+          <header class="panel-heading">
+            <div><span class="panel-eyebrow">Bağlamsal</span><h2>Özellikler</h2></div>
+            <svg class="ui-icon panel-heading-icon" aria-hidden="true"><use href="#icon-settings" /></svg>
+          </header>
+          <section class="inspector-content">
             <div id="selectionPanel" class="selection-empty">Seçim yok</div>
-          </section>
-          <section>
-            <h2>G-code Ön Kontrol</h2>
-            <div id="preflightPanel" class="preflight-panel"></div>
-          </section>
-          <section>
-            <h2>Özet</h2>
-            <div class="summary" id="summaryBox"></div>
           </section>
         </aside>
       </main>
 
-      <footer id="bottomStatus" class="bottom-status">
-        DXF: 0 dosya / 0 parça | Yerleşen: 0/0 | Desen: 0 | Dışta: 0 | Uyarı: 0
+      <footer id="jobDrawer" class="job-drawer">
+        <button id="jobDrawerToggle" class="job-drawer-toggle" type="button" aria-expanded="false" aria-controls="jobDrawerBody">
+          <svg class="ui-icon drawer-chevron"><use href="#icon-chevron-up" /></svg>
+          <span class="job-drawer-title">İş durumu</span>
+          <span id="bottomStatus" class="bottom-status">İş boş</span>
+          <span id="jobDrawerSeverity" class="drawer-severity idle">Bekliyor</span>
+        </button>
+        <div id="jobDrawerBody" class="job-drawer-body" hidden>
+          <section class="drawer-section drawer-summary-section">
+            <header><svg class="ui-icon"><use href="#icon-layers" /></svg><h2>İş özeti</h2></header>
+            <div id="jobSummaryGrid" class="summary-grid"></div>
+          </section>
+          <section class="drawer-section drawer-warning-section">
+            <header><svg class="ui-icon"><use href="#icon-alert" /></svg><h2>Uyarılar</h2></header>
+            <div id="warningsList" class="warning-list"></div>
+          </section>
+          <section class="drawer-section drawer-preflight-section">
+            <header><svg class="ui-icon"><use href="#icon-shield-check" /></svg><h2>Ön kontrol</h2></header>
+            <div id="preflightPanel" class="preflight-panel"></div>
+            <details class="technical-summary">
+              <summary>Teknik ayrıntılar</summary>
+              <pre class="summary" id="summaryBox"></pre>
+            </details>
+          </section>
+        </div>
       </footer>
 
       <!-- Proje merkezi -->
@@ -756,7 +829,7 @@
         <div class="flow-backdrop" data-calibration-close></div>
         <form id="calibrationForm" class="flow-card calibration-card">
           <header class="activity-header">
-            <div><h3 id="calibrationTitle">Güç / Hız Kalibrasyonu</h3><p>Her karenin kendi yüzde gücü ve F hızı vardır; gerçek S değeri makine profilinden üretilir.</p></div>
+            <div><h3 id="calibrationTitle">Güç / Hız Kalibrasyonu</h3><p id="calibrationDescription">Her karenin kendi yüzde gücü ve F hızı vardır; gerçek S değeri makine profilinden üretilir.</p></div>
             <button type="button" data-calibration-close>Kapat</button>
           </header>
           <div class="calibration-body">
@@ -765,7 +838,7 @@
               <div class="calibration-grid-fields">
                 <label>Sütun <input id="calibrationColumns" type="number" min="2" max="10" value="5" step="1" /></label>
                 <label>Satır <input id="calibrationRows" type="number" min="2" max="10" value="5" step="1" /></label>
-                <label>Kare <span class="unit-input"><input id="calibrationTile" type="number" min="5" max="50" value="12" step="1" /><b>mm</b></span></label>
+                <label id="calibrationTileField">Kare <span class="unit-input"><input id="calibrationTile" type="number" min="5" max="50" value="12" step="1" /><b>mm</b></span></label>
                 <label>Aralık <span class="unit-input"><input id="calibrationGap" type="number" min="1" max="20" value="3" step="0.5" /><b>mm</b></span></label>
               </div>
             </fieldset>
@@ -778,7 +851,19 @@
                 <label>Maks hız F <input id="calibrationMaxFeed" type="number" min="1" value="1500" step="50" /></label>
               </div>
             </fieldset>
-            <label class="preference-field"><span>İşlem</span><select id="calibrationOperation"><option value="cut">Kesim testi</option><option value="engrave_line">Çizgi kazıma testi</option></select></label>
+            <label class="preference-field"><span>İşlem</span><select id="calibrationOperation"><option value="cut">Kesim testi</option><option value="engrave_line">Çizgi kazıma testi</option><option value="text_fill">Dolgulu yazı testi</option></select></label>
+            <fieldset id="calibrationTextFields" class="calibration-text-fields hidden">
+              <legend>Test edilecek yazı</legend>
+              <label class="calibration-text-value">Metin <input id="calibrationText" type="text" value="TEST" maxlength="80" /></label>
+              <div class="calibration-text-grid">
+                <label>Font <select id="calibrationTextFont"><option value="arial-black">Arial Black</option></select></label>
+                <label>Yükseklik <span class="unit-input"><input id="calibrationTextHeight" type="number" min="2" max="30" value="6" step="0.5" /><b>mm</b></span></label>
+                <label>Kalınlık <select id="calibrationTextWeight"><option value="400">Normal</option><option value="700" selected>Kalın</option><option value="900">Çok kalın</option></select></label>
+                <label>Harf aralığı <span class="unit-input"><input id="calibrationTextTracking" type="number" min="-1" max="5" value="0" step="0.1" /><b>mm</b></span></label>
+                <label>Dolgu çizgisi <span class="unit-input"><input id="calibrationTextLineStep" type="number" min="0.05" max="1" value="0.12" step="0.01" /><b>mm</b></span></label>
+              </div>
+              <p class="hint">Hızlı ve güvenli başlangıç: 6 örnek, F1200–2400 ve 0,12 mm dolgu. Kısa bir test metni toplam süreyi ciddi biçimde azaltır.</p>
+            </fieldset>
             <div id="calibrationSummary" class="calibration-summary"></div>
           </div>
           <div class="flow-actions calibration-actions">
@@ -905,6 +990,13 @@
               <label>Maks S <input id="machineProfileMaxS" type="number" min="1" step="1" value="1000" /></label>
               <label>X sınırı <span class="unit-input"><input id="machineProfileTravelX" type="number" min="1" step="1" value="400" /><b>mm</b></span></label>
               <label>Y sınırı <span class="unit-input"><input id="machineProfileTravelY" type="number" min="1" step="1" value="400" /><b>mm</b></span></label>
+              <label>X çözünürlük <span class="unit-input"><input id="machineProfileStepsX" type="number" min="0.001" step="0.001" placeholder="$100" /><b>step/mm</b></span></label>
+              <label>Y çözünürlük <span class="unit-input"><input id="machineProfileStepsY" type="number" min="0.001" step="0.001" placeholder="$101" /><b>step/mm</b></span></label>
+              <label>X azami hız <span class="unit-input"><input id="machineProfileMaxRateX" type="number" min="1" step="1" placeholder="$110" /><b>mm/dk</b></span></label>
+              <label>Y azami hız <span class="unit-input"><input id="machineProfileMaxRateY" type="number" min="1" step="1" placeholder="$111" /><b>mm/dk</b></span></label>
+              <label>X ivme <span class="unit-input"><input id="machineProfileAccelerationX" type="number" min="0.001" step="0.001" placeholder="$120" /><b>mm/sn²</b></span></label>
+              <label>Y ivme <span class="unit-input"><input id="machineProfileAccelerationY" type="number" min="0.001" step="0.001" placeholder="$121" /><b>mm/sn²</b></span></label>
+              <label class="checkline" title="Yalnız kuru hareket ve konum geri dönüş testi geçtiyse işaretleyin."><input id="machineProfileAccelerationValidated" type="checkbox" /> İvme fiziksel testte doğrulandı</label>
               <label class="checkline"><input id="machineProfileAirAssist" type="checkbox" /> Air assist</label>
             </div>
             <div class="button-grid">
@@ -1128,13 +1220,13 @@
     <script src="/static/box_maker.js?v=20260717-parametric-box-v2"></script>
     <script src="/static/asset_library.js?v=20260715-library-v1"></script>
     <script src="/static/production_state.js?v=20260716-production-state-v1"></script>
-    <script src="/static/calibration_grid.js?v=20260717-percent-power-v1"></script>
+    <script src="/static/calibration_grid.js?v=20260720-fast-text-test-v1"></script>
     <script src="/static/selection_layout.js?v=20260716-selection-layout-v1"></script>
-    <script src="/static/product_tour.js?v=20260717-product-tour-v3"></script>
+    <script src="/static/product_tour.js?v=20260717-workspace-shell-v1"></script>
     <script src="/static/packing.js?v=20260710-compact-pack"></script>
-    <script src="/static/vector_edit.js?v=20260716-thick-text-v1"></script>
+    <script src="/static/vector_edit.js?v=20260720-vector-autojoin-v1"></script>
     <script src="/static/canvas_selection.js?v=20260716-object-hit-v1"></script>
     <script src="/static/text_geometry.js?v=20260716-text-bounds-v1"></script>
-    <script src="/static/app.js?v=20260717-parametric-box-v2"></script>
+    <script src="/static/app.js?v=20260720-fast-text-test-v1"></script>
   </body>
 </html>

@@ -13,6 +13,7 @@ import mimetypes
 import re
 import tempfile
 import time
+import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from itertools import chain
@@ -39,6 +40,13 @@ except ImportError:  # pragma: no cover
 
 Point = tuple[float, float]
 MAX_RASTER_CELLS = 320_000
+DEFAULT_VECTOR_FILL_OVERSCAN_SAFETY = 1.25
+DEFAULT_VECTOR_FILL_OVERSCAN_MARGIN_MM = 0.5
+DEFAULT_VECTOR_FILL_INDEX_FEED = 300.0
+DEFAULT_SMOOTH_MOTION_TRAVEL_FEED = 1200.0
+DEFAULT_SMOOTH_FILL_RETURN_FEED = 1200.0
+DEFAULT_SMOOTH_FILL_SETTLE_MS = 20.0
+UNVALIDATED_ACCELERATION_FACTOR = 0.8
 SVG_NS = "http://www.w3.org/2000/svg"
 SVG_CLEAN_SUFFIX = "-editor-clean"
 GCODE_WORD_RE = re.compile(r"([A-Za-z])([-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)")
@@ -111,7 +119,10 @@ def fmt(value: float) -> str:
 
 
 def gcode_comment_text(value: Any, fallback: str) -> str:
-    text = str(value or fallback).encode("ascii", errors="ignore").decode("ascii") or fallback
+    transliteration = str(value or fallback).translate(
+        str.maketrans({"İ": "I", "ı": "i", "Ş": "S", "ş": "s", "Ğ": "G", "ğ": "g", "Ü": "U", "ü": "u", "Ö": "O", "ö": "o", "Ç": "C", "ç": "c"})
+    )
+    text = unicodedata.normalize("NFKD", transliteration).encode("ascii", errors="ignore").decode("ascii") or fallback
     text = re.sub(r"[\x00-\x1f\x7f()]+", "_", text)
     return text.strip() or fallback
 
@@ -739,6 +750,165 @@ def append_powered_polyline(lines: list[str],
     for point in points[2:]:
         lines.append(f"G1 X{fmt(point[0])} Y{fmt(point[1])}")
     lines.append("S0")
+
+
+def _positive_profile_number(profile: dict[str, Any] | None, key: str) -> float | None:
+    if not isinstance(profile, dict) or profile.get(key) in (None, ""):
+        return None
+    value = _float(profile.get(key), 0.0)
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _directional_machine_limit(profile: dict[str, Any],
+                               direction: Point,
+                               x_key: str,
+                               y_key: str,
+                               label: str) -> float:
+    limits: list[float] = []
+    for component, key in ((direction[0], x_key), (direction[1], y_key)):
+        if abs(component) <= 1e-9:
+            continue
+        value = _positive_profile_number(profile, key)
+        if value is None:
+            raise ValueError(f"Dolgulu kazima icin makine profilinde {label} eksik: {key}.")
+        limits.append(value / abs(component))
+    if not limits:
+        raise ValueError(f"Dolgulu kazima icin {label} yonu hesaplanamadi.")
+    return min(limits)
+
+
+def _direction_step_size(profile: dict[str, Any], direction: Point) -> float:
+    steps: list[float] = []
+    for component, key in ((direction[0], "stepsX"), (direction[1], "stepsY")):
+        if abs(component) <= 1e-9:
+            continue
+        steps_per_mm = _positive_profile_number(profile, key)
+        if steps_per_mm is None:
+            raise ValueError(f"Dolgulu kazima icin makine profilinde step/mm eksik: {key}.")
+        steps.append(abs(component) / steps_per_mm)
+    return max([0.0001, *steps])
+
+
+def calculate_fill_overscan(feed: float,
+                            scan_unit: Point,
+                            machine_profile: dict[str, Any],
+                            safety_factor: float = DEFAULT_VECTOR_FILL_OVERSCAN_SAFETY,
+                            fixed_margin: float = DEFAULT_VECTOR_FILL_OVERSCAN_MARGIN_MM) -> tuple[float, float, float]:
+    if feed <= 0:
+        raise ValueError("Dolgulu kazima hizi 0'dan buyuk olmali.")
+    configured_acceleration = _directional_machine_limit(
+        machine_profile,
+        scan_unit,
+        "accelerationX",
+        "accelerationY",
+        "ivme",
+    )
+    acceleration_factor = 1.0 if bool(machine_profile.get("accelerationValidated")) else UNVALIDATED_ACCELERATION_FACTOR
+    effective_acceleration = configured_acceleration * acceleration_factor
+    velocity = float(feed) / 60.0
+    latency_seconds = max(
+        0.0,
+        _float(machine_profile.get("laserOnDelayMs"), 0.0),
+        _float(machine_profile.get("laserOffDelayMs"), 0.0),
+    ) / 1000.0
+    distance = (
+        max(1.0, float(safety_factor)) * velocity * velocity / (2.0 * effective_acceleration)
+        + velocity * latency_seconds
+        + max(0.0, float(fixed_margin))
+    )
+    physical_step = _direction_step_size(machine_profile, scan_unit)
+    rounded_distance = math.ceil((distance - 1e-12) / physical_step) * physical_step
+    return rounded_distance, effective_acceleration, physical_step
+
+
+def _scan_point(scan_unit: Point, normal_unit: Point, scan_position: float, normal_position: float) -> Point:
+    return (
+        scan_unit[0] * scan_position + normal_unit[0] * normal_position,
+        scan_unit[1] * scan_position + normal_unit[1] * normal_position,
+    )
+
+
+def _require_motion_point(point: Point,
+                          motion_bounds: tuple[float, float, float, float] | None) -> None:
+    if motion_bounds is None:
+        return
+    min_x, min_y, max_x, max_y = motion_bounds
+    if not (
+        min_x - 1e-6 <= point[0] <= max_x + 1e-6
+        and min_y - 1e-6 <= point[1] <= max_y + 1e-6
+    ):
+        raise ValueError(
+            "Hesaplanan fiziksel overscan makine sinirlarina sigmiyor: "
+            f"X{fmt(point[0])} Y{fmt(point[1])}. Nesneyi kaydirin veya kazima hizini azaltin."
+        )
+
+
+def _normalize_scan_segments(segments: list[tuple[Point, Point]],
+                             scan_unit: Point) -> list[tuple[Point, Point]]:
+    normalized: list[tuple[Point, Point]] = []
+    for start, end in segments:
+        if converter.dist(start, end) <= 1e-9:
+            continue
+        direction_dot = (end[0] - start[0]) * scan_unit[0] + (end[1] - start[1]) * scan_unit[1]
+        normalized.append((start, end) if direction_dot >= 0 else (end, start))
+    normalized.sort(key=lambda segment: segment[0][0] * scan_unit[0] + segment[0][1] * scan_unit[1])
+    return normalized
+
+
+def append_powered_scan_row(lines: list[str],
+                            segments: list[tuple[Point, Point]],
+                            power: int,
+                            feed: float,
+                            return_feed: float,
+                            index_feed: float,
+                            scan_unit: Point,
+                            envelope_min: float,
+                            envelope_max: float,
+                            previous_point: Point | None = None,
+                            motion_bounds: tuple[float, float, float, float] | None = None,
+                            settle_ms: float = 0.0) -> tuple[Point, list[tuple[Point, Point]]]:
+    normalized = _normalize_scan_segments(segments, scan_unit)
+    if not normalized:
+        return previous_point or (0.0, 0.0), []
+    normal_unit = (-scan_unit[1], scan_unit[0])
+    normal_position = normalized[0][0][0] * normal_unit[0] + normalized[0][0][1] * normal_unit[1]
+    lead_start = _scan_point(scan_unit, normal_unit, envelope_min, normal_position)
+    tail_end = _scan_point(scan_unit, normal_unit, envelope_max, normal_position)
+    for point in chain((lead_start, tail_end), (point for segment in normalized for point in segment)):
+        _require_motion_point(point, motion_bounds)
+
+    if previous_point is None:
+        lines.append(f"G1 X{fmt(lead_start[0])} Y{fmt(lead_start[1])} F{fmt(return_feed)} S0")
+    else:
+        previous_scan_position = previous_point[0] * scan_unit[0] + previous_point[1] * scan_unit[1]
+        index_target = _scan_point(scan_unit, normal_unit, previous_scan_position, normal_position)
+        _require_motion_point(index_target, motion_bounds)
+        if converter.dist(previous_point, index_target) > 1e-6:
+            lines.append(f"G1 X{fmt(index_target[0])} Y{fmt(index_target[1])} F{fmt(index_feed)} S0")
+        if converter.dist(index_target, lead_start) > 1e-6:
+            lines.append(f"G1 X{fmt(lead_start[0])} Y{fmt(lead_start[1])} F{fmt(return_feed)} S0")
+
+    settle_seconds = min(0.25, max(0.0, float(settle_ms)) / 1000.0)
+    if settle_seconds > 0:
+        # Dwell is executed with S0 and forces the planner to finish the
+        # return move before accelerating in the opposite scan direction.
+        lines.append(f"G4 P{fmt(settle_seconds)}")
+
+    first_start = normalized[0][0]
+    if converter.dist(lead_start, first_start) > 1e-6:
+        lines.append(f"G1 X{fmt(first_start[0])} Y{fmt(first_start[1])} F{fmt(feed)} S0")
+
+    current = first_start
+    for segment_start, segment_end in normalized:
+        if converter.dist(current, segment_start) > 1e-6:
+            lines.append(f"G1 X{fmt(segment_start[0])} Y{fmt(segment_start[1])} F{fmt(feed)} S0")
+        lines.append(f"G1 X{fmt(segment_end[0])} Y{fmt(segment_end[1])} F{fmt(feed)} S{power}")
+        current = segment_end
+    if converter.dist(current, tail_end) > 1e-6:
+        lines.append(f"G1 X{fmt(tail_end[0])} Y{fmt(tail_end[1])} F{fmt(feed)} S0")
+    else:
+        lines.append("S0")
+    return tail_end, normalized
 
 
 def toolpath_travel_distance(paths: Iterable[list[Point]],
@@ -6408,11 +6578,8 @@ def _invert_scan_intervals(intervals: list[tuple[float, float]],
 def _fill_scan_y_values(polygons: list[dict[str, Any]],
                         source_height: float,
                         source_step: float) -> list[float]:
-    values: list[float] = []
-    y = 0.0
-    while y <= source_height + 1e-6:
-        values.append(min(source_height, y))
-        y += source_step
+    row_count = max(0, int(math.floor((source_height + 1e-9) / source_step)))
+    values = [min(source_height, index * source_step) for index in range(row_count + 1)]
 
     # A scaled-down or naturally thin closed region can sit completely between
     # two regular hatch rows. Add one interior row only for such outer regions;
@@ -6449,6 +6616,92 @@ def vector_fill_scan_segments(vector_paths: list[dict[str, Any]],
             intervals = _invert_scan_intervals(intervals, source_width)
         segments.extend(((start, y), (end, y)) for start, end in intervals)
     return segments
+
+
+def _fill_scan_unit(rows: list[list[tuple[Point, Point]]]) -> Point:
+    first = next(
+        ((start, end) for row in rows for start, end in row if converter.dist(start, end) > 1e-9),
+        None,
+    )
+    if first is None:
+        raise ValueError("Dolgulu kazima tarama yonu hesaplanamadi.")
+    start, end = first
+    length = converter.dist(start, end)
+    unit = ((end[0] - start[0]) / length, (end[1] - start[1]) / length)
+    if (abs(unit[0]) >= abs(unit[1]) and unit[0] < 0) or (abs(unit[1]) > abs(unit[0]) and unit[1] < 0):
+        unit = (-unit[0], -unit[1])
+    for row in rows:
+        for segment_start, segment_end in row:
+            segment_length = converter.dist(segment_start, segment_end)
+            if segment_length <= 1e-9:
+                continue
+            cross = abs(
+                (segment_end[0] - segment_start[0]) / segment_length * unit[1]
+                - (segment_end[1] - segment_start[1]) / segment_length * unit[0]
+            )
+            if cross > 1e-5:
+                raise ValueError("Dolgulu kazima satirlari ayni tarama ekseninde degil.")
+    return unit
+
+
+def _quantize_fill_rows(rows: list[list[tuple[Point, Point]]],
+                        scan_unit: Point,
+                        machine_profile: dict[str, Any]) -> list[list[tuple[Point, Point]]]:
+    normal_unit = (-scan_unit[1], scan_unit[0])
+    physical_step = _direction_step_size(machine_profile, normal_unit)
+    quantized: list[list[tuple[Point, Point]]] = []
+    seen_steps: set[int] = set()
+    for row in rows:
+        if not row:
+            continue
+        normal_position = row[0][0][0] * normal_unit[0] + row[0][0][1] * normal_unit[1]
+        target_step = int(round(normal_position / physical_step))
+        if target_step in seen_steps:
+            raise ValueError(
+                "Iki dolgu satiri ayni fiziksel motor adimina denk geliyor. Cizgi araligini buyutun."
+            )
+        seen_steps.add(target_step)
+        delta = target_step * physical_step - normal_position
+        quantized.append(
+            [
+                (
+                    (start[0] + normal_unit[0] * delta, start[1] + normal_unit[1] * delta),
+                    (end[0] + normal_unit[0] * delta, end[1] + normal_unit[1] * delta),
+                )
+                for start, end in row
+            ]
+        )
+    return quantized
+
+
+def _canonical_powered_geometry(segments: list[tuple[Point, Point]]) -> str:
+    return "\n".join(
+        f"{fmt(start[0])},{fmt(start[1])}>{fmt(end[0])},{fmt(end[1])}"
+        for start, end in segments
+    )
+
+
+def _verify_fill_scan_geometry(expected: list[tuple[Point, Point]],
+                               gcode_lines: list[str],
+                               scan_step: float) -> str:
+    emitted = [
+        (start, end)
+        for path in powered_toolpaths_from_gcode(gcode_lines)
+        for start, end in zip(path, path[1:])
+    ]
+    tolerance = max(0.00011, 0.5 * scan_step)
+    if len(expected) != len(emitted):
+        raise ValueError(
+            "Dolgu geometri dogrulamasi basarisiz: "
+            f"kaynak {len(expected)} aralik, G-code {len(emitted)} aralik."
+        )
+    for index, ((expected_start, expected_end), (actual_start, actual_end)) in enumerate(zip(expected, emitted), start=1):
+        if converter.dist(expected_start, actual_start) > tolerance or converter.dist(expected_end, actual_end) > tolerance:
+            raise ValueError(
+                "Dolgu geometri dogrulamasi basarisiz: "
+                f"{index}. tarama araligi kaynak geometriyle uyusmuyor."
+            )
+    return hashlib.sha256(_canonical_powered_geometry(emitted).encode("ascii")).hexdigest()
 
 
 def _source_points(points: list[Any]) -> list[Point]:
@@ -6812,7 +7065,10 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
                                         operation: str = "engrave",
                                         clip_region: ClipRegion | None = None,
                                         clip_close_boundary: bool = False,
-                                        kerf: float = 0.0) -> list[str]:
+                                        kerf: float = 0.0,
+                                        motion_bounds: tuple[float, float, float, float] | None = None,
+                                        machine_profile: dict[str, Any] | None = None) -> list[str]:
+    item = copy.deepcopy(item)
     pattern = RasterPattern(
         path=Path(item.get("path") or item.get("sourcePath") or "vector"),
         x=_float(item.get("x")),
@@ -6877,7 +7133,13 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
 
     fill_paths = [vector_path for vector_path in active_paths if path_operation(vector_path) == "engrave_fill"]
     if fill_paths:
+        fill_machine_profile = machine_profile if isinstance(machine_profile, dict) else item.get("machineProfile")
+        if not isinstance(fill_machine_profile, dict):
+            raise ValueError(
+                "Dolgulu kazima icin $100/$101/$110/$111/$120/$121 degerlerini iceren makine profili gerekli."
+            )
         lines.append("(engrave fill begin)")
+        fill_metadata_index = len(lines)
         source_step = max(0.05, pattern.line_step * source_height / max(0.001, pattern.height))
         text_settings = item.get("textSettings") if isinstance(item.get("textSettings"), dict) else {}
         generated_text = str(item.get("generatedKind") or "").lower() == "text" or bool(text_settings.get("mode"))
@@ -6888,7 +7150,8 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
             # Hole contours are negative space, so they inherit the power of
             # their nearest filled parent instead of becoming a separate fill.
             fill_groups = _group_fill_paths_by_power(fill_paths, engrave_power, path_power)
-        fill_segment_count = 0
+        prepared_groups: list[tuple[int, list[list[tuple[Point, Point]]]]] = []
+        all_rows: list[list[tuple[Point, Point]]] = []
         for fill_power, group_paths in fill_groups.items():
             segments = vector_fill_scan_segments(
                 group_paths,
@@ -6899,28 +7162,145 @@ def build_embedded_vector_engrave_lines(item: dict[str, Any],
             )
             if not segments:
                 continue
-            fill_segment_count += len(segments)
+            rows: list[list[tuple[Point, Point]]] = []
+            row_y_values: list[float] = []
+            for start_source, end_source in segments:
+                row_y = float(start_source[1])
+                if not rows or abs(row_y_values[-1] - row_y) > 1e-7:
+                    rows.append([])
+                    row_y_values.append(row_y)
+                start = embedded_vector_point(pattern, [start_source[0], start_source[1]], source_width, source_height)
+                end = embedded_vector_point(pattern, [end_source[0], end_source[1]], source_width, source_height)
+                rows[-1].extend(clip_segment_to_region(start, end, clip_region))
+            rows = [row_segments for row_segments in rows if row_segments]
+            if rows:
+                prepared_groups.append((fill_power, rows))
+                all_rows.extend(rows)
+
+        if not all_rows:
+            raise ValueError("Dolgulu vektor desen icin kazima satiri olusmadi.")
+        scan_unit = _fill_scan_unit(all_rows)
+        normal_unit = (-scan_unit[1], scan_unit[0])
+        quantized_groups: list[tuple[int, list[list[tuple[Point, Point]]]]] = []
+        quantized_rows: list[list[tuple[Point, Point]]] = []
+        for fill_power, rows in prepared_groups:
+            next_rows = _quantize_fill_rows(rows, scan_unit, fill_machine_profile)
+            quantized_groups.append((fill_power, next_rows))
+            quantized_rows.extend(next_rows)
+
+        scan_positions = [
+            point[0] * scan_unit[0] + point[1] * scan_unit[1]
+            for row in quantized_rows
+            for segment in row
+            for point in segment
+        ]
+        active_min = min(scan_positions)
+        active_max = max(scan_positions)
+        overscan, effective_acceleration, scan_step = calculate_fill_overscan(
+            engrave_feed,
+            scan_unit,
+            fill_machine_profile,
+            safety_factor=_float(item.get("fillOverscanSafetyFactor"), DEFAULT_VECTOR_FILL_OVERSCAN_SAFETY),
+            fixed_margin=_float(item.get("fillOverscanMargin"), DEFAULT_VECTOR_FILL_OVERSCAN_MARGIN_MM),
+        )
+        scan_rate_limit = _directional_machine_limit(
+            fill_machine_profile,
+            scan_unit,
+            "maxRateX",
+            "maxRateY",
+            "maksimum hiz",
+        )
+        if engrave_feed > scan_rate_limit + 1e-6:
+            raise ValueError(
+                f"Kazima hizi F{fmt(engrave_feed)}, tarama yonundeki makine siniri F{fmt(scan_rate_limit)} degerini asiyor."
+            )
+        smooth_motion = bool(item.get("smoothMotion", False))
+        requested_return_feed = travel_feed if travel_feed is not None and travel_feed > 0 else engrave_feed
+        smooth_return_limit = max(
+            1.0,
+            _float(item.get("smoothFillReturnFeed"), DEFAULT_SMOOTH_FILL_RETURN_FEED),
+        )
+        settle_ms = (
+            min(250.0, max(0.0, _float(item.get("fillSettleMs"), DEFAULT_SMOOTH_FILL_SETTLE_MS)))
+            if smooth_motion
+            else 0.0
+        )
+        if smooth_motion:
+            # The laser-off return is a separate, firmware-accelerated move. It
+            # may safely be faster than a low engraving feed while remaining
+            # capped by the conservative smooth-motion and machine limits.
+            return_feed = min(float(requested_return_feed), smooth_return_limit, scan_rate_limit)
+        else:
+            return_feed = min(float(requested_return_feed), engrave_feed, scan_rate_limit)
+        index_rate_limit = _directional_machine_limit(
+            fill_machine_profile,
+            normal_unit,
+            "maxRateX",
+            "maxRateY",
+            "maksimum hiz",
+        )
+        index_feed = min(
+            max(1.0, _float(item.get("fillIndexFeed"), DEFAULT_VECTOR_FILL_INDEX_FEED)),
+            return_feed,
+            index_rate_limit,
+        )
+        index_step = _direction_step_size(fill_machine_profile, normal_unit)
+        physical_pitch_steps = pattern.line_step / index_step
+        if physical_pitch_steps < 1.0 - 1e-6:
+            raise ValueError("Dolgu cizgi araligi bir fiziksel motor adimindan kucuk.")
+        if physical_pitch_steps < 4.0:
+            lines.append(f"(warning low physical row resolution {fmt(physical_pitch_steps)} steps)")
+
+        envelope_min = active_min - overscan
+        envelope_max = active_max + overscan
+        validation_start = len(lines)
+        lines.append(
+            "(engrave fill fixed-envelope one-way "
+            f"overscan {fmt(overscan)}mm accel {fmt(effective_acceleration)}mm-s2 "
+            f"return F{fmt(return_feed)} index F{fmt(index_feed)} settle {fmt(settle_ms)}ms)"
+        )
+        if not bool(fill_machine_profile.get("accelerationValidated")):
+            lines.append("(warning acceleration safety derating 80pct)")
+        expected_segments: list[tuple[Point, Point]] = []
+        scan_previous_point: Point | None = None
+        for fill_power, rows in quantized_groups:
             if fill_power != engrave_power:
                 lines.append(f"(contour group power S{fill_power})")
-            reverse = False
-            for start_source, end_source in segments:
-                start_point = [end_source[0], end_source[1]] if reverse else [start_source[0], start_source[1]]
-                end_point = [start_source[0], start_source[1]] if reverse else [end_source[0], end_source[1]]
-                start = embedded_vector_point(pattern, start_point, source_width, source_height)
-                end = embedded_vector_point(pattern, end_point, source_width, source_height)
-                for clipped_start, clipped_end in clip_segment_to_region(start, end, clip_region):
-                    append_powered_polyline(
-                        lines,
-                        [clipped_start, clipped_end],
-                        fill_power,
-                        engrave_feed,
-                        travel_feed,
-                    )
-                    emitted += 1
-                    current_point = clipped_end
-                reverse = not reverse
-        if fill_segment_count == 0:
+            for row_segments in rows:
+                if not row_segments:
+                    continue
+                scan_previous_point, emitted_segments = append_powered_scan_row(
+                    lines,
+                    row_segments,
+                    fill_power,
+                    engrave_feed,
+                    return_feed,
+                    index_feed,
+                    scan_unit,
+                    envelope_min,
+                    envelope_max,
+                    scan_previous_point,
+                    motion_bounds,
+                    settle_ms,
+                )
+                expected_segments.extend(emitted_segments)
+                emitted += len(emitted_segments)
+        if not expected_segments or scan_previous_point is None:
             raise ValueError("Dolgulu vektor desen icin kazima satiri olusmadi.")
+        current_point = scan_previous_point
+        geometry_hash = _verify_fill_scan_geometry(expected_segments, lines[validation_start:], scan_step)
+        metadata_lines = [
+            "(geometry_verified=source_scan_intervals)",
+            f"(geometry_sha256={geometry_hash})",
+        ]
+        if generated_text:
+            source_text = unicodedata.normalize("NFC", str(text_settings.get("text") or ""))
+            metadata_lines[0:0] = [
+                f"(text_ascii={gcode_comment_text(source_text, 'text')})",
+                f"(text_codepoints={'-'.join(f'{ord(character):04X}' for character in source_text)})",
+                f"(text_revision={max(0, _int(item.get('exportRevision', item.get('revision', 0)), 0))})",
+            ]
+        lines[fill_metadata_index:fill_metadata_index] = metadata_lines
         lines.append(f"({op_label} vector fill end)")
         lines.append("S0")
 
@@ -7082,12 +7462,26 @@ def validated_machine_profile(state: dict[str, Any]) -> dict[str, Any]:
     travel_y = _float(profile.get("travelY"), 0.0)
     if max_s <= 0 or travel_x <= 0 or travel_y <= 0:
         raise ValueError("Makine profilinde maxS, travelX ve travelY pozitif olmali.")
+    optional_positive: dict[str, float | None] = {}
+    for key in ("stepsX", "stepsY", "maxRateX", "maxRateY", "accelerationX", "accelerationY"):
+        raw_value = profile.get(key)
+        if raw_value in (None, ""):
+            optional_positive[key] = None
+            continue
+        value = _float(raw_value, 0.0)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Makine profilindeki {key} pozitif olmali.")
+        optional_positive[key] = value
     return {
         **profile,
+        **optional_positive,
         "id": str(profile.get("id") or "unknown"),
         "maxS": max_s,
         "travelX": travel_x,
         "travelY": travel_y,
+        "accelerationValidated": bool(profile.get("accelerationValidated")),
+        "laserOnDelayMs": max(0.0, _float(profile.get("laserOnDelayMs"), 0.0)),
+        "laserOffDelayMs": max(0.0, _float(profile.get("laserOffDelayMs"), 0.0)),
     }
 
 
@@ -7224,6 +7618,7 @@ def preflight_state(
                 )
             )
 
+    fill_profile_required = False
     for item in state.get("patterns") or []:
         operation = normalize_operation(item.get("operation"), "engrave_line")
         if operation == "ignore":
@@ -7245,6 +7640,18 @@ def preflight_state(
         )
         if has_embedded_vectors and not embedded_vector_has_active_paths(item, fallback):
             continue
+        if has_embedded_vectors:
+            try:
+                profile_paths = compile_vector_objects(item)
+            except ValueError:
+                profile_paths = item.get("vectorPaths") or []
+            if any(
+                not vector_path.get("removed")
+                and bool(vector_path.get("closed", True))
+                and _pattern_preflight_operation(vector_path, fallback) == "engrave_fill"
+                for vector_path in profile_paths
+            ):
+                fill_profile_required = True
         pattern = RasterPattern(
             path=Path(str(item.get("path") or item.get("name") or "embedded")),
             x=_float(item.get("x")),
@@ -7289,6 +7696,25 @@ def preflight_state(
                 )
                 break
 
+    if fill_profile_required:
+        required_motion_fields = ("stepsX", "stepsY", "maxRateX", "maxRateY", "accelerationX", "accelerationY")
+        missing_motion_fields = [key for key in required_motion_fields if _positive_profile_number(profile, key) is None]
+        if missing_motion_fields:
+            blockers.append(
+                _preflight_issue(
+                    "machine_motion_profile_incomplete",
+                    "Dolgulu kazima icin GRBL $100/$101/$110/$111/$120/$121 makine profilinde dogrulanmali.",
+                    fields=missing_motion_fields,
+                )
+            )
+        elif not bool(profile.get("accelerationValidated")):
+            warnings.append(
+                _preflight_issue(
+                    "machine_acceleration_unvalidated",
+                    "Makine ivmesi fiziksel olarak dogrulanmadi; overscan hesabinda yuzde 20 emniyet dusumu uygulanacak.",
+                )
+            )
+
     if require_machine:
         snapshot = machine_snapshot or {}
         status = snapshot.get("lastStatus") if isinstance(snapshot.get("lastStatus"), dict) else {}
@@ -7299,17 +7725,43 @@ def preflight_state(
         elif state_name != "idle" or age_ms is None or float(age_ms) > 2000:
             blockers.append(_preflight_issue("machine_not_fresh_idle", "Makine son iki saniye icinde tam Idle olarak dogrulanmadi."))
         machine_settings = snapshot.get("settings") if isinstance(snapshot.get("settings"), dict) else {}
-        try:
-            if float(machine_settings.get("32", 0)) != 1.0:
-                blockers.append(_preflight_issue("machine_laser_mode", "GRBL $32=1 olmali."))
-            if not math.isclose(float(machine_settings.get("30")), float(profile.get("maxS")), rel_tol=0.0, abs_tol=1e-6):
-                blockers.append(_preflight_issue("machine_max_s_mismatch", "GRBL $30 secili makine profiliyle uyusmuyor."))
-            if not math.isclose(float(machine_settings.get("130")), float(profile.get("travelX")), rel_tol=0.0, abs_tol=1e-6):
-                blockers.append(_preflight_issue("machine_x_limit_mismatch", "GRBL $130 secili makine profiliyle uyusmuyor."))
-            if not math.isclose(float(machine_settings.get("131")), float(profile.get("travelY")), rel_tol=0.0, abs_tol=1e-6):
-                blockers.append(_preflight_issue("machine_y_limit_mismatch", "GRBL $131 secili makine profiliyle uyusmuyor."))
-        except (TypeError, ValueError):
-            blockers.append(_preflight_issue("machine_settings_unknown", "GRBL $30/$32/$130/$131 ayarlari okunamadi."))
+        machine_checks = [
+            ("32", 1.0, "machine_laser_mode", "GRBL $32=1 olmali."),
+            ("30", profile.get("maxS"), "machine_max_s_mismatch", "GRBL $30 secili makine profiliyle uyusmuyor."),
+            ("130", profile.get("travelX"), "machine_x_limit_mismatch", "GRBL $130 secili makine profiliyle uyusmuyor."),
+            ("131", profile.get("travelY"), "machine_y_limit_mismatch", "GRBL $131 secili makine profiliyle uyusmuyor."),
+        ]
+        if fill_profile_required:
+            machine_checks.extend(
+                [
+                    ("100", profile.get("stepsX"), "machine_x_steps_mismatch", "GRBL $100 secili makine profiliyle uyusmuyor."),
+                    ("101", profile.get("stepsY"), "machine_y_steps_mismatch", "GRBL $101 secili makine profiliyle uyusmuyor."),
+                    ("110", profile.get("maxRateX"), "machine_x_rate_mismatch", "GRBL $110 secili makine profiliyle uyusmuyor."),
+                    ("111", profile.get("maxRateY"), "machine_y_rate_mismatch", "GRBL $111 secili makine profiliyle uyusmuyor."),
+                    ("120", profile.get("accelerationX"), "machine_x_acceleration_mismatch", "GRBL $120 secili makine profiliyle uyusmuyor."),
+                    ("121", profile.get("accelerationY"), "machine_y_acceleration_mismatch", "GRBL $121 secili makine profiliyle uyusmuyor."),
+                ]
+            )
+        unknown_settings: list[str] = []
+        for setting_key, expected, issue_code, message in machine_checks:
+            actual = machine_settings.get(setting_key)
+            if actual in (None, "") or expected in (None, ""):
+                unknown_settings.append(f"${setting_key}")
+                continue
+            try:
+                matches = math.isclose(float(actual), float(expected), rel_tol=0.0, abs_tol=1e-6)
+            except (TypeError, ValueError):
+                unknown_settings.append(f"${setting_key}")
+                continue
+            if not matches:
+                blockers.append(_preflight_issue(issue_code, message))
+        if unknown_settings:
+            blockers.append(
+                _preflight_issue(
+                    "machine_settings_unknown",
+                    f"GRBL ayarlari okunamadi: {', '.join(unknown_settings)}.",
+                )
+            )
 
     return PreflightResult(
         status="blocked" if blockers else "ready",
@@ -7584,6 +8036,15 @@ def toolpaths_fit_generation_area(paths: Iterable[list[Point]],
     return True
 
 
+def _pattern_payload_is_text(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if str(item.get("generatedKind") or "").strip().lower() == "text":
+        return True
+    text_settings = item.get("textSettings")
+    return isinstance(text_settings, dict) and bool(str(text_settings.get("text") or "").strip())
+
+
 def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     settings = state.get("settings", {})
     if not isinstance(settings, dict):
@@ -7626,7 +8087,13 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
     if bed_width > float(machine_profile["travelX"]) + 1e-6 or bed_height > float(machine_profile["travelY"]) + 1e-6:
         raise ValueError("Tabla olcusu makine profilindeki hareket sinirlarini asiyor.")
 
-    travel_feed = _float(settings.get("travelFeed"), 3000.0)
+    requested_travel_feed = max(1.0, _float(settings.get("travelFeed"), DEFAULT_SMOOTH_MOTION_TRAVEL_FEED))
+    smooth_motion = bool(settings.get("smoothMotion", True))
+    smooth_travel_limit = max(
+        1.0,
+        _float(settings.get("smoothTravelFeed"), DEFAULT_SMOOTH_MOTION_TRAVEL_FEED),
+    )
+    travel_feed = min(requested_travel_feed, smooth_travel_limit) if smooth_motion else requested_travel_feed
     feed = _float(settings.get("feed"), 500.0)
     power = power_percent_to_s(settings.get("powerPercent", settings.get("power")), max_s, 100.0)
     engrave_power = power_percent_to_s(
@@ -7644,7 +8111,8 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
 
     cut_paths: list[list[Point]] = []
     clip_data_by_placement: dict[str, dict[str, Any]] = {}
-    pattern_lines: list[str] = []
+    text_pattern_lines: list[str] = []
+    other_pre_cut_lines: list[str] = []
     active_output_count = 0
     excluded_object_count = 0
     generated_pattern_count = 0
@@ -7682,7 +8150,7 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
                 transformed,
                 start=(_float(placement.get("x")), _float(placement.get("y"))),
             ):
-                append_powered_polyline(pattern_lines, path, engrave_power, engrave_feed, travel_feed)
+                append_powered_polyline(other_pre_cut_lines, path, engrave_power, engrave_feed, travel_feed)
         active_output_count += len(transformed)
         # Kirpma sinirlari TASARIM sinirinda kalir (kerf'ten etkilenmez):
         # desen, parcanin tasarlanan kenarina gore kirpilir.
@@ -7770,6 +8238,7 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         if has_embedded_vectors:
             vector_item = {
                 **item,
+                "exportRevision": max(0, _int((state.get("project") or {}).get("revision"), 0)),
                 "power": item.get("power", default_pattern_power),
                 "feed": item.get("feed", default_pattern_feed),
                 "cutPower": item.get("cutPower", power),
@@ -7777,6 +8246,9 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
                 "engravePower": item.get("engravePower", item.get("power", engrave_power)),
                 "engraveFeed": item.get("engraveFeed", item.get("feed", engrave_feed)),
                 "vectorEngraveMode": "fill" if operation == "engrave_fill" else "contour",
+                "smoothMotion": smooth_motion,
+                "smoothFillReturnFeed": settings.get("smoothFillReturnFeed", DEFAULT_SMOOTH_FILL_RETURN_FEED),
+                "fillSettleMs": settings.get("fillSettleMs", DEFAULT_SMOOTH_FILL_SETTLE_MS),
             }
             item_lines = build_embedded_vector_engrave_lines(
                 vector_item,
@@ -7785,6 +8257,8 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
                 clip_region,
                 clip_close_boundary,
                 kerf,
+                (0.0, 0.0, bed_width, bed_height),
+                machine_profile,
             )
         elif kind == "svg" or pattern.path.suffix.lower() == ".svg":
             item_lines = build_svg_vector_engrave_lines(
@@ -7805,10 +8279,23 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
             available_area,
         ):
             raise ValueError(f"Aktif desen yolu uretim alaninin disina tasiyor: {item.get('name') or item.get('id')}")
-        pattern_lines.extend(item_lines)
+        if _pattern_payload_is_text(raw_item):
+            text_pattern_lines.extend(item_lines)
+        else:
+            other_pre_cut_lines.extend(item_lines)
         active_output_count += 1
         generated_pattern_count += 1
 
+    # Text must be engraved while the workpiece is maximally stable. Keep this
+    # ordering authoritative in the backend instead of relying on UI list order.
+    pattern_lines = text_pattern_lines + other_pre_cut_lines
+    motion_profile_lines = []
+    if smooth_motion:
+        motion_profile_lines.append(
+            "(motion profile smooth "
+            f"travel F{fmt(travel_feed)} fill-return-max F{fmt(_float(settings.get('smoothFillReturnFeed'), DEFAULT_SMOOTH_FILL_RETURN_FEED))} "
+            f"settle {fmt(_float(settings.get('fillSettleMs'), DEFAULT_SMOOTH_FILL_SETTLE_MS))}ms)"
+        )
     cut_paths = optimize_toolpaths(cut_paths, start=(margin, margin), inner_first=True)
 
     if active_output_count == 0:
@@ -7830,6 +8317,12 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         if bool(settings.get("airAssist", False))
         else None
     )
+    return_feed = min(
+        travel_feed,
+        engrave_feed if pattern_lines else travel_feed,
+        _positive_profile_number(machine_profile, "maxRateX") or travel_feed,
+        _positive_profile_number(machine_profile, "maxRateY") or travel_feed,
+    )
 
     converter.write_gcode(
         output_path=output_path,
@@ -7844,8 +8337,10 @@ def generate_from_state(state: dict[str, Any]) -> dict[str, Any]:
         return_to_origin=bool(settings.get("returnToOrigin", False)),
         travel_feed=travel_feed,
         passes=passes,
-        pre_cut_lines=pattern_lines,
+        pre_cut_lines=motion_profile_lines + pattern_lines,
         air_assist_command=air_assist_command,
+        return_point=(max(2.0, margin), max(2.0, margin)),
+        return_feed=return_feed,
     )
 
     min_x, min_y, max_x, max_y = paths_bounds(cut_paths) if cut_paths else (0.0, 0.0, 0.0, 0.0)

@@ -1121,6 +1121,183 @@
     return { model: next, edgeId, objectId, startNodeId: startNode.id, endNodeId: endNode.id };
   }
 
+  function coalesceDegreeTwoOpenEdges(model, seedEdgeId, options = {}) {
+    if (!model || Number(model.vectorModelVersion) !== 2) throw new Error("vector model v2 is required");
+    const next = cloneJson(model);
+    const graph = next.vectorGraph || { revision: 1, nodes: [], edges: [] };
+    const activeEdges = (graph.edges || []).filter((edge) => edge && !edge.removed);
+    const edgeById = new Map(activeEdges.map((edge) => [String(edge.id || ""), edge]));
+    const seedId = String(seedEdgeId || "");
+    const seed = edgeById.get(seedId);
+    if (!seed || seed.closed || !Array.isArray(seed.points) || seed.points.length < 2) {
+      return { model: next, edgeId: seedId, mergedEdgeCount: 0, closed: Boolean(seed?.closed) };
+    }
+
+    const maskedObjectIds = new Set();
+    for (const mask of next.occlusionMasks || []) {
+      if (!mask || mask.removed) continue;
+      if (mask.ownerObjectId) maskedObjectIds.add(String(mask.ownerObjectId));
+      for (const objectId of mask.targetObjectIds || []) maskedObjectIds.add(String(objectId));
+    }
+    const ownerByEdge = new Map();
+    for (const object of next.vectorObjects || []) {
+      if (!object || object.removed) continue;
+      for (const edgeRef of object.edgeRefs || []) {
+        const edgeId = String(edgeRef.edgeId || "");
+        if (!ownerByEdge.has(edgeId)) ownerByEdge.set(edgeId, []);
+        ownerByEdge.get(edgeId).push({ object, edgeRef });
+      }
+    }
+    const mergeOwner = (edgeId) => {
+      const owners = ownerByEdge.get(String(edgeId)) || [];
+      if (owners.length !== 1 || owners[0].edgeRef.ownership !== "exclusive") return null;
+      const object = owners[0].object;
+      if (isUserSemanticVectorObject(object) || (object.attachments || []).length) return null;
+      if (!identityAffine(object.transform || [1, 0, 0, 1, 0, 0])) return null;
+      if (maskedObjectIds.has(String(object.id || ""))) return null;
+      return owners[0];
+    };
+    const seedOwner = mergeOwner(seedId);
+    if (!seedOwner) return { model: next, edgeId: seedId, mergedEdgeCount: 0, closed: false };
+    const operation = normalizeOperation(seed.operation, normalizeOperation(options.fallbackOperation, "engrave_line"));
+    const used = new Set([seedId]);
+    const chain = [{ edgeId: seedId, forward: true }];
+    const orientedNode = (entry, side) => {
+      const edge = edgeById.get(entry.edgeId);
+      if (side === "start") return String(entry.forward ? edge.startNodeId : edge.endNodeId);
+      return String(entry.forward ? edge.endNodeId : edge.startNodeId);
+    };
+    const nodeDegree = (nodeId) => activeEdges.reduce((degree, edge) => {
+      if (String(edge.startNodeId) === nodeId && String(edge.endNodeId) === nodeId) return degree + 2;
+      if (String(edge.startNodeId) === nodeId || String(edge.endNodeId) === nodeId) return degree + 1;
+      return degree;
+    }, 0);
+    const incidentOpenEdges = (nodeId) => activeEdges.filter((edge) => (
+      !edge.closed && (String(edge.startNodeId) === nodeId || String(edge.endNodeId) === nodeId)
+    ));
+    const canMergeEdge = (edge) => Boolean(
+      edge
+      && !edge.closed
+      && !used.has(String(edge.id))
+      && Array.isArray(edge.points)
+      && edge.points.length >= 2
+      && normalizeOperation(edge.operation, operation) === operation
+      && mergeOwner(edge.id)
+    );
+    const extend = (side) => {
+      const boundary = side === "start" ? chain[0] : chain[chain.length - 1];
+      const nodeId = orientedNode(boundary, side);
+      if (!nodeId || nodeDegree(nodeId) !== 2) return false;
+      const candidate = incidentOpenEdges(nodeId).find((edge) => !used.has(String(edge.id)));
+      if (!canMergeEdge(candidate)) return false;
+      let forward;
+      if (side === "start") {
+        if (String(candidate.endNodeId) === nodeId) forward = true;
+        else if (String(candidate.startNodeId) === nodeId) forward = false;
+        else return false;
+        chain.unshift({ edgeId: String(candidate.id), forward });
+      } else {
+        if (String(candidate.startNodeId) === nodeId) forward = true;
+        else if (String(candidate.endNodeId) === nodeId) forward = false;
+        else return false;
+        chain.push({ edgeId: String(candidate.id), forward });
+      }
+      used.add(String(candidate.id));
+      return true;
+    };
+    while (extend("start")) { /* consume the complete pass-through chain */ }
+    while (extend("end")) { /* consume the complete pass-through chain */ }
+    if (chain.length < 2) return { model: next, edgeId: seedId, mergedEdgeCount: 0, closed: false };
+
+    const tolerance = Math.max(1e-8, Number(options.tolerance) || 1e-5);
+    const mergedPoints = [];
+    for (const entry of chain) {
+      const edge = edgeById.get(entry.edgeId);
+      const points = (entry.forward ? edge.points : [...edge.points].reverse()).map((point) => [Number(point[0]), Number(point[1])]);
+      if (!mergedPoints.length) {
+        mergedPoints.push(...points);
+        continue;
+      }
+      if (pointDistance(mergedPoints[mergedPoints.length - 1], points[0]) > tolerance) {
+        return { model: cloneJson(model), edgeId: seedId, mergedEdgeCount: 0, closed: false };
+      }
+      mergedPoints.push(...points.slice(1));
+    }
+
+    const startNodeId = orientedNode(chain[0], "start");
+    const endNodeId = orientedNode(chain[chain.length - 1], "end");
+    const closed = startNodeId === endNodeId;
+    if (closed && mergedPoints.length > 2 && pointDistance(mergedPoints[0], mergedPoints[mergedPoints.length - 1]) <= tolerance) {
+      mergedPoints.pop();
+    }
+    const existingEntry = chain.find((entry) => mergeOwner(entry.edgeId)?.object?.createdBy !== "manual-contour") || chain[0];
+    const keeperId = existingEntry.edgeId;
+    const keeper = edgeById.get(keeperId);
+    const keeperOwner = mergeOwner(keeperId);
+    if (!keeper || !keeperOwner) return { model: cloneJson(model), edgeId: seedId, mergedEdgeCount: 0, closed: false };
+    const mergedIds = new Set(chain.map((entry) => entry.edgeId));
+    const sourcePathIds = [...new Set(chain.flatMap((entry) => edgeById.get(entry.edgeId)?.lineage?.sourcePathIds || []))];
+    const warnings = [...new Set(chain.flatMap((entry) => edgeById.get(entry.edgeId)?.warnings || []))];
+    const joinedEdge = {
+      ...keeper,
+      startNodeId,
+      endNodeId,
+      points: mergedPoints,
+      closed,
+      lengthSource: polylineLength(mergedPoints, closed),
+      operation,
+      removed: false,
+      pathData: { ...(cloneJson(keeper.pathData) || {}), closed, operation, removed: false },
+      lineage: {
+        ...(cloneJson(keeper.lineage) || {}),
+        canonicalEdgeLineageId: `joined:${chain.map((entry) => entry.edgeId).join("+")}`,
+        parentEdgeId: keeperId,
+        sourcePathIds,
+        legacyPathId: "",
+        sourceInterval: [0, 1],
+        joinedEdgeIds: chain.map((entry) => entry.edgeId),
+      },
+      warnings,
+    };
+    graph.edges = (graph.edges || []).filter((edge) => !mergedIds.has(String(edge.id)) || String(edge.id) === keeperId)
+      .map((edge) => String(edge.id) === keeperId ? joinedEdge : edge);
+
+    const involvedOwnerIds = new Set(chain.map((entry) => String(mergeOwner(entry.edgeId)?.object?.id || "")).filter(Boolean));
+    next.vectorObjects = (next.vectorObjects || []).map((object) => {
+      if (!object || object.removed) return object;
+      const remainingRefs = (object.edgeRefs || []).filter((edgeRef) => !mergedIds.has(String(edgeRef.edgeId || "")));
+      if (String(object.id) === String(keeperOwner.object.id)) {
+        remainingRefs.push({ ...cloneJson(keeperOwner.edgeRef), edgeId: keeperId, ownership: "exclusive", emit: true });
+      }
+      return { ...object, edgeRefs: remainingRefs };
+    }).filter((object) => (
+      !involvedOwnerIds.has(String(object?.id || ""))
+      || (object.edgeRefs || []).length > 0
+      || isUserSemanticVectorObject(object)
+    ));
+
+    const referencedNodeIds = new Set();
+    for (const edge of graph.edges || []) {
+      if (!edge || edge.removed) continue;
+      referencedNodeIds.add(String(edge.startNodeId || ""));
+      referencedNodeIds.add(String(edge.endNodeId || ""));
+    }
+    graph.nodes = (graph.nodes || []).filter((node) => referencedNodeIds.has(String(node.id || "")));
+    graph.revision = Math.max(0, Math.round(Number(graph.revision) || 0)) + 1;
+    next.vectorGraph = graph;
+    next.objectProposals = [];
+    next.repairProposals = [];
+    next.vectorPathsDerivedFromRevision = 0;
+    refreshGraphNodeTypes(graph);
+    return {
+      model: next,
+      edgeId: keeperId,
+      objectId: keeperOwner.object.id,
+      mergedEdgeCount: chain.length - 1,
+      closed,
+    };
+  }
+
   function compileVectorObjects(model, options = {}) {
     if (!model || Number(model.vectorModelVersion) !== 2) {
       return { vectorPaths: cloneJson(options.vectorPaths || []), errors: [], warnings: [] };
@@ -1970,6 +2147,7 @@
     assignPathOperation,
     appendOpenPathToVectorModel,
     anchorPointToVectorModel,
+    coalesceDegreeTwoOpenEdges,
     affineFromComponents,
     affinePoint,
     affineVector,

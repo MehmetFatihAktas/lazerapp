@@ -26,6 +26,7 @@ const canvas = document.getElementById("editorCanvas");
 const ctx = canvas.getContext("2d");
 
 const refs = {
+  appShell: document.querySelector(".app-shell"),
   status: document.getElementById("jobStatus"),
   projectTitle: document.getElementById("projectTitle"),
   projectDirtyMark: document.getElementById("projectDirtyMark"),
@@ -64,6 +65,14 @@ const refs = {
   tourNextBtn: document.getElementById("tourNextBtn"),
   workflowNextTitle: document.getElementById("workflowNextTitle"),
   workflowContinueBtn: document.getElementById("workflowContinueBtn"),
+  ribbonAdvancedBtn: document.getElementById("ribbonAdvancedBtn"),
+  ribbonCollapseBtn: document.getElementById("ribbonCollapseBtn"),
+  jobDrawer: document.getElementById("jobDrawer"),
+  jobDrawerToggle: document.getElementById("jobDrawerToggle"),
+  jobDrawerBody: document.getElementById("jobDrawerBody"),
+  jobDrawerSeverity: document.getElementById("jobDrawerSeverity"),
+  canvasEmptyState: document.getElementById("canvasEmptyState"),
+  objectCountBadge: document.getElementById("objectCountBadge"),
   boxMakerModal: document.getElementById("boxMakerModal"),
   boxMakerForm: document.getElementById("boxMakerForm"),
   boxMakerPreview: document.getElementById("boxMakerPreview"),
@@ -89,6 +98,16 @@ const refs = {
   calibrationMinFeed: document.getElementById("calibrationMinFeed"),
   calibrationMaxFeed: document.getElementById("calibrationMaxFeed"),
   calibrationOperation: document.getElementById("calibrationOperation"),
+  calibrationTitle: document.getElementById("calibrationTitle"),
+  calibrationDescription: document.getElementById("calibrationDescription"),
+  calibrationTileField: document.getElementById("calibrationTileField"),
+  calibrationTextFields: document.getElementById("calibrationTextFields"),
+  calibrationText: document.getElementById("calibrationText"),
+  calibrationTextFont: document.getElementById("calibrationTextFont"),
+  calibrationTextHeight: document.getElementById("calibrationTextHeight"),
+  calibrationTextWeight: document.getElementById("calibrationTextWeight"),
+  calibrationTextTracking: document.getElementById("calibrationTextTracking"),
+  calibrationTextLineStep: document.getElementById("calibrationTextLineStep"),
   calibrationSummary: document.getElementById("calibrationSummary"),
   libraryModal: document.getElementById("libraryModal"),
   libraryList: document.getElementById("libraryList"),
@@ -183,6 +202,7 @@ const refs = {
   airAssist: document.getElementById("airAssist"),
   airAssistCommand: document.getElementById("airAssistCommand"),
   innerFirst: document.getElementById("innerFirst"),
+  smoothMotion: document.getElementById("smoothMotion"),
   returnOrigin: document.getElementById("returnOrigin"),
   engravePower: document.getElementById("engravePower"),
   engravePowerMachineValue: document.getElementById("engravePowerMachineValue"),
@@ -236,6 +256,7 @@ const refs = {
   drawingOperation: document.getElementById("drawingOperation"),
   drawingSmoothing: document.getElementById("drawingSmoothing"),
   drawingClosePath: document.getElementById("drawingClosePath"),
+  drawingAutoJoin: document.getElementById("drawingAutoJoin"),
   drawingHint: document.getElementById("drawingHint"),
   startDrawingBtn: document.getElementById("startDrawingBtn"),
   finishDrawingBtn: document.getElementById("finishDrawingBtn"),
@@ -252,6 +273,13 @@ const refs = {
   machineProfileMaxS: document.getElementById("machineProfileMaxS"),
   machineProfileTravelX: document.getElementById("machineProfileTravelX"),
   machineProfileTravelY: document.getElementById("machineProfileTravelY"),
+  machineProfileStepsX: document.getElementById("machineProfileStepsX"),
+  machineProfileStepsY: document.getElementById("machineProfileStepsY"),
+  machineProfileMaxRateX: document.getElementById("machineProfileMaxRateX"),
+  machineProfileMaxRateY: document.getElementById("machineProfileMaxRateY"),
+  machineProfileAccelerationX: document.getElementById("machineProfileAccelerationX"),
+  machineProfileAccelerationY: document.getElementById("machineProfileAccelerationY"),
+  machineProfileAccelerationValidated: document.getElementById("machineProfileAccelerationValidated"),
   machineProfileAirAssist: document.getElementById("machineProfileAirAssist"),
   machineProfileStatus: document.getElementById("machineProfileStatus"),
   machineSettingValidation: document.getElementById("machineSettingValidation"),
@@ -400,10 +428,12 @@ const state = {
     mode: "vector",
     operation: "engrave_line",
     closePath: false,
+    autoJoin: true,
     smoothing: 45,
     drawing: false,
     points: [],
     pointerId: null,
+    targetPatternId: null,
   },
   currentAnalysis: null,
   machineProfile: ProjectState.normalizeMachineProfile({
@@ -411,6 +441,7 @@ const state = {
     source: "default",
     verified: false,
   }),
+  defaultMachineProfile: null,
   lastGeneratedRevision: null,
   lastGeneratedPath: "",
   fileAccess: {
@@ -484,6 +515,13 @@ const state = {
     errors: [],
   },
   workspaceMode: "design",
+  workspaceTabs: {
+    design: "ekle",
+    prepare: "kesim",
+  },
+  ribbonAdvanced: false,
+  ribbonCollapsed: false,
+  jobDrawerOpen: false,
   tour: {
     active: false,
     index: 0,
@@ -496,9 +534,14 @@ const SETTINGS_KEY = "laser-editor-settings-v3";
 const VECTOR_SETTINGS_VERSION = 10;
 const ENGRAVE_SETTINGS_VERSION = 1;
 const POWER_SETTINGS_VERSION = 1;
+const MOTION_SETTINGS_VERSION = 1;
 const DEFAULT_ENGRAVE_POWER = 50;
 const DEFAULT_ENGRAVE_FEED = 1800;
 const DEFAULT_ENGRAVE_LINE_STEP = 0.08;
+const DEFAULT_TEXT_TEST_LINE_STEP = 0.12;
+const DEFAULT_SMOOTH_TRAVEL_FEED = 1200;
+const DEFAULT_SMOOTH_FILL_RETURN_FEED = 1200;
+const DEFAULT_SMOOTH_FILL_SETTLE_MS = 20;
 const CLIENT_SESSION_KEY = "laser-editor-client-id-v1";
 let jobAnalysisTimer = null;
 let pendingDxfQuantityResolve = null;
@@ -764,6 +807,7 @@ const persistedInputIds = [
   "airAssist",
   "airAssistCommand",
   "innerFirst",
+  "smoothMotion",
   "returnOrigin",
   "engravePower",
   "engraveFeed",
@@ -1388,6 +1432,41 @@ function appendTextFontGroup(label, fonts) {
   refs.textFontOptions.appendChild(section);
 }
 
+function renderCalibrationTextFontOptions(selectedValue = "") {
+  const select = refs.calibrationTextFont;
+  if (!select) return;
+  const selected = selectedValue || select.value || DEFAULT_TEXT_FONT_VALUE;
+  const definitions = textFontDefinitions().filter((font) => font.kind !== "single");
+  const groups = [
+    ["Öne çıkan fontlar", definitions.filter((font) => !font.system && !font.custom)],
+    ["Sistem fontları", definitions.filter((font) => font.system)],
+    ["Yüklenen fontlar", definitions.filter((font) => font.custom)],
+  ];
+  select.innerHTML = "";
+  const seen = new Set();
+  for (const [label, fonts] of groups) {
+    const unique = fonts.filter((font) => {
+      const value = textFontValue(font);
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+    if (!unique.length) continue;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const font of unique) {
+      const option = document.createElement("option");
+      option.value = textFontValue(font);
+      option.textContent = font.name || font.label;
+      option.style.fontFamily = textFontCssFamily(font);
+      group.appendChild(option);
+    }
+    select.appendChild(group);
+  }
+  const values = Array.from(select.options).map((option) => option.value);
+  select.value = values.includes(selected) ? selected : DEFAULT_TEXT_FONT_VALUE;
+}
+
 function renderTextFontOptions(selectedValue = "") {
   const select = refs.textFont;
   if (!select) return;
@@ -1426,6 +1505,7 @@ function renderTextFontOptions(selectedValue = "") {
   appendGroup("Yüklenen fontlar", customFontDefinitions());
   const values = Array.from(select.options).map((option) => option.value);
   select.value = values.includes(selected) ? selected : DEFAULT_TEXT_FONT_VALUE;
+  renderCalibrationTextFontOptions(refs.calibrationTextFont?.value || select.value);
   updateTextFontSelectionUi(select.value);
   updateTextFontHint();
   filterTextFontOptions(refs.textFontSearch?.value || "");
@@ -2133,7 +2213,7 @@ const PRODUCT_TOUR_STEPS = [
       "Tasarımda kaynakları ve geometrileri oluşturun.",
       "Hazırla aşamasında tabla, yerleşim ve işlem parametrelerini doğrulayın.",
       "Önizleme ile gerçek G-code yollarını, süreyi ve boş hareketleri inceleyin.",
-      "Cihaz aşamasında GRBL bağlantısını ve üretimi güvenli biçimde yönetin.",
+      "Makine aşamasında GRBL bağlantısını ve üretimi güvenli biçimde yönetin.",
     ],
     target: () => document.querySelector("#projectHub:not(.hidden) .project-hub-header") || document.querySelector(".titlebar .brand"),
   },
@@ -2193,8 +2273,8 @@ const PRODUCT_TOUR_STEPS = [
   },
   {
     category: "Nesne ve Ön Kontrol",
-    title: "Parça ağacı ile üretim güvenliği aynı ekranda kalır",
-    description: "Sol panel işteki gerçek nesneleri, sağ panel seçili nesnenin özelliklerini ve G-code ön kontrolünü gösterir.",
+    title: "Nesneler, özellikler ve üretim durumu birbirine karışmaz",
+    description: "Sol panel işteki nesneleri, sağ panel yalnız seçili nesnenin özelliklerini; alt çekmece ise iş özeti ve G-code ön kontrolünü gösterir.",
     features: [
       "Sayaçlar belge modelinden anlık türetilir; silme ve kopyalama sonrası güncel kalır.",
       "Kesim, çizgi kazıma, dolgu ve yok say işlemleri nesne bazında atanır.",
@@ -2249,8 +2329,11 @@ const PRODUCT_TOUR_STEPS = [
       "Kesim/kazıma sırası, G21/G90/G94, M4 ve dosya sonunda açık M5/S0 kapanışı.",
       "Proje revision, kaynak fingerprint, artifact hash, güç/hız aralığı, süre ve mesafe raporu.",
     ],
-    prepare: () => activateRibbonTab("cikti"),
-    target: ".right-panel",
+    prepare: () => {
+      activateRibbonTab("cikti");
+      setJobDrawerOpen(true);
+    },
+    target: ".job-drawer",
   },
   {
     category: "Önizleme ve Cihaz",
@@ -2346,6 +2429,7 @@ function restoreProductTourContext() {
     activateRibbonTab(context.ribbonTab || "ekle");
     setWorkflowActive(context.workspaceMode || "design");
   }
+  setJobDrawerOpen(Boolean(context.jobDrawerOpen));
   if (context.projectHubOpen) openProjectHub();
   else closeProjectHub();
 }
@@ -2374,6 +2458,7 @@ function startProductTour() {
     projectHubOpen: !refs.projectHub?.classList.contains("hidden"),
     machineOpen: !document.getElementById("machineTab")?.classList.contains("hidden"),
     productionPreviewOpen: Boolean(state.productionPreview.open),
+    jobDrawerOpen: Boolean(state.jobDrawerOpen),
   };
   closeHelp();
   closePreferences();
@@ -2555,6 +2640,7 @@ function loadUiSettings() {
   let saved = {};
   let migratedTextDefaults = false;
   let migratedEngraveDefaults = false;
+  let migratedMotionDefaults = false;
   try {
     const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
     saved = parsed && typeof parsed === "object" ? parsed : {};
@@ -2579,6 +2665,14 @@ function loadUiSettings() {
       saved.lineStep = String(DEFAULT_ENGRAVE_LINE_STEP);
       saved.engraveSettingsVersion = ENGRAVE_SETTINGS_VERSION;
       migratedEngraveDefaults = true;
+    }
+    if (saved.motionSettingsVersion !== MOTION_SETTINGS_VERSION) {
+      if (refs.smoothMotion) refs.smoothMotion.checked = true;
+      if (refs.travelFeed) refs.travelFeed.value = String(DEFAULT_SMOOTH_TRAVEL_FEED);
+      saved.smoothMotion = true;
+      saved.travelFeed = String(DEFAULT_SMOOTH_TRAVEL_FEED);
+      saved.motionSettingsVersion = MOTION_SETTINGS_VERSION;
+      migratedMotionDefaults = true;
     }
     if (saved.powerSettingsVersion !== POWER_SETTINGS_VERSION) {
       for (const id of ["cutPower", "engravePower", "calibrationMinPower", "calibrationMaxPower", "machinePulsePower"]) {
@@ -2607,13 +2701,16 @@ function loadUiSettings() {
     if (["object", "contour"].includes(saved.canvasSelectionMode)) {
       state.canvasSelectionMode = saved.canvasSelectionMode;
     }
+    state.ribbonAdvanced = Boolean(saved.ribbonAdvanced);
+    state.ribbonCollapsed = Boolean(saved.ribbonCollapsed);
   } catch (_error) {
     localStorage.removeItem(SETTINGS_KEY);
   }
   enforceAirAssistDefaults();
   syncVectorProfessionalModeUi();
   syncCanvasSelectionModeUi();
-  if (migratedTextDefaults || migratedEngraveDefaults) saveUiSettings();
+  syncRibbonCollapsedUi();
+  if (migratedTextDefaults || migratedEngraveDefaults || migratedMotionDefaults) saveUiSettings();
   return saved;
 }
 
@@ -2625,7 +2722,10 @@ function saveUiSettings() {
     vectorSettingsVersion: VECTOR_SETTINGS_VERSION,
     engraveSettingsVersion: ENGRAVE_SETTINGS_VERSION,
     powerSettingsVersion: POWER_SETTINGS_VERSION,
+    motionSettingsVersion: MOTION_SETTINGS_VERSION,
     textSettingsVersion: TEXT_SETTINGS_VERSION,
+    ribbonAdvanced: Boolean(state.ribbonAdvanced),
+    ribbonCollapsed: Boolean(state.ribbonCollapsed),
   };
   for (const id of persistedInputIds) {
     const input = refs[id];
@@ -2671,28 +2771,28 @@ const BUILTIN_PROFILES = [
     id: "builtin-white-mdf-fill",
     name: "Beyaz MDF - Koyu Dolgulu Yazı",
     builtin: true,
-    values: { cutFeed: 350, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: DEFAULT_ENGRAVE_POWER, engraveFeed: DEFAULT_ENGRAVE_FEED, lineStep: DEFAULT_ENGRAVE_LINE_STEP, threshold: 140 },
+    values: { cutFeed: 350, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: DEFAULT_SMOOTH_TRAVEL_FEED, pierceDelay: 0, engravePower: DEFAULT_ENGRAVE_POWER, engraveFeed: DEFAULT_ENGRAVE_FEED, lineStep: DEFAULT_ENGRAVE_LINE_STEP, threshold: 140 },
     laserCmd: "M4",
   },
   {
     id: "builtin-kontrplak-3",
     name: "3mm Kontrplak",
     builtin: true,
-    values: { cutFeed: 500, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: 25, engraveFeed: 1800, lineStep: 0.35, threshold: 140 },
+    values: { cutFeed: 500, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: DEFAULT_SMOOTH_TRAVEL_FEED, pierceDelay: 0, engravePower: 25, engraveFeed: 1800, lineStep: 0.35, threshold: 140 },
     laserCmd: "M4",
   },
   {
     id: "builtin-mdf-3",
     name: "3mm MDF",
     builtin: true,
-    values: { cutFeed: 350, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: 3000, pierceDelay: 0, engravePower: 30, engraveFeed: 1600, lineStep: 0.35, threshold: 140 },
+    values: { cutFeed: 350, cutPower: 100, passes: 1, overcut: 0.8, kerf: 0.15, travelFeed: DEFAULT_SMOOTH_TRAVEL_FEED, pierceDelay: 0, engravePower: 30, engraveFeed: 1600, lineStep: 0.35, threshold: 140 },
     laserCmd: "M4",
   },
   {
     id: "builtin-karton",
     name: "Karton / Mukavva",
     builtin: true,
-    values: { cutFeed: 1500, cutPower: 60, passes: 1, overcut: 0.5, kerf: 0.1, travelFeed: 3000, pierceDelay: 0, engravePower: 15, engraveFeed: 2500, lineStep: 0.35, threshold: 140 },
+    values: { cutFeed: 1500, cutPower: 60, passes: 1, overcut: 0.5, kerf: 0.1, travelFeed: DEFAULT_SMOOTH_TRAVEL_FEED, pierceDelay: 0, engravePower: 15, engraveFeed: 2500, lineStep: 0.35, threshold: 140 },
     laserCmd: "M4",
   },
 ];
@@ -2918,7 +3018,13 @@ function getSettings() {
     passes: Math.max(1, Math.round(mm("passes", 1))),
     overcut: Math.max(0, mm("overcut", 0.8)),
     kerf: Math.min(1, Math.max(0, mm("kerf", 0))),
-    travelFeed: Math.max(1, mm("travelFeed", 3000)),
+    travelFeed: refs.smoothMotion?.checked
+      ? Math.min(DEFAULT_SMOOTH_TRAVEL_FEED, Math.max(1, mm("travelFeed", DEFAULT_SMOOTH_TRAVEL_FEED)))
+      : Math.max(1, mm("travelFeed", DEFAULT_SMOOTH_TRAVEL_FEED)),
+    smoothMotion: Boolean(refs.smoothMotion?.checked),
+    smoothTravelFeed: DEFAULT_SMOOTH_TRAVEL_FEED,
+    smoothFillReturnFeed: DEFAULT_SMOOTH_FILL_RETURN_FEED,
+    fillSettleMs: DEFAULT_SMOOTH_FILL_SETTLE_MS,
     pierceDelay: Math.max(0, mm("pierceDelay", 0)),
     airAssist: Boolean(state.machineProfile.airAssist?.supported && refs.airAssist?.checked),
     airAssistCommand: state.machineProfile.airAssist?.onCommand || "M8",
@@ -3454,12 +3560,16 @@ function syncDrawingUi() {
     refs.drawingSmoothing.disabled = tool.mode !== "freehand";
   }
   if (refs.drawingClosePath) refs.drawingClosePath.checked = tool.closePath;
+  if (refs.drawingAutoJoin) {
+    refs.drawingAutoJoin.checked = tool.autoJoin;
+    refs.drawingAutoJoin.disabled = tool.closePath;
+  }
   if (refs.drawingHint) {
     refs.drawingHint.textContent = tool.active
       ? tool.mode === "vector"
         ? "Noktaları tıklayın. Enter ile bitirin, Backspace ile son noktayı silin."
         : "Kalemi bastırıp serbestçe çizin; bırakınca çizgi oluşur."
-      : "Vektör kalemi hassas düğümler, serbest kalem yumuşatılmış el çizgisi üretir.";
+      : "Vektör kalemi hassas düğümler, serbest kalem yumuşatılmış el çizgisi üretir. Açık yol uçları yakındaki vektöre otomatik bağlanır.";
   }
   if (refs.startDrawingBtn) refs.startDrawingBtn.disabled = tool.active;
   if (refs.finishDrawingBtn) refs.finishDrawingBtn.disabled = !tool.active || tool.points.length < 2;
@@ -3474,6 +3584,7 @@ function cancelDrawingTool(message = "") {
   state.drawingTool.drawing = false;
   state.drawingTool.points = [];
   state.drawingTool.pointerId = null;
+  state.drawingTool.targetPatternId = null;
   canvas.style.cursor = "";
   syncDrawingUi();
   draw();
@@ -3485,14 +3596,17 @@ function beginDrawingTool() {
   cancelVectorRepairTool();
   cancelVectorRegionSelection();
   cancelVectorObjectSeparation();
+  const targetPattern = selectedVectorPattern();
   state.drawingTool.active = true;
   state.drawingTool.mode = document.querySelector("[data-drawing-mode].active")?.dataset.drawingMode || state.drawingTool.mode;
   state.drawingTool.operation = refs.drawingOperation?.value || "engrave_line";
   state.drawingTool.closePath = Boolean(refs.drawingClosePath?.checked);
+  state.drawingTool.autoJoin = Boolean(refs.drawingAutoJoin?.checked);
   state.drawingTool.smoothing = clamp(Number(refs.drawingSmoothing?.value || 45), 0, 100);
   state.drawingTool.drawing = false;
   state.drawingTool.points = [];
   state.drawingTool.pointerId = null;
+  state.drawingTool.targetPatternId = targetPattern?.id || null;
   state.selected = null;
   state.selectedItems = [];
   state.selectedVectorPaths = [];
@@ -3529,13 +3643,60 @@ function finishDrawingTool() {
     setStatus("Çizgiyi bitirmek için en az iki nokta gerekir.", "warn");
     return null;
   }
+  const operation = tool.operation || "engrave_line";
+  const modeLabel = tool.mode === "vector" ? "Vektör kalemi" : "Serbest kalem";
+  const finishToolState = () => {
+    state.drawingTool.active = false;
+    state.drawingTool.drawing = false;
+    state.drawingTool.points = [];
+    state.drawingTool.pointerId = null;
+    state.drawingTool.targetPatternId = null;
+    canvas.style.cursor = "";
+    syncDrawingUi();
+  };
+
+  if (!tool.closePath && tool.autoJoin) {
+    const candidate = drawingAutoJoinCandidate(points);
+    if (candidate) {
+      let prepared;
+      try {
+        prepared = prepareOpenPathAppend(candidate.pattern, points, operation, {
+          startAnchor: candidate.startAnchor,
+          endAnchor: candidate.endAnchor,
+          inheritSnappedOperation: true,
+          name: modeLabel,
+        });
+      } catch (error) {
+        setStatus(`${error.message || "Çizgi mevcut vektöre bağlanamadı."} Bağımsız çizmek için “Yakındaki vektöre bağla” seçimini kapatın.`, "danger");
+        draw();
+        return null;
+      }
+      pushUndo("Çizgiyi mevcut vektöre bağla");
+      applyPatternVectorModel(candidate.pattern, prepared.model);
+      compilePatternVectorModel(candidate.pattern);
+      markManualLayout();
+      finishToolState();
+      select("pattern", candidate.pattern.id);
+      updateSelectionPanel();
+      updateJobAnalysisNow();
+      draw();
+      const connectionText = prepared.mergedEdgeCount > 0
+        ? prepared.closed
+          ? `${prepared.mergedEdgeCount + 1} yol birleştirildi ve kontur kapatıldı.`
+          : `${prepared.mergedEdgeCount + 1} yol tek, kesintisiz kontur oldu.`
+        : "Çizgi mevcut vektörle ortak bağlantı düğümüne bağlandı.";
+      const operationText = prepared.operationInherited ? " İşlem türü bağlandığı konturdan alındı." : "";
+      setStatus(`${connectionText}${operationText}`, "ok");
+      return candidate.pattern;
+    }
+  }
+
   const minX = Math.min(...points.map((point) => point[0]));
   const maxX = Math.max(...points.map((point) => point[0]));
   const minY = Math.min(...points.map((point) => point[1]));
   const maxY = Math.max(...points.map((point) => point[1]));
   const width = Math.max(0.5, maxX - minX);
   const height = Math.max(0.5, maxY - minY);
-  const operation = tool.operation || "engrave_line";
   const vectorPath = {
     id: uid("vp"),
     points: points.map((point) => [point[0] - minX, height - (point[1] - minY)]),
@@ -3547,7 +3708,6 @@ function finishDrawingTool() {
     warnings: [],
   };
   refreshVectorPathMetrics(vectorPath);
-  const modeLabel = tool.mode === "vector" ? "Vektör kalemi" : "Serbest kalem";
   const pattern = addGeneratedVector({
     kind: tool.mode === "vector" ? "vector-pen" : "freehand-pen",
     sourceWidth: width,
@@ -3562,12 +3722,7 @@ function finishDrawingTool() {
     pattern.originalVectorPaths = cloneVectorPaths(pattern.vectorPaths);
     markManualLayout();
   }
-  state.drawingTool.active = false;
-  state.drawingTool.drawing = false;
-  state.drawingTool.points = [];
-  state.drawingTool.pointerId = null;
-  canvas.style.cursor = "";
-  syncDrawingUi();
+  finishToolState();
   draw();
   if (pattern) setStatus(`${modeLabel} çizgisi eklendi. CAD tek çizgi modu değişmedi.`, "ok");
   return pattern;
@@ -3631,8 +3786,97 @@ function detachMachineHomeFromSidePanel() {
   tab.parentElement?.insertBefore(home, tab);
 }
 
+function setButtonLabel(button, label) {
+  if (!button) return;
+  const labelNode = button.querySelector("[data-button-label]");
+  if (labelNode) labelNode.textContent = label;
+  else button.textContent = label;
+}
+
+function ribbonTabWorkspace(name) {
+  return document.querySelector(`.ribbon-tab[data-tab="${name}"]`)?.dataset.workspace || "design";
+}
+
+function syncRibbonCollapsedUi() {
+  refs.appShell?.classList.toggle("ribbon-collapsed", Boolean(state.ribbonCollapsed));
+  if (!refs.ribbonCollapseBtn) return;
+  refs.ribbonCollapseBtn.setAttribute("aria-expanded", state.ribbonCollapsed ? "false" : "true");
+  refs.ribbonCollapseBtn.setAttribute("aria-label", state.ribbonCollapsed ? "Araç şeridini aç" : "Araç şeridini daralt");
+  refs.ribbonCollapseBtn.title = state.ribbonCollapsed ? "Araç şeridini aç" : "Araç şeridini daralt";
+}
+
+function syncRibbonAdvancedUi() {
+  const activePanel = document.querySelector(".ribbon-panel.active");
+  const hasAdvancedTools = Boolean(activePanel?.querySelector(".ribbon-advanced-group, .ribbon-advanced-control"));
+  refs.appShell?.classList.toggle("ribbon-show-advanced", Boolean(state.ribbonAdvanced));
+  if (!refs.ribbonAdvancedBtn) return;
+  refs.ribbonAdvancedBtn.hidden = !hasAdvancedTools;
+  refs.ribbonAdvancedBtn.classList.toggle("active", hasAdvancedTools && state.ribbonAdvanced);
+  refs.ribbonAdvancedBtn.setAttribute("aria-pressed", state.ribbonAdvanced ? "true" : "false");
+  const label = state.ribbonAdvanced ? "Gelişmiş araçları gizle" : "Gelişmiş araçları göster";
+  refs.ribbonAdvancedBtn.setAttribute("aria-label", label);
+  refs.ribbonAdvancedBtn.title = label;
+}
+
+function setRibbonAdvanced(enabled, persist = true) {
+  state.ribbonAdvanced = Boolean(enabled);
+  syncRibbonAdvancedUi();
+  if (persist) saveUiSettings();
+  scheduleCanvasResize();
+}
+
+function setRibbonCollapsed(collapsed, persist = true) {
+  state.ribbonCollapsed = Boolean(collapsed);
+  syncRibbonCollapsedUi();
+  if (persist) saveUiSettings();
+  scheduleCanvasResize();
+}
+
+function setJobDrawerOpen(open) {
+  state.jobDrawerOpen = Boolean(open);
+  refs.appShell?.classList.toggle("job-drawer-open", state.jobDrawerOpen);
+  refs.jobDrawerToggle?.setAttribute("aria-expanded", state.jobDrawerOpen ? "true" : "false");
+  if (refs.jobDrawerBody) refs.jobDrawerBody.hidden = !state.jobDrawerOpen;
+  scheduleCanvasResize();
+}
+
+function syncInspectorVisibility(hasContent = projectHasContent()) {
+  if (!refs.appShell) return;
+  const inspectorHidden = !hasContent || !state.selected;
+  const changed = refs.appShell.classList.contains("inspector-empty") !== inspectorHidden;
+  refs.appShell.classList.toggle("inspector-empty", inspectorHidden);
+  if (changed) scheduleCanvasResize();
+}
+
+function renderWorkspaceChrome(analysis = state.currentAnalysis) {
+  const hasContent = projectHasContent();
+  const objectCount = state.placements.length + state.patterns.length;
+  refs.canvasEmptyState?.classList.toggle("hidden", hasContent);
+  refs.appShell?.classList.toggle("is-project-empty", !hasContent);
+  syncInspectorVisibility(hasContent);
+  if (refs.objectCountBadge) refs.objectCountBadge.textContent = String(objectCount);
+  if (!refs.jobDrawerSeverity) return;
+  const criticalCount = hasContent ? Number(analysis?.criticalCount || 0) : 0;
+  const warningCount = hasContent ? Number(analysis?.warningCount || 0) : 0;
+  refs.jobDrawerSeverity.className = "drawer-severity";
+  if (!hasContent) {
+    refs.jobDrawerSeverity.classList.add("idle");
+    refs.jobDrawerSeverity.textContent = "Bekliyor";
+  } else if (criticalCount) {
+    refs.jobDrawerSeverity.classList.add("danger");
+    refs.jobDrawerSeverity.textContent = `${criticalCount} kritik`;
+  } else if (warningCount) {
+    refs.jobDrawerSeverity.classList.add("warn");
+    refs.jobDrawerSeverity.textContent = `${warningCount} uyarı`;
+  } else {
+    refs.jobDrawerSeverity.classList.add("ready");
+    refs.jobDrawerSeverity.textContent = "Hazır";
+  }
+}
+
 function setWorkflowActive(mode) {
   state.workspaceMode = mode || "design";
+  if (refs.appShell) refs.appShell.dataset.activeWorkspace = state.workspaceMode;
   document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
     const active = button.dataset.workspaceMode === state.workspaceMode;
     button.classList.toggle("active", active);
@@ -3644,18 +3888,19 @@ function setWorkflowActive(mode) {
 
 function renderWorkflowProgress(analysis = state.currentAnalysis) {
   const objectCount = state.placements.length + state.patterns.length;
+  const hasContent = objectCount > 0;
   const generatedReady = Boolean(state.lastGeneratedPath);
   const selectedOutput = Boolean(refs.outputPath?.value.trim());
-  const criticalCount = Number(analysis?.criticalCount || 0);
-  const warningCount = Number(analysis?.warningCount || 0);
+  const criticalCount = hasContent ? Number(analysis?.criticalCount || 0) : 0;
+  const warningCount = hasContent ? Number(analysis?.warningCount || 0) : 0;
   const statuses = {
     design: {
       text: objectCount ? `${objectCount} nesne` : "Boş iş",
       className: objectCount ? "ready" : "",
     },
     prepare: {
-      text: analysis?.canGenerate ? "Kontrol geçti" : criticalCount ? `${criticalCount} kritik` : warningCount ? `${warningCount} uyarı` : "Bekliyor",
-      className: analysis?.canGenerate ? "ready" : criticalCount || warningCount ? "warn" : "",
+      text: !hasContent ? "Bekliyor" : analysis?.canGenerate ? "Kontrol geçti" : criticalCount ? `${criticalCount} kritik` : warningCount ? `${warningCount} uyarı` : "Bekliyor",
+      className: hasContent && analysis?.canGenerate ? "ready" : criticalCount || warningCount ? "warn" : "",
     },
     preview: {
       text: generatedReady ? "G-code hazır" : selectedOutput ? "Çıktı seçildi" : "Bekliyor",
@@ -3678,7 +3923,7 @@ function renderWorkflowProgress(analysis = state.currentAnalysis) {
     : state.workspaceMode === "prepare"
       ? generatedReady ? { title: "Önizleme", button: "Aç" } : { title: "Çıktı ve Kontrol", button: "Devam" }
       : state.workspaceMode === "preview"
-        ? { title: "Cihaz", button: "Devam" }
+        ? { title: "Makine", button: "Devam" }
         : { title: "Tasarım", button: "Geri Dön" };
   if (refs.workflowNextTitle) refs.workflowNextTitle.textContent = next.title;
   if (refs.workflowContinueBtn) {
@@ -3722,10 +3967,11 @@ function setWorkspaceMode(mode) {
   setMachineTabOpen(false, true, false);
   if (mode === "prepare") {
     if (state.preferences.prepareStrategy === "auto" && projectHasContent() && state.layout.dirty) autoLayout();
-    activateRibbonTab("tabla");
+    setRibbonCollapsed(false, false);
+    activateRibbonTab("kesim", { syncWorkflow: false });
     setWorkflowActive("prepare");
   } else {
-    activateRibbonTab("ekle");
+    activateRibbonTab(state.workspaceTabs.design || "ekle", { syncWorkflow: false });
     setWorkflowActive("design");
   }
 }
@@ -3767,6 +4013,73 @@ function updatePowerMachineReadouts() {
   if (refs.engravePowerMachineValue) refs.engravePowerMachineValue.textContent = `S${machineSFromPercent(mm("engravePower", DEFAULT_ENGRAVE_POWER))}`;
 }
 
+const MACHINE_MOTION_PROFILE_FIELDS = Object.freeze([
+  { setting: "100", profile: "stepsX", ref: "machineProfileStepsX", label: "X step/mm" },
+  { setting: "101", profile: "stepsY", ref: "machineProfileStepsY", label: "Y step/mm" },
+  { setting: "110", profile: "maxRateX", ref: "machineProfileMaxRateX", label: "X azami hız" },
+  { setting: "111", profile: "maxRateY", ref: "machineProfileMaxRateY", label: "Y azami hız" },
+  { setting: "120", profile: "accelerationX", ref: "machineProfileAccelerationX", label: "X ivme" },
+  { setting: "121", profile: "accelerationY", ref: "machineProfileAccelerationY", label: "Y ivme" },
+]);
+
+function positiveProfileValue(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function missingMachineMotionProfileFields(profile = state.machineProfile) {
+  return MACHINE_MOTION_PROFILE_FIELDS.filter((field) => positiveProfileValue(profile?.[field.profile]) === null);
+}
+
+function machineProfileOperationalSignature(profile = {}) {
+  return JSON.stringify({
+    id: String(profile.id || ""),
+    maxS: Number(profile.maxS) || 0,
+    travelX: Number(profile.travelX) || 0,
+    travelY: Number(profile.travelY) || 0,
+    stepsX: positiveProfileValue(profile.stepsX),
+    stepsY: positiveProfileValue(profile.stepsY),
+    maxRateX: positiveProfileValue(profile.maxRateX),
+    maxRateY: positiveProfileValue(profile.maxRateY),
+    accelerationX: positiveProfileValue(profile.accelerationX),
+    accelerationY: positiveProfileValue(profile.accelerationY),
+    accelerationValidated: Boolean(profile.accelerationValidated),
+    airAssist: Boolean(profile.airAssist?.supported),
+  });
+}
+
+function machineMotionMatchesProfile(settings, profile) {
+  return MACHINE_MOTION_PROFILE_FIELDS.every((field) => {
+    const actual = positiveProfileValue(settings?.[field.setting]);
+    const expected = positiveProfileValue(profile?.[field.profile]);
+    return actual !== null && expected !== null && Math.abs(actual - expected) <= 1e-6;
+  });
+}
+
+async function persistDefaultMachineProfile(profile = state.machineProfile) {
+  const normalized = ProjectState.normalizeMachineProfile(profile);
+  if (!ProjectState.machineProfileHasMotionData(normalized)) return null;
+  const data = await api("/api/machine-profile", { machineProfile: clonePlain(normalized) });
+  state.defaultMachineProfile = ProjectState.normalizeMachineProfile(data.machineProfile);
+  return state.defaultMachineProfile;
+}
+
+async function loadDefaultMachineProfile() {
+  try {
+    const data = await apiGet("/api/machine-profile");
+    if (!data.machineProfile) return null;
+    const saved = ProjectState.normalizeMachineProfile(data.machineProfile);
+    if (!ProjectState.machineProfileHasMotionData(saved)) return null;
+    state.defaultMachineProfile = saved;
+    state.machineProfile = ProjectState.selectMachineProfile(state.machineProfile, saved);
+    syncMachineProfileUi();
+    updateUiFromAnalysis(computeJobAnalysis());
+    return saved;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function machineProfileConnectedIssues(machine = state.machine) {
   if (!machine.connected) return [];
   const settings = machine.settings || {};
@@ -3778,6 +4091,13 @@ function machineProfileConnectedIssues(machine = state.machine) {
   else if (Math.abs(Number(settings["130"]) - Number(state.machineProfile.travelX)) > 1e-6) issues.push(`$130=${settings["130"]}, profil ${state.machineProfile.travelX}`);
   if (!Number.isFinite(Number(settings["131"]))) issues.push("$131 okunamadi");
   else if (Math.abs(Number(settings["131"]) - Number(state.machineProfile.travelY)) > 1e-6) issues.push(`$131=${settings["131"]}, profil ${state.machineProfile.travelY}`);
+  MACHINE_MOTION_PROFILE_FIELDS.forEach((field) => {
+    const actual = positiveProfileValue(settings[field.setting]);
+    const expected = positiveProfileValue(state.machineProfile[field.profile]);
+    if (actual === null) issues.push(`$${field.setting} okunamadi`);
+    else if (expected === null) issues.push(`profilde $${field.setting} eksik`);
+    else if (Math.abs(actual - expected) > 1e-6) issues.push(`$${field.setting}=${actual}, profil ${expected}`);
+  });
   return issues;
 }
 
@@ -3786,15 +4106,25 @@ function syncMachineProfileUi() {
   if (refs.machineProfileMaxS && document.activeElement !== refs.machineProfileMaxS) refs.machineProfileMaxS.value = String(profile.maxS);
   if (refs.machineProfileTravelX && document.activeElement !== refs.machineProfileTravelX) refs.machineProfileTravelX.value = String(profile.travelX);
   if (refs.machineProfileTravelY && document.activeElement !== refs.machineProfileTravelY) refs.machineProfileTravelY.value = String(profile.travelY);
+  MACHINE_MOTION_PROFILE_FIELDS.forEach((field) => {
+    const input = refs[field.ref];
+    if (input && document.activeElement !== input) input.value = positiveProfileValue(profile[field.profile]) ?? "";
+  });
+  if (refs.machineProfileAccelerationValidated) {
+    refs.machineProfileAccelerationValidated.checked = Boolean(profile.accelerationValidated);
+  }
   if (refs.machineProfileAirAssist) refs.machineProfileAirAssist.checked = Boolean(profile.airAssist?.supported);
   const issues = machineProfileConnectedIssues();
+  const missingMotion = missingMachineMotionProfileFields(profile);
   if (refs.machineProfileStatus) {
     refs.machineProfileStatus.textContent = issues.length
       ? `Makine uyusmazligi: ${issues.join(" · ")}`
+      : missingMotion.length
+        ? `Dolgu kazıma profili eksik: ${missingMotion.map((field) => `$${field.setting}`).join(", ")}`
       : profile.verified
-        ? `${profile.name} · S0-${profile.maxS} · ${profile.travelX} × ${profile.travelY} mm`
+        ? `${profile.name} · S0-${profile.maxS} · ${profile.travelX} × ${profile.travelY} mm · ivme ${profile.accelerationValidated ? "doğrulandı" : "%20 emniyetli"}`
         : "Dogrulama gerekli";
-    refs.machineProfileStatus.classList.toggle("danger", issues.length > 0);
+    refs.machineProfileStatus.classList.toggle("danger", issues.length > 0 || missingMotion.length > 0);
   }
   if (refs.machineSettingValidation) {
     const settings = state.machine.settings || {};
@@ -3803,25 +4133,38 @@ function syncMachineProfileUi() {
       ["$32", settings["32"], 1],
       ["$130", settings["130"], profile.travelX],
       ["$131", settings["131"], profile.travelY],
+      ...MACHINE_MOTION_PROFILE_FIELDS.map((field) => [`$${field.setting}`, settings[field.setting], profile[field.profile]]),
     ];
     refs.machineSettingValidation.innerHTML = rows.map(([key, actual, expected]) => {
-      const known = Number.isFinite(Number(actual));
-      const matches = known && Math.abs(Number(actual) - Number(expected)) <= 1e-6;
+      const known = actual !== null && actual !== undefined && actual !== "" && Number.isFinite(Number(actual));
+      const expectedKnown = expected !== null && expected !== undefined && expected !== "" && Number.isFinite(Number(expected)) && Number(expected) > 0;
+      const matches = known && expectedKnown && Math.abs(Number(actual) - Number(expected)) <= 1e-6;
       const stateClass = !state.machine.connected ? "pending" : matches ? "ok" : "danger";
       const actualText = known ? Number(actual).toString() : "okunmadı";
-      return `<span class="${stateClass}"><b>${key}</b><em>${actualText}</em><small>beklenen ${expected}</small></span>`;
+      const expectedText = expectedKnown ? expected : "profil eksik";
+      return `<span class="${stateClass}"><b>${key}</b><em>${actualText}</em><small>beklenen ${expectedText}</small></span>`;
     }).join("");
   }
   enforceAirAssistDefaults();
   updatePowerMachineReadouts();
 }
 
-function verifyMachineProfileFromInputs() {
+async function verifyMachineProfileFromInputs() {
+  const motionValues = Object.fromEntries(
+    MACHINE_MOTION_PROFILE_FIELDS.map((field) => [field.profile, positiveProfileValue(refs[field.ref]?.value)])
+  );
+  const missingMotion = MACHINE_MOTION_PROFILE_FIELDS.filter((field) => motionValues[field.profile] === null);
+  if (missingMotion.length) {
+    setStatus(`Makine profili doğrulanamadı. Eksik değerler: ${missingMotion.map((field) => `$${field.setting}`).join(", ")}.`, "danger");
+    return;
+  }
   const next = ProjectState.normalizeMachineProfile({
     ...state.machineProfile,
     maxS: refs.machineProfileMaxS?.value,
     travelX: refs.machineProfileTravelX?.value,
     travelY: refs.machineProfileTravelY?.value,
+    ...motionValues,
+    accelerationValidated: Boolean(refs.machineProfileAccelerationValidated?.checked),
     airAssist: {
       ...(state.machineProfile.airAssist || {}),
       supported: Boolean(refs.machineProfileAirAssist?.checked),
@@ -3830,35 +4173,88 @@ function verifyMachineProfileFromInputs() {
     verifiedAt: new Date().toISOString(),
     source: "manual",
   });
-  if (!window.confirm(`Makine profili dogrulansin mi?\nMaks S: ${next.maxS}\nAlan: ${next.travelX} x ${next.travelY} mm`)) return;
+  if (!window.confirm(
+    `Makine profili doğrulansın mı?\nMaks S: ${next.maxS}\nAlan: ${next.travelX} x ${next.travelY} mm\n`
+    + `Step/mm: X ${next.stepsX}, Y ${next.stepsY}\nAzami hız: X ${next.maxRateX}, Y ${next.maxRateY}\n`
+    + `İvme: X ${next.accelerationX}, Y ${next.accelerationY}`
+  )) return;
   state.machineProfile = next;
+  let persistenceError = null;
+  try {
+    await persistDefaultMachineProfile(next);
+  } catch (error) {
+    persistenceError = error;
+  }
   markProjectDirty("Makine profili dogrulandi");
   syncMachineProfileUi();
-  setStatus("Makine profili dogrulandi.", "ok");
+  setStatus(
+    persistenceError
+      ? `Profil bu iş için doğrulandı ancak kalıcı kaydedilemedi: ${persistenceError.message}`
+      : "Makine profili doğrulandı ve kalıcı kaydedildi.",
+    persistenceError ? "warn" : "ok",
+  );
 }
 
-function syncMachineProfileFromConnectedMachine() {
+async function syncMachineProfileFromConnectedMachine(options = {}) {
   const settings = state.machine.settings || {};
-  if (!state.machine.connected || !["30", "32", "130", "131"].every((key) => Number.isFinite(Number(settings[key])))) {
-    setStatus("Makine $30/$32/$130/$131 ayarlari okunamadi.", "danger");
+  const requiredSettings = ["30", "32", "100", "101", "110", "111", "120", "121", "130", "131"];
+  const settingIsReadable = (key) => settings[key] !== null
+    && settings[key] !== undefined
+    && settings[key] !== ""
+    && Number.isFinite(Number(settings[key]));
+  if (!state.machine.connected || !requiredSettings.every(settingIsReadable)) {
+    if (!options.silent) setStatus("Makine $30/$32/$100/$101/$110/$111/$120/$121/$130/$131 ayarları okunamadı.", "danger");
     return;
   }
   if (Number(settings["32"]) !== 1) {
-    setStatus("Makine profili dogrulanamadi: $32=1 olmali.", "danger");
+    if (!options.silent) setStatus("Makine profili doğrulanamadı: $32=1 olmalı.", "danger");
     return;
   }
-  state.machineProfile = ProjectState.normalizeMachineProfile({
-    ...state.machineProfile,
+  const nonPositiveSettings = requiredSettings.filter((key) => key !== "32" && Number(settings[key]) <= 0);
+  if (nonPositiveSettings.length) {
+    if (!options.silent) setStatus(`Makine profili doğrulanamadı: ${nonPositiveSettings.map((key) => `$${key}`).join(", ")} pozitif olmalı.`, "danger");
+    return;
+  }
+  const previousProfile = state.defaultMachineProfile || state.machineProfile;
+  const identitySource = requiredSettings.map((key) => `${key}:${Number(settings[key])}`).join("|");
+  const next = ProjectState.normalizeMachineProfile({
+    ...previousProfile,
+    id: `grbl-${ProjectState.hashText(identitySource)}`,
+    name: previousProfile?.verified ? previousProfile.name : "GRBL Lazer Makinesi",
     maxS: Number(settings["30"]),
     travelX: Number(settings["130"]),
     travelY: Number(settings["131"]),
+    stepsX: Number(settings["100"]),
+    stepsY: Number(settings["101"]),
+    maxRateX: Number(settings["110"]),
+    maxRateY: Number(settings["111"]),
+    accelerationX: Number(settings["120"]),
+    accelerationY: Number(settings["121"]),
+    accelerationValidated: Boolean(previousProfile?.accelerationValidated && machineMotionMatchesProfile(settings, previousProfile)),
     verified: true,
-    verifiedAt: new Date().toISOString(),
+    verifiedAt: previousProfile?.verifiedAt || new Date().toISOString(),
     source: "connected-machine",
   });
-  markProjectDirty("Makine profili makineden guncellendi");
+  const profileChanged = machineProfileOperationalSignature(state.machineProfile) !== machineProfileOperationalSignature(next);
+  state.machineProfile = next;
+  let persistenceError = null;
+  try {
+    await persistDefaultMachineProfile(next);
+  } catch (error) {
+    persistenceError = error;
+  }
+  if (profileChanged) markProjectDirty("Makine profili makineden guncellendi");
   syncMachineProfileUi();
-  setStatus("Makine profili $30/$130/$131 degerlerinden guncellendi.", "ok");
+  if (!options.silent) {
+    setStatus(
+      persistenceError
+        ? `Makine profili okundu ancak kalıcı kaydedilemedi: ${persistenceError.message}`
+        : next.accelerationValidated
+          ? "Makine profili GRBL ayarlarından güncellendi ve kalıcı kaydedildi."
+          : "Makine profili GRBL ayarlarından güncellendi. İvme doğrulanana kadar %20 emniyet düşümü kullanılacak.",
+      persistenceError ? "warn" : "ok",
+    );
+  }
 }
 
 function applyMachineSnapshot(machine) {
@@ -4538,6 +4934,7 @@ async function connectMachine() {
     const baud = Math.max(1, Math.round(Number(refs.machineBaud?.value) || 115200));
     const data = await api("/api/machine/connect", { port, baud });
     applyMachineSnapshot(data.machine);
+    await syncMachineProfileFromConnectedMachine({ silent: true });
     setStatus(`Makine bağlandı: ${port}`);
   } catch (error) {
     setStatus(error.message);
@@ -6469,6 +6866,160 @@ function vectorSourceSnapDistance(pattern) {
   return Math.max(1e-5, vectorRedrawSnapDistance() * Math.max(scaleX, scaleY));
 }
 
+function vectorAnchorOperation(pattern, anchor, fallback = "engrave_line") {
+  if (!anchor?.snapped) return null;
+  const pathId = String(anchor.pathId || "");
+  const edgeId = String(anchor.edgeId || "");
+  const vectorPath = (pattern?.vectorPaths || []).find((item) => (
+    (pathId && String(item.id || "") === pathId)
+    || (edgeId && String(item.edgeId || item.provenance?.edgeId || "") === edgeId)
+  ));
+  if (!vectorPath) return null;
+  const operation = baseVectorPathOperation(vectorPath, pattern);
+  return operation === "cut" ? "cut" : operation === "engrave_line" ? "engrave_line" : null;
+}
+
+function vectorModelForOpenPathAppend(pattern) {
+  const current = patternVectorModel(pattern);
+  if (current) return current;
+  const vectorEdit = window.LaserVectorEdit;
+  if (!vectorEdit?.migrateVectorPathsToModel) throw new Error("Vektör bağlantı motoru yüklenemedi; sayfayı yenileyin.");
+  return vectorEdit.migrateVectorPathsToModel(pattern.vectorPaths || [], {
+    sourceWidth: Number(pattern.sourceWidth) || Number(pattern.width) || 1,
+    sourceHeight: Number(pattern.sourceHeight) || Number(pattern.height) || 1,
+    designWidth: Number(pattern.width) || 1,
+    designHeight: Number(pattern.height) || 1,
+    fallbackOperation: patternOperation(pattern),
+    traceScale: Number(pattern.vectorStats?.cadTraceScale) || 1,
+  });
+}
+
+function prepareOpenPathAppend(pattern, worldPoints, requestedOperation = "engrave_line", options = {}) {
+  if (!pattern || !vectorPatternHasPaths(pattern)) throw new Error("Bağlanacak vektör deseni bulunamadı.");
+  const points = (worldPoints || []).map((point) => [Number(point?.[0]), Number(point?.[1])]);
+  if (points.length < 2 || points.some((point) => !point.every(Number.isFinite))) {
+    throw new Error("Birleştirilecek çizgi geçersiz.");
+  }
+  const vectorEdit = window.LaserVectorEdit;
+  const existingModel = patternVectorModel(pattern);
+  const currentModel = existingModel || vectorModelForOpenPathAppend(pattern);
+  if (vectorModelBlocksLocalWiden(currentModel)) {
+    throw new Error("Taşınmış, maskelenmiş veya bağlantılı vektör nesnesine otomatik kontur eklenemez.");
+  }
+  const reconciled = existingModel
+    ? vectorEdit?.reconcileVectorModel(currentModel, pattern.vectorPaths || [])
+    : { model: currentModel, changed: false };
+  if (!reconciled) throw new Error("Mevcut konturlar graph modeliyle eşleşmiyor; önce konturları geri alın.");
+  const anchorPoint = vectorEdit?.anchorPointToVectorModel;
+  if (!anchorPoint || !vectorEdit?.appendOpenPathToVectorModel) {
+    throw new Error("Kontur bağlantı motoru yüklenemedi; sayfayı yenileyin.");
+  }
+
+  const startWorld = { x: points[0][0], y: points[0][1] };
+  const endWorld = { x: points[points.length - 1][0], y: points[points.length - 1][1] };
+  const startAnchor = options.startAnchor || newVectorPathAnchor(pattern, startWorld);
+  const endAnchor = options.endAnchor || newVectorPathAnchor(pattern, endWorld, startAnchor.nodeId);
+  const sourcePoints = points.map((point) => clampPatternSourcePoint(
+    pattern,
+    patternSourcePointFromWorld(pattern, { x: point[0], y: point[1] })
+  ));
+  sourcePoints[0] = [...startAnchor.sourcePoint];
+  sourcePoints[sourcePoints.length - 1] = [...endAnchor.sourcePoint];
+
+  const snapTolerance = vectorSourceSnapDistance(pattern);
+  const startAnchored = anchorPoint(reconciled.model, startAnchor.sourcePoint, {
+    nodeId: startAnchor.nodeId,
+    edgeId: startAnchor.edgeId,
+    snapTolerance,
+    allowFree: true,
+  });
+  const endAnchored = anchorPoint(startAnchored.model, endAnchor.sourcePoint, {
+    nodeId: endAnchor.nodeId,
+    edgeId: endAnchor.edgeId,
+    snapTolerance,
+    allowFree: true,
+  });
+  if (String(startAnchored.nodeId) === String(endAnchored.nodeId)) {
+    throw new Error("Başlangıç ve bitiş aynı bağlantı noktasına yapıştı; çizgiyi farklı bir noktada bitirin.");
+  }
+  sourcePoints[0] = [...startAnchored.sourcePoint];
+  sourcePoints[sourcePoints.length - 1] = [...endAnchored.sourcePoint];
+
+  const requested = requestedOperation === "cut" ? "cut" : "engrave_line";
+  const snappedOperations = [startAnchor, endAnchor]
+    .map((anchor) => vectorAnchorOperation(pattern, anchor, requested))
+    .filter(Boolean);
+  const distinctOperations = [...new Set(snappedOperations)];
+  const operation = options.inheritSnappedOperation !== false && distinctOperations.length === 1
+    ? distinctOperations[0]
+    : requested;
+  const appended = vectorEdit.appendOpenPathToVectorModel(endAnchored.model, {
+    id: uid("manual-contour"),
+    points: sourcePoints,
+    closed: false,
+    operation,
+    removed: false,
+    locked: false,
+    deformable: true,
+    manualContour: true,
+  }, {
+    startNodeId: startAnchored.nodeId,
+    endNodeId: endAnchored.nodeId,
+    fallbackOperation: operation,
+    name: options.name || "Elle çizilen kontur",
+  });
+  if (!appended?.model) throw new Error("Yeni kontur graph modeline eklenemedi.");
+  const joined = vectorEdit.coalesceDegreeTwoOpenEdges
+    ? vectorEdit.coalesceDegreeTwoOpenEdges(appended.model, appended.edgeId, { fallbackOperation: operation, tolerance: snapTolerance })
+    : { ...appended, mergedEdgeCount: 0, closed: false };
+  const validation = vectorEdit.compileVectorObjects(joined.model, { fallbackOperation: patternOperation(pattern) });
+  if (validation.errors?.length) throw new Error(validation.errors[0]);
+  return {
+    ...joined,
+    model: joined.model,
+    operation,
+    operationInherited: operation !== requested,
+    startAnchored,
+    endAnchored,
+    snappedCount: Number(startAnchored.snapped) + Number(endAnchored.snapped),
+    validation,
+  };
+}
+
+function drawingAutoJoinCandidate(worldPoints) {
+  if (!Array.isArray(worldPoints) || worldPoints.length < 2) return null;
+  const preferred = patternById(state.drawingTool.targetPatternId);
+  const patterns = [preferred, ...[...state.patterns].reverse()]
+    .filter((pattern, index, all) => pattern && all.findIndex((item) => item?.id === pattern.id) === index);
+  const snapDistance = vectorRedrawSnapDistance();
+  let best = null;
+  for (const pattern of patterns) {
+    if (!vectorPatternHasPaths(pattern) || patternOperation(pattern) === "ignore") continue;
+    const inside = worldPoints.every((point) => {
+      const local = patternLocalPointFromWorld(pattern, { x: Number(point[0]), y: Number(point[1]) });
+      return local.x >= -1e-6 && local.y >= -1e-6
+        && local.x <= Number(pattern.width) + 1e-6
+        && local.y <= Number(pattern.height) + 1e-6;
+    });
+    if (!inside || vectorModelBlocksLocalWiden(patternVectorModel(pattern))) continue;
+    const startAnchor = newVectorPathAnchor(pattern, { x: worldPoints[0][0], y: worldPoints[0][1] });
+    const endPoint = worldPoints[worldPoints.length - 1];
+    const endAnchor = newVectorPathAnchor(pattern, { x: endPoint[0], y: endPoint[1] }, startAnchor.nodeId);
+    const snappedCount = Number(startAnchor.snapped) + Number(endAnchor.snapped);
+    if (!snappedCount) continue;
+    const distance = (startAnchor.snapped ? startAnchor.distance : snapDistance * 2)
+      + (endAnchor.snapped ? endAnchor.distance : snapDistance * 2);
+    const preferredRank = pattern.id === state.drawingTool.targetPatternId ? 1 : 0;
+    if (!best
+      || snappedCount > best.snappedCount
+      || (snappedCount === best.snappedCount && preferredRank > best.preferredRank)
+      || (snappedCount === best.snappedCount && preferredRank === best.preferredRank && distance < best.distance)) {
+      best = { pattern, startAnchor, endAnchor, snappedCount, preferredRank, distance };
+    }
+  }
+  return best;
+}
+
 function drawVectorRepairCursor() {
   const tool = state.vectorRepairTool;
   if (!tool.active || !state.cursor) return;
@@ -6929,70 +7480,31 @@ function finishNewVectorPathDraw(worldPoint) {
     return false;
   }
 
-  const sourcePoints = smoothedWorld.map((point) => clampPatternSourcePoint(
-    pattern,
-    patternSourcePointFromWorld(pattern, { x: point[0], y: point[1] })
-  ));
-  sourcePoints[0] = [...tool.startAnchor.sourcePoint];
-  sourcePoints[sourcePoints.length - 1] = [...endAnchor.sourcePoint];
   try {
-    const currentModel = patternVectorModel(pattern);
-    if (!currentModel) throw new Error("Vektör graph modeli bulunamadı.");
-    const reconciled = window.LaserVectorEdit?.reconcileVectorModel(currentModel, pattern.vectorPaths || []);
-    if (!reconciled) throw new Error("Mevcut konturlar graph modeliyle eşleşmiyor; önce konturları geri alın.");
-    const anchorPoint = window.LaserVectorEdit?.anchorPointToVectorModel;
-    if (!anchorPoint) throw new Error("Kontur bağlantı motoru yüklenemedi; sayfayı yenileyin.");
-    const snapTolerance = vectorSourceSnapDistance(pattern);
-    const startAnchored = anchorPoint(reconciled.model, tool.startAnchor.sourcePoint, {
-      nodeId: tool.startAnchor.nodeId,
-      edgeId: tool.startAnchor.edgeId,
-      snapTolerance,
-      allowFree: true,
-    });
-    const endAnchored = anchorPoint(startAnchored.model, endAnchor.sourcePoint, {
-      nodeId: endAnchor.nodeId,
-      edgeId: endAnchor.edgeId,
-      snapTolerance,
-      allowFree: true,
-    });
-    if (String(startAnchored.nodeId) === String(endAnchored.nodeId)) {
-      throw new Error("Başlangıç ve bitiş aynı bağlantı noktasına yapıştı; çizgiyi farklı bir noktada bitirin.");
-    }
-    sourcePoints[0] = [...startAnchored.sourcePoint];
-    sourcePoints[sourcePoints.length - 1] = [...endAnchored.sourcePoint];
-    const operation = tool.operation === "cut" ? "cut" : "engrave_line";
-    const appended = window.LaserVectorEdit?.appendOpenPathToVectorModel(endAnchored.model, {
-      id: uid("manual-contour"),
-      points: sourcePoints,
-      closed: false,
-      operation,
-      removed: false,
-      locked: false,
-      deformable: true,
-      manualContour: true,
-    }, {
-      startNodeId: startAnchored.nodeId,
-      endNodeId: endAnchored.nodeId,
-      fallbackOperation: operation,
+    const prepared = prepareOpenPathAppend(pattern, smoothedWorld, tool.operation, {
+      startAnchor: tool.startAnchor,
+      endAnchor,
+      inheritSnappedOperation: true,
       name: "Elle çizilen kontur",
     });
-    if (!appended?.model) throw new Error("Yeni kontur graph modeline eklenemedi.");
-    const validation = window.LaserVectorEdit.compileVectorObjects(appended.model, { fallbackOperation: patternOperation(pattern) });
-    if (validation.errors?.length) throw new Error(validation.errors[0]);
 
     pushUndo("Yeni kontur çiz");
-    applyPatternVectorModel(pattern, appended.model);
+    applyPatternVectorModel(pattern, prepared.model);
     compilePatternVectorModel(pattern);
     clearDraft();
     select("pattern", pattern.id);
     updateJobAnalysisNow();
-    const snappedCount = Number(startAnchored.snapped) + Number(endAnchored.snapped);
-    const connectionText = snappedCount === 2
-      ? "İki ucu da mevcut kontura bağlandı."
-      : snappedCount === 1
-        ? "Bir ucu mevcut kontura bağlandı; diğer uç serbest bırakıldı."
-        : "İki uç da serbest bırakıldı.";
-    setStatus(`Yeni kontur yumuşatılıp kaydedildi. ${connectionText} Çizmeye devam edebilir veya Bitir'e basabilirsiniz.`, "ok");
+    const connectionText = prepared.mergedEdgeCount > 0
+      ? prepared.closed
+        ? `${prepared.mergedEdgeCount + 1} yol birleştirildi; artık tek kapalı kontur.`
+        : `${prepared.mergedEdgeCount + 1} yol birleştirildi; artık tek kesintisiz kontur.`
+      : prepared.snappedCount === 2
+        ? "İki ucu da mevcut vektöre ortak düğümle bağlandı."
+        : prepared.snappedCount === 1
+          ? "Bir ucu mevcut vektöre bağlandı; diğer uç serbest bırakıldı."
+          : "İki uç da serbest bırakıldı.";
+    const operationText = prepared.operationInherited ? " İşlem türü bağlandığı konturdan otomatik alındı." : "";
+    setStatus(`Yeni kontur yumuşatılıp kaydedildi. ${connectionText}${operationText} Çizmeye devam edebilir veya Bitir'e basabilirsiniz.`, "ok");
     return true;
   } catch (error) {
     clearDraft();
@@ -9687,7 +10199,7 @@ function updatePartsList(analysis = state.currentAnalysis || computeJobAnalysis(
 }
 
 function updateSummary(extra = "", analysis = state.currentAnalysis || computeJobAnalysis()) {
-  const b = analysis.bed;
+  if (!refs.summary) return;
   const bounds = productionJobBounds(analysis);
   const boundsLines = bounds
     ? [
@@ -9696,15 +10208,7 @@ function updateSummary(extra = "", analysis = state.currentAnalysis || computeJo
       ]
     : [];
   refs.summary.textContent = [
-    `Tabla: ${b.width.toFixed(0)} x ${b.height.toFixed(0)} mm`,
     `Aktif alan: ${Math.max(0, analysis.activeWidth).toFixed(0)} x ${Math.max(0, analysis.activeHeight).toFixed(0)} mm`,
-    `DXF: ${state.parts.length}`,
-    `Parça: ${analysis.placements.length}`,
-    `Desen: ${state.patterns.length}`,
-    `Kesim yolu: ${analysis.cutPathCount}`,
-    `Kerf: ${analysis.kerf.toFixed(2)} mm`,
-    `Kazıma yolu: ${analysis.engraveLineCount + analysis.engraveFillCount}`,
-    `Kritik: ${analysis.criticalCount}`,
     ...boundsLines,
     `Çıktı: ${refs.outputPath.value || "-"}`,
     extra,
@@ -9826,6 +10330,7 @@ function togglePlacementSelection(placementId) {
 }
 
 function updateSelectionPanel() {
+  syncInspectorVisibility();
   renderVectorQualityBox();
   if (!state.selected) {
     refs.selectionPanel.className = "selection-empty";
@@ -11452,7 +11957,8 @@ function computeJobAnalysis() {
       action: "Tabla ölçüsünü düzelt",
     });
   }
-  if (!state.machineProfile?.verified || Number(state.machineProfile?.maxS) <= 0) {
+  const machineProfileVerified = Boolean(state.machineProfile?.verified && Number(state.machineProfile?.maxS) > 0);
+  if (!machineProfileVerified) {
     warnings.push({
       level: "critical",
       title: "Makine profili dogrulanmadi",
@@ -11468,6 +11974,26 @@ function computeJobAnalysis() {
       action: "Cihaz profilini ac",
       target: "machine-profile",
     });
+  }
+  if (engraveFillCount > 0 && machineProfileVerified) {
+    const missingMotion = missingMachineMotionProfileFields();
+    if (missingMotion.length) {
+      warnings.push({
+        level: "critical",
+        title: "Dolgu kazıma makine dinamiği eksik",
+        body: `Güvenli overscan için ${missingMotion.map((field) => `$${field.setting}`).join(", ")} değerlerini makineden alın.`,
+        action: "Makine profilini aç",
+        target: "machine-profile",
+      });
+    } else if (!state.machineProfile.accelerationValidated) {
+      warnings.push({
+        level: "warning",
+        title: "İvme fiziksel olarak doğrulanmadı",
+        body: "Overscan hesabı GRBL ivmesini yüzde 20 düşürerek emniyetli kullanacak.",
+        action: "Makine profilini aç",
+        target: "machine-profile",
+      });
+    }
   }
   const outsideCount = outsidePlacements.length + outsidePatterns.length;
   if (outsideCount) {
@@ -11622,6 +12148,7 @@ function setChip(ref, text, level = "") {
 
 function renderJobSummary(analysis) {
   if (!refs.jobSummary) return;
+  const hasContent = projectHasContent();
   const outside = analysis.outsidePlacements.length + analysis.outsidePatterns.length;
   const cells = [
     ["DXF parça", state.parts.length, state.parts.length ? "ok" : ""],
@@ -11631,7 +12158,7 @@ function renderJobSummary(analysis) {
     ["Kesim yolu", analysis.cutPathCount, analysis.cutPathCount ? "ok" : ""],
     ["Kazıma yolu", analysis.engraveLineCount + analysis.engraveFillCount, analysis.engraveLineCount + analysis.engraveFillCount ? "ok" : ""],
     ["Yok sayılan", analysis.ignoredCount, analysis.ignoredCount ? "warn" : ""],
-    ["Uyarı", analysis.criticalCount + analysis.warningCount, analysis.criticalCount ? "danger" : analysis.warningCount ? "warn" : "ok"],
+    ["Uyarı", hasContent ? analysis.criticalCount + analysis.warningCount : 0, hasContent && analysis.criticalCount ? "danger" : hasContent && analysis.warningCount ? "warn" : "ok"],
   ];
   refs.jobSummary.innerHTML = cells
     .map(
@@ -11645,7 +12172,10 @@ function renderJobSummary(analysis) {
     button.addEventListener("click", () => {
       const key = button.dataset.summary || "";
       if (key.includes("Dışta")) zoomToOutside();
-      if (key.includes("Uyarı")) refs.warningsList?.scrollIntoView({ block: "nearest" });
+      if (key.includes("Uyarı")) {
+        setJobDrawerOpen(true);
+        refs.warningsList?.scrollIntoView({ block: "nearest" });
+      }
     });
   });
 }
@@ -11660,6 +12190,10 @@ function renderLayoutStatus(analysis) {
 
 function renderWarnings(analysis) {
   if (!refs.warningsList) return;
+  if (!projectHasContent()) {
+    refs.warningsList.innerHTML = `<div class="warning-item empty"><div class="warning-title">İş boş<span>Bekliyor</span></div></div>`;
+    return;
+  }
   if (!analysis.warnings.length) {
     refs.warningsList.innerHTML = `<div class="warning-item info"><div class="warning-title">Uyarı yok<span>Hazır</span></div><span>Kesim ve kazıma yolları kontrol edildi.</span></div>`;
     return;
@@ -11727,6 +12261,10 @@ function renderPatternsList(analysis) {
 
 function renderPreflight(analysis) {
   if (!refs.preflightPanel) return;
+  if (!projectHasContent()) {
+    refs.preflightPanel.innerHTML = `<div class="preflight-state idle"><strong>Ön kontrol bekliyor</strong><span>İş boş</span></div>`;
+    return;
+  }
   const stateClass = analysis.canGenerate ? "ready" : "blocked";
   const stateText = analysis.canGenerate ? "Hazır" : "Hazır değil";
   const issueList = analysis.warnings
@@ -11755,7 +12293,8 @@ function renderPreflight(analysis) {
 }
 
 function renderStatusBars(analysis) {
-  const totalWarnings = analysis.criticalCount + analysis.warningCount + analysis.infoCount;
+  const hasContent = projectHasContent();
+  const totalWarnings = hasContent ? analysis.criticalCount + analysis.warningCount + analysis.infoCount : 0;
   setChip(refs.unitChip, "Birim: mm kilitli", "locked");
   setChip(refs.bedChip, `Tabla: ${analysis.bed.width.toFixed(0)} × ${analysis.bed.height.toFixed(0)} mm`);
   setChip(
@@ -11763,20 +12302,28 @@ function renderStatusBars(analysis) {
     layoutStatusText(analysis.layoutStatus),
     analysis.layoutStatus === "güncel" ? "ok" : "warn"
   );
-  setChip(refs.warningChip, `Uyarı: ${totalWarnings}`, analysis.criticalCount ? "danger" : analysis.warningCount ? "warn" : "ok");
+  setChip(
+    refs.warningChip,
+    hasContent ? `Uyarı: ${totalWarnings}` : "İş boş",
+    hasContent ? (analysis.criticalCount ? "danger" : analysis.warningCount ? "warn" : "ok") : ""
+  );
   if (refs.bottomStatus) {
-    refs.bottomStatus.textContent = `DXF: ${state.parts.length} dosya / ${analysis.placements.length} parça | Yerleşen: ${analysis.placedInside}/${analysis.requestedPlacements || analysis.placements.length} | Desen: ${state.patterns.length} | Dışta: ${analysis.outsidePlacements.length + analysis.outsidePatterns.length} | Uyarı: ${totalWarnings}`;
+    refs.bottomStatus.textContent = hasContent
+      ? `${analysis.placements.length + state.patterns.length} nesne · ${analysis.placedInside}/${analysis.requestedPlacements || analysis.placements.length} yerleşti · ${analysis.cutPathCount} kesim · ${analysis.engraveLineCount + analysis.engraveFillCount} kazıma`
+      : "İş boş";
   }
   const outputActionBusy = gcodeGenerationActive || Boolean(nativeDialogActivePath);
   for (const button of [refs.generateBtn, refs.generateBtn2].filter(Boolean)) {
     button.disabled = outputActionBusy || !analysis.canGenerate;
-    button.classList.toggle("is-blocked", !outputActionBusy && !analysis.canGenerate);
-    button.textContent = outputActionBusy
+    button.classList.toggle("is-blocked", hasContent && !outputActionBusy && !analysis.canGenerate);
+    setButtonLabel(button, outputActionBusy
       ? gcodeGenerationActive ? "Hazırlanıyor..." : "Dosya penceresi açık"
-      : analysis.canGenerate ? "G-code Oluştur" : "G-code Oluşturulamaz";
+      : !hasContent || analysis.canGenerate ? "G-code Oluştur" : "G-code Oluşturulamaz");
     button.title = outputActionBusy
       ? "Devam eden dosya işlemini tamamlayın"
-      : analysis.canGenerate ? "G-code oluştur" : `G-code oluşturulamaz: ${analysis.warnings.find((item) => item.level === "critical")?.title || "kritik sorun var"}`;
+      : !hasContent
+        ? "Önce işe bir parça veya desen ekleyin"
+        : analysis.canGenerate ? "G-code oluştur" : `G-code oluşturulamaz: ${analysis.warnings.find((item) => item.level === "critical")?.title || "kritik sorun var"}`;
   }
   if (refs.activeAreaText) {
     refs.activeAreaText.textContent = `Aktif alan: ${Math.max(0, analysis.activeWidth).toFixed(0)} × ${Math.max(0, analysis.activeHeight).toFixed(0)} mm`;
@@ -11811,6 +12358,7 @@ function renderStatusBars(analysis) {
     });
   }
   renderWorkflowProgress(analysis);
+  renderWorkspaceChrome(analysis);
 }
 
 function updateUiFromAnalysis(analysis, extra = "") {
@@ -13341,8 +13889,61 @@ function addBoxToJob() {
   fitView();
 }
 
-function calibrationOptions() {
+function calibrationOperationMode() {
+  const value = refs.calibrationOperation?.value;
+  if (value === "text_fill") return "text_fill";
+  return value === "engrave_line" ? "engrave_line" : "cut";
+}
+
+function calibrationTextSettings() {
   return {
+    text: String(refs.calibrationText?.value || "").trim(),
+    fontValue: refs.calibrationTextFont?.value || DEFAULT_TEXT_FONT_VALUE,
+    height: clamp(Number(refs.calibrationTextHeight?.value) || 6, 2, 30),
+    weight: refs.calibrationTextWeight?.value || "700",
+    tracking: clamp(Number(refs.calibrationTextTracking?.value) || 0, -1, 5),
+    lineStep: clamp(Number(refs.calibrationTextLineStep?.value) || DEFAULT_TEXT_TEST_LINE_STEP, 0.05, 1),
+  };
+}
+
+function calibrationTextCellSize(textGeometry = null) {
+  const settings = calibrationTextSettings();
+  if (textGeometry?.sourceWidth && textGeometry?.sourceHeight) {
+    const contentWidth = Number(textGeometry.sourceWidth);
+    const contentHeight = Number(textGeometry.sourceHeight);
+    return {
+      width: clamp(contentWidth + 6, 18, 240),
+      height: clamp(contentHeight + 5, 8, 80),
+      contentWidth,
+      contentHeight,
+    };
+  }
+  const font = textFontDefinitionByValue(settings.fontValue);
+  const measureCanvas = document.createElement("canvas");
+  const measure = measureCanvas.getContext("2d");
+  const fontPx = 100;
+  measure.font = textCanvasFont(fontPx, font, { weight: settings.weight, style: "normal" });
+  const trackingPx = settings.tracking / settings.height * fontPx;
+  const lines = settings.text.split(/\r?\n/);
+  const widthRatio = Math.max(0.5, ...lines.map((line) => measureTrackedText(measure, line || " ", trackingPx) / fontPx));
+  const inkHeightRatio = Math.max(0.5, ...lines.map((line) => {
+    const metrics = measure.measureText(line || "M");
+    const measured = Number(metrics.actualBoundingBoxAscent || 0) + Number(metrics.actualBoundingBoxDescent || 0);
+    return measured > 0 ? measured / fontPx : 0.72;
+  }));
+  const lineCount = Math.max(1, lines.length);
+  const contentWidth = widthRatio * settings.height;
+  const contentHeight = inkHeightRatio * settings.height + (lineCount - 1) * settings.height * 1.28;
+  return {
+    width: clamp(contentWidth + 6, 18, 240),
+    height: clamp(contentHeight + 5, 8, 80),
+    contentWidth,
+    contentHeight,
+  };
+}
+
+function calibrationOptions(options = {}) {
+  const result = {
     columns: refs.calibrationColumns?.value,
     rows: refs.calibrationRows?.value,
     tile: refs.calibrationTile?.value,
@@ -13352,25 +13953,128 @@ function calibrationOptions() {
     minFeed: refs.calibrationMinFeed?.value,
     maxFeed: refs.calibrationMaxFeed?.value,
   };
+  if (calibrationOperationMode() === "text_fill") {
+    const cell = calibrationTextCellSize(options.textGeometry);
+    const textSettings = calibrationTextSettings();
+    const accelerationValues = [
+      Number(state.machineProfile?.accelerationX),
+      Number(state.machineProfile?.accelerationY),
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const configuredAcceleration = accelerationValues.length ? Math.min(...accelerationValues) : 400;
+    result.tileWidth = cell.width;
+    result.tileHeight = cell.height;
+    result.contentWidth = Math.max(0.5, cell.contentWidth || cell.width - 6);
+    result.contentHeight = Math.max(0.5, cell.contentHeight || cell.height - 5);
+    result.lineStep = textSettings.lineStep;
+    result.returnFeed = DEFAULT_SMOOTH_FILL_RETURN_FEED;
+    result.indexFeed = 300;
+    result.settleMs = DEFAULT_SMOOTH_FILL_SETTLE_MS;
+    result.acceleration = configuredAcceleration * (state.machineProfile?.accelerationValidated ? 1 : 0.8);
+  }
+  return result;
+}
+
+function formatCalibrationDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return `yaklaşık ${Math.max(1, Math.ceil(seconds))} sn`;
+  const minutes = Math.floor(seconds / 60);
+  const remaining = Math.round(seconds - minutes * 60);
+  return remaining > 0 ? `yaklaşık ${minutes} dk ${remaining} sn` : `yaklaşık ${minutes} dk`;
+}
+
+function syncCalibrationModeUi() {
+  const textMode = calibrationOperationMode() === "text_fill";
+  refs.calibrationTextFields?.classList.toggle("hidden", !textMode);
+  refs.calibrationTileField?.classList.toggle("hidden", textMode);
+  if (refs.calibrationTitle) refs.calibrationTitle.textContent = textMode ? "Dolgulu Yazı Kalite Testi" : "Güç / Hız Kalibrasyonu";
+  if (refs.calibrationDescription) {
+    refs.calibrationDescription.textContent = textMode
+      ? "Aynı yazıyı farklı güç ve F hızlarında kazıyarak en net ayarı bulun."
+      : "Her karenin kendi yüzde gücü ve F hızı vardır; gerçek S değeri makine profilinden üretilir.";
+  }
+  const button = document.getElementById("addCalibrationBtn");
+  if (button && !button.hasAttribute("aria-busy")) button.textContent = textMode ? "Yazı Testini İşe Ekle" : "Plakayı İşe Ekle";
 }
 
 function renderCalibrationSummary() {
-  const result = CalibrationGrid.build(calibrationOptions());
+  syncCalibrationModeUi();
+  const options = calibrationOptions();
+  const result = CalibrationGrid.build(options);
+  const mode = calibrationOperationMode();
+  if (mode === "text_fill" && !calibrationTextSettings().text) result.errors.push("Test edilecek yazıyı girin.");
   if (!refs.calibrationSummary) return result;
-  const operation = refs.calibrationOperation?.value === "engrave_line" ? "çizgi kazıma" : "kesim";
+  const operation = mode === "text_fill" ? "dolgulu yazı" : mode === "engrave_line" ? "çizgi kazıma" : "kesim";
+  const unit = mode === "text_fill" ? "örneği" : "karesi";
   refs.calibrationSummary.classList.toggle("danger", result.errors.length > 0);
+  const duration = mode === "text_fill"
+    ? formatCalibrationDuration(CalibrationGrid.estimateTextFillSeconds(options, result))
+    : "";
   refs.calibrationSummary.textContent = result.errors.length
     ? result.errors.join(" ")
-    : `${result.columns} × ${result.rows} = ${result.cells.length} ${operation} karesi · ${result.width.toFixed(1)} × ${result.height.toFixed(1)} mm · %${result.powers.join("/")} · F${result.feeds.join("/")}`;
+    : `${result.columns} × ${result.rows} = ${result.cells.length} ${operation} ${unit} · ${result.width.toFixed(1)} × ${result.height.toFixed(1)} mm · %${result.powers.join("/")} · F${result.feeds.join("/")}${duration ? ` · ${duration}` : ""}`;
   const button = document.getElementById("addCalibrationBtn");
   if (button) button.disabled = result.errors.length > 0;
   return result;
 }
 
-function openCalibration() {
+const calibrationModeValues = new Map();
+let activeCalibrationMode = null;
+
+function calibrationGridValues() {
+  return {
+    columns: refs.calibrationColumns?.value || "5",
+    rows: refs.calibrationRows?.value || "5",
+    tile: refs.calibrationTile?.value || "12",
+    gap: refs.calibrationGap?.value || "3",
+    minPower: refs.calibrationMinPower?.value || "20",
+    maxPower: refs.calibrationMaxPower?.value || "100",
+    minFeed: refs.calibrationMinFeed?.value || "300",
+    maxFeed: refs.calibrationMaxFeed?.value || "1500",
+  };
+}
+
+function calibrationModeDefaults(mode) {
+  return mode === "text_fill"
+    ? { columns: "3", rows: "2", tile: "12", gap: "2", minPower: "40", maxPower: "70", minFeed: "1200", maxFeed: "2400" }
+    : { columns: "5", rows: "5", tile: "12", gap: "3", minPower: "20", maxPower: "100", minFeed: "300", maxFeed: "1500" };
+}
+
+function applyCalibrationGridValues(values) {
+  const controls = {
+    columns: refs.calibrationColumns,
+    rows: refs.calibrationRows,
+    tile: refs.calibrationTile,
+    gap: refs.calibrationGap,
+    minPower: refs.calibrationMinPower,
+    maxPower: refs.calibrationMaxPower,
+    minFeed: refs.calibrationMinFeed,
+    maxFeed: refs.calibrationMaxFeed,
+  };
+  for (const [key, control] of Object.entries(controls)) {
+    if (control && values[key] !== undefined) control.value = String(values[key]);
+  }
+}
+
+function switchCalibrationMode(mode) {
+  const normalized = mode === "text_fill" ? "text_fill" : mode === "engrave_line" ? "engrave_line" : "cut";
+  if (activeCalibrationMode && activeCalibrationMode !== normalized) {
+    calibrationModeValues.set(activeCalibrationMode, calibrationGridValues());
+  }
+  if (activeCalibrationMode !== normalized) {
+    applyCalibrationGridValues(calibrationModeValues.get(normalized) || calibrationModeDefaults(normalized));
+  }
+  activeCalibrationMode = normalized;
+  if (refs.calibrationOperation) refs.calibrationOperation.value = normalized;
+}
+
+function openCalibration(mode = "cut") {
+  const requestedMode = typeof mode === "string" ? mode : "cut";
   closeProjectHub();
+  switchCalibrationMode(requestedMode);
+  renderCalibrationTextFontOptions(refs.calibrationTextFont?.value || DEFAULT_TEXT_FONT_VALUE);
   refs.calibrationModal?.classList.remove("hidden");
   renderCalibrationSummary();
+  if (requestedMode === "text_fill") refs.calibrationText?.focus();
 }
 
 function closeCalibration() {
@@ -13392,24 +14096,57 @@ function setCalibrationPatternProcess(pattern, operation, power, feed) {
   }
 }
 
-function addCalibrationPlate(event) {
+async function addCalibrationPlate(event) {
   event?.preventDefault();
+  const button = document.getElementById("addCalibrationBtn");
+  const previousText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = "Hazırlanıyor...";
+  }
   try {
-    return addCalibrationPlateUnsafe();
+    return await addCalibrationPlateUnsafe();
   } catch (error) {
     console.error("Kalibrasyon plakasi olusturulamadi.", error);
     setStatus(error?.message || "Kalibrasyon plakasi olusturulamadi.", "danger");
     return null;
+  } finally {
+    if (button) {
+      button.removeAttribute("aria-busy");
+      button.textContent = previousText;
+    }
+    renderCalibrationSummary();
   }
 }
 
-function addCalibrationPlateUnsafe() {
-  const result = renderCalibrationSummary();
+async function addCalibrationPlateUnsafe() {
+  let result = renderCalibrationSummary();
   if (result.errors.length) {
     setStatus(result.errors[0], "danger");
     return;
   }
-  const operation = refs.calibrationOperation?.value === "engrave_line" ? "engrave_line" : "cut";
+  const mode = calibrationOperationMode();
+  const operation = mode === "text_fill" ? "engrave_fill" : mode;
+  const textSettings = calibrationTextSettings();
+  let textGeometry = null;
+  if (mode === "text_fill") {
+    setStatus("Yazı testi vektörleri hazırlanıyor...");
+    const font = textFontDefinitionByValue(textSettings.fontValue);
+    const built = await buildEditableTextGeometry(textSettings.text, font, {
+      fontValue: textSettings.fontValue,
+      height: textSettings.height,
+      tracking: textSettings.tracking,
+      weight: textSettings.weight,
+      style: "normal",
+      operation: "engrave_fill",
+      fillLineStep: textSettings.lineStep,
+      name: `Yazı testi ${textSettings.text}`,
+    });
+    textGeometry = built?.geometry;
+    if (!textGeometry?.vectorPaths?.length) throw new Error("Seçilen font bu yazı için dolgu vektörü üretemedi.");
+    result = CalibrationGrid.build(calibrationOptions({ textGeometry }));
+  }
   const occupied = [
     ...state.placements.map(placementBounds),
     ...state.patterns.filter((pattern) => !pattern.parentId && patternOperation(pattern) !== "ignore").map(patternBounds).filter(Boolean),
@@ -13422,7 +14159,8 @@ function addCalibrationPlateUnsafe() {
   }], occupied);
   const packed = packing.packed[0];
   if (!packed || packing.overflowCount) {
-    setStatus(`Kalibrasyon plakası için tablaya ${result.width.toFixed(1)} × ${result.height.toFixed(1)} mm boş alan gerekir.`, "danger");
+    const title = mode === "text_fill" ? "Yazı testi" : "Kalibrasyon plakası";
+    setStatus(`${title} için tablaya ${result.width.toFixed(1)} × ${result.height.toFixed(1)} mm boş alan gerekir.`, "danger");
     return;
   }
   const geometryLib = window.LaserGeometry;
@@ -13430,23 +14168,25 @@ function addCalibrationPlateUnsafe() {
   const originX = packed.x;
   const originY = packed.y;
   const commonMetadata = {
-    generator: "power-speed-calibration",
+    generator: mode === "text_fill" ? "text-quality-calibration" : "power-speed-calibration",
     calibrationId: groupId,
     operation,
     columns: result.columns,
     rows: result.rows,
   };
   for (const cell of result.cells) {
-    const geometry = geometryLib.buildShape("rect", { width: cell.width, height: cell.height, radius: 0.8, operation });
+    const geometry = textGeometry || geometryLib.buildShape("rect", { width: cell.width, height: cell.height, radius: 0.8, operation });
     const pattern = createGeneratedVectorPattern(geometry, {
-      name: `Kalibrasyon %${cell.power} F${cell.feed}`,
+      name: mode === "text_fill" ? `Yazı testi %${cell.power} F${cell.feed}: ${textSettings.text}` : `Kalibrasyon %${cell.power} F${cell.feed}`,
       operation,
+      textSettings: textGeometry?.textSettings,
       sourceKey: `generated:calibration:${groupId}:cell:${cell.row}:${cell.column}`,
-      metadata: { ...commonMetadata, row: cell.row, column: cell.column, power: cell.power, feed: cell.feed },
+      metadata: { ...commonMetadata, row: cell.row, column: cell.column, power: cell.power, feed: cell.feed, text: mode === "text_fill" ? textSettings.text : undefined },
     });
-    pattern.x = originX + cell.x;
-    pattern.y = originY + cell.y;
+    pattern.x = originX + cell.x + (cell.width - pattern.width) / 2;
+    pattern.y = originY + cell.y + (cell.height - pattern.height) / 2;
     setCalibrationPatternProcess(pattern, operation, cell.power, cell.feed);
+    if (mode === "text_fill") pattern.lineStep = textSettings.lineStep;
     patterns.push(pattern);
   }
   const labelPower = Math.min(180, Math.max(30, result.powers[0]));
@@ -13459,7 +14199,7 @@ function addCalibrationPlateUnsafe() {
       sourceKey: `generated:calibration:${groupId}:power:${column}`,
       metadata: { ...commonMetadata, label: "power", value: power },
     });
-    pattern.x = originX + result.labelWidth + column * (result.tile + result.gap) + (result.tile - pattern.width) / 2;
+    pattern.x = originX + result.labelWidth + column * (result.tileWidth + result.gap) + (result.tileWidth - pattern.width) / 2;
     pattern.y = originY + result.gridHeight + 2;
     setCalibrationPatternProcess(pattern, "engrave_line", labelPower, labelFeed);
     patterns.push(pattern);
@@ -13473,11 +14213,11 @@ function addCalibrationPlateUnsafe() {
       metadata: { ...commonMetadata, label: "feed", value: feed },
     });
     pattern.x = originX + result.labelWidth - pattern.width - 2;
-    pattern.y = originY + row * (result.tile + result.gap) + (result.tile - pattern.height) / 2;
+    pattern.y = originY + row * (result.tileHeight + result.gap) + (result.tileHeight - pattern.height) / 2;
     setCalibrationPatternProcess(pattern, "engrave_line", labelPower, labelFeed);
     patterns.push(pattern);
   });
-  pushUndo("Kalibrasyon plakası ekle");
+  pushUndo(mode === "text_fill" ? "Yazı testi ekle" : "Kalibrasyon plakası ekle");
   state.patterns.push(...patterns);
   acceptCurrentLayoutSettings();
   state.layout.manual = false;
@@ -13486,7 +14226,12 @@ function addCalibrationPlateUnsafe() {
   draw();
   closeCalibration();
   activateRibbonTab("tabla");
-  setStatus(`${result.cells.length} karelik güç/hız kalibrasyon plakası eklendi. Etiketler düşük güçte kazınacak.`, "ok");
+  setStatus(
+    mode === "text_fill"
+      ? `${result.cells.length} örnekli dolgulu yazı testi eklendi. Yazılar G-code'da diğer işlemlerden önce kazınacak.`
+      : `${result.cells.length} karelik güç/hız kalibrasyon plakası eklendi. Etiketler düşük güçte kazınacak.`,
+    "ok",
+  );
 }
 
 function libraryPatternThumbnail(pattern) {
@@ -13707,14 +14452,62 @@ async function deleteLibraryAsset(assetId) {
 }
 
 function initRibbon() {
+  const advancedGroups = {
+    tabla: new Set(["Kullanılabilir Alan", "Konum"]),
+    vektor: new Set(["Gelişmiş"]),
+    cizim: new Set(["Otomatik Vektör"]),
+  };
+  document.querySelectorAll(".ribbon-panel").forEach((panel) => {
+    const titles = advancedGroups[panel.dataset.tab];
+    if (!titles) return;
+    Array.from(panel.children).forEach((group) => {
+      if (!group.classList.contains("ribbon-group")) return;
+      const title = group.querySelector(".ribbon-group-title")?.textContent.trim();
+      if (!titles.has(title)) return;
+      group.classList.add("ribbon-advanced-group");
+      if (group.previousElementSibling?.classList.contains("ribbon-sep")) {
+        group.previousElementSibling.classList.add("ribbon-advanced-separator");
+      }
+    });
+  });
+  const advancedControls = {
+    textTracking: "field",
+    textWeight: "field",
+    textStyle: "field",
+    textFontUpload: "row",
+    saveProfileBtn: "self",
+    deleteProfileBtn: "self",
+    overcut: "field",
+    kerf: "field",
+    travelFeed: "field",
+    pierceDelay: "field",
+    laserCmd: "self",
+    laserModeHint: "self",
+    returnOrigin: "field",
+    threshold: "field",
+  };
+  Object.entries(advancedControls).forEach(([id, target]) => {
+    const element = document.getElementById(id);
+    if (!element) return;
+    const control = target === "row"
+      ? element.closest(".rib-row")
+      : target === "field"
+        ? element.closest(".rib-field, .checkline")
+        : element;
+    control?.classList.add("ribbon-advanced-control");
+  });
   const tabs = document.querySelectorAll(".ribbon-tab");
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => activateRibbonTab(tab.dataset.tab));
   });
+  syncRibbonAdvancedUi();
 }
 
-function activateRibbonTab(name) {
+function activateRibbonTab(name, options = {}) {
   if (!name) return;
+  const syncWorkflow = options.syncWorkflow !== false;
+  const workspace = ribbonTabWorkspace(name);
+  if (workspace === "design" || workspace === "prepare") state.workspaceTabs[workspace] = name;
   document.querySelectorAll(".ribbon-tab").forEach((tab) => {
     const active = tab.dataset.tab === name;
     tab.classList.toggle("active", active);
@@ -13724,8 +14517,11 @@ function activateRibbonTab(name) {
   document.querySelectorAll(".ribbon-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.tab === name);
   });
-  if (!state.productionPreview.open && document.getElementById("machineTab")?.classList.contains("hidden")) {
-    setWorkflowActive(["tabla", "kesim", "cikti"].includes(name) ? "prepare" : "design");
+  const ribbonBody = document.querySelector(".ribbon-body");
+  if (ribbonBody) ribbonBody.scrollTop = 0;
+  syncRibbonAdvancedUi();
+  if (syncWorkflow && !state.productionPreview.open && document.getElementById("machineTab")?.classList.contains("hidden")) {
+    setWorkflowActive(workspace);
   }
   scheduleCanvasResize();
 }
@@ -16431,7 +17227,7 @@ function restoreProject(project, options = {}) {
   rebuildVectorPathSelectionKeys();
   state.layout = clonePlain(project.layout || state.layout);
   state.materialArea = normalizeMaterialArea(project.materialArea || {});
-  state.machineProfile = ProjectState.normalizeMachineProfile(project.machineProfile);
+  state.machineProfile = ProjectState.selectMachineProfile(project.machineProfile, state.defaultMachineProfile);
   state.laserCmd = project.laserCmd || state.laserCmd;
   const restoredSession = options.session || project.project || {};
   const restoredPath = options.path || restoredSession.path || "";
@@ -17176,7 +17972,18 @@ function bindControls() {
   document.querySelectorAll("[data-workspace-mode]").forEach((button) => {
     button.addEventListener("click", () => setWorkspaceMode(button.dataset.workspaceMode));
   });
+  document.getElementById("openCutSettingsBtn")?.addEventListener("click", () => setWorkspaceMode("prepare"));
   refs.workflowContinueBtn?.addEventListener("click", advanceWorkflow);
+  refs.ribbonAdvancedBtn?.addEventListener("click", () => setRibbonAdvanced(!state.ribbonAdvanced));
+  refs.ribbonCollapseBtn?.addEventListener("click", () => setRibbonCollapsed(!state.ribbonCollapsed));
+  refs.jobDrawerToggle?.addEventListener("click", () => setJobDrawerOpen(!state.jobDrawerOpen));
+  refs.warningChip?.addEventListener("click", () => {
+    setJobDrawerOpen(true);
+    refs.warningsList?.scrollIntoView({ block: "nearest" });
+  });
+  document.querySelectorAll("[data-command-target]").forEach((button) => {
+    button.addEventListener("click", () => document.getElementById(button.dataset.commandTarget)?.click());
+  });
   document.getElementById("addDxfBtn").addEventListener("click", addDxfs);
   document.getElementById("addImageBtn").addEventListener("click", addImage);
   // Ust bardaki "Foto→Vektör" artik ayar panelini acar (dogrudan tekrar
@@ -17222,9 +18029,11 @@ function bindControls() {
     input.addEventListener("change", renderBoxMakerPreview);
   });
   document.getElementById("addBoxToJobBtn")?.addEventListener("click", addBoxToJob);
-  document.getElementById("openCalibrationBtn")?.addEventListener("click", openCalibration);
+  document.getElementById("openCalibrationBtn")?.addEventListener("click", () => openCalibration("cut"));
+  document.getElementById("openTextTestBtn")?.addEventListener("click", () => openCalibration("text_fill"));
   document.querySelectorAll("[data-calibration-close]").forEach((element) => element.addEventListener("click", closeCalibration));
   document.getElementById("addCalibrationBtn")?.addEventListener("click", addCalibrationPlate);
+  refs.calibrationOperation?.addEventListener("change", () => switchCalibrationMode(refs.calibrationOperation.value));
   refs.calibrationForm?.querySelectorAll("input, select").forEach((input) => {
     input.addEventListener("input", renderCalibrationSummary);
     input.addEventListener("change", renderCalibrationSummary);
@@ -17347,6 +18156,11 @@ function bindControls() {
   });
   refs.drawingClosePath?.addEventListener("change", () => {
     state.drawingTool.closePath = refs.drawingClosePath.checked;
+    syncDrawingUi();
+    draw();
+  });
+  refs.drawingAutoJoin?.addEventListener("change", () => {
+    state.drawingTool.autoJoin = refs.drawingAutoJoin.checked;
     draw();
   });
   refs.startDrawingBtn?.addEventListener("click", beginDrawingTool);
@@ -17382,7 +18196,14 @@ function bindControls() {
   document.getElementById("machineStatusBtn")?.addEventListener("click", () => refreshMachineStatus(true));
   document.getElementById("verifyMachineProfileBtn")?.addEventListener("click", verifyMachineProfileFromInputs);
   document.getElementById("syncMachineProfileBtn")?.addEventListener("click", syncMachineProfileFromConnectedMachine);
-  [refs.machineProfileMaxS, refs.machineProfileTravelX, refs.machineProfileTravelY, refs.machineProfileAirAssist]
+  [
+    refs.machineProfileMaxS,
+    refs.machineProfileTravelX,
+    refs.machineProfileTravelY,
+    ...MACHINE_MOTION_PROFILE_FIELDS.map((field) => refs[field.ref]),
+    refs.machineProfileAccelerationValidated,
+    refs.machineProfileAirAssist,
+  ]
     .filter(Boolean)
     .forEach((input) => input.addEventListener("input", () => {
       state.machineProfile = ProjectState.normalizeMachineProfile({
@@ -17390,6 +18211,10 @@ function bindControls() {
         maxS: refs.machineProfileMaxS?.value,
         travelX: refs.machineProfileTravelX?.value,
         travelY: refs.machineProfileTravelY?.value,
+        ...Object.fromEntries(
+          MACHINE_MOTION_PROFILE_FIELDS.map((field) => [field.profile, refs[field.ref]?.value])
+        ),
+        accelerationValidated: Boolean(refs.machineProfileAccelerationValidated?.checked),
         airAssist: {
           ...(state.machineProfile.airAssist || {}),
           supported: Boolean(refs.machineProfileAirAssist?.checked),
@@ -17529,6 +18354,7 @@ function bindControls() {
     });
   });
   refs.preflightBtn?.addEventListener("click", async () => {
+    setJobDrawerOpen(true);
     try {
       const { analysis, preflight } = await runAuthoritativePreflight();
       refs.preflightPanel?.scrollIntoView({ block: "nearest" });
@@ -17595,7 +18421,7 @@ function bindControls() {
   refs.allowRotate?.addEventListener("change", scheduleLayoutPreviewUpdate);
   refs.bedAlignMode?.addEventListener("change", applyAlignmentPreviewUpdate);
 
-  ["innerFirst", "returnOrigin", "outputPath"].forEach((id) => {
+  ["innerFirst", "smoothMotion", "returnOrigin", "outputPath"].forEach((id) => {
     const input = refs[id];
     if (!input) return;
     input.addEventListener("input", () => {
@@ -17603,11 +18429,21 @@ function bindControls() {
         state.activity.activeHistoryId = "";
         clearMachinePreview();
       }
+      if (id === "smoothMotion" && refs.smoothMotion.checked && mm("travelFeed", DEFAULT_SMOOTH_TRAVEL_FEED) > DEFAULT_SMOOTH_TRAVEL_FEED) {
+        refs.travelFeed.value = String(DEFAULT_SMOOTH_TRAVEL_FEED);
+      }
       draw();
       saveUiSettings();
       renderMachinePanel();
       renderWorkflowProgress();
     });
+  });
+
+  refs.travelFeed?.addEventListener("change", () => {
+    if (!refs.smoothMotion?.checked || mm("travelFeed", DEFAULT_SMOOTH_TRAVEL_FEED) <= DEFAULT_SMOOTH_TRAVEL_FEED) return;
+    refs.travelFeed.value = String(DEFAULT_SMOOTH_TRAVEL_FEED);
+    saveUiSettings();
+    setStatus("Yumuşak harekette boş hareket F1200 ile sınırlandı.", "info");
   });
 
   persistedInputIds.forEach((id) => {
@@ -17670,6 +18506,7 @@ void loadSystemFonts(preferredStartupFont);
 state.layout.appliedSettings = layoutSettingsSnapshot();
 syncLaserButtons();
 syncMachineProfileUi();
+const machineProfileReady = loadDefaultMachineProfile();
 startClientLifecycleTracking();
 bindControls();
 syncImageEditUi();
@@ -17690,7 +18527,7 @@ refreshMachinePorts({ silent: true });
 refreshMachineStatus(false, { silent: true });
 startMachinePolling();
 syncMachineTabFromHash();
-Promise.all([loadRecoveryCandidate(), recentProjectsReady]).then(async () => {
+Promise.all([machineProfileReady.then(() => loadRecoveryCandidate()), recentProjectsReady]).then(async () => {
   if (!state.recovery.snapshot && state.preferences.reopenLastProject && !projectHasContent() && state.recentProjects[0]?.id) {
     await openProject({ recentId: state.recentProjects[0].id });
   }

@@ -41,6 +41,36 @@ STATIC_DIR = ROOT / "laser_editor"
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "LaserEditor"
 LAST_DIRECTORY_FILE = APP_DATA_DIR / "last-directory.json"
 RECENT_PROJECTS_FILE = APP_DATA_DIR / "recent-projects.json"
+MACHINE_PROFILE_FILE = APP_DATA_DIR / "machine-profile.json"
+OFFLINE_DEFAULT_MACHINE_PROFILE = {
+    "id": "offline-grbl-s1000-400",
+    "name": "Çevrimdışı GRBL S1000 / 400×400",
+    "maxS": 1000,
+    "travelX": 400,
+    "travelY": 400,
+    # These values only plan conservative fill motion. They are never written
+    # to the controller; connected-machine preflight still compares real GRBL settings.
+    "stepsX": 80,
+    "stepsY": 80,
+    "maxRateX": 6000,
+    "maxRateY": 6000,
+    "accelerationX": 200,
+    "accelerationY": 200,
+    "accelerationValidated": False,
+    "laserOnDelayMs": 0,
+    "laserOffDelayMs": 0,
+    "requiresLaserMode": True,
+    "airAssist": {"supported": False, "onCommand": "M8", "offCommand": "M9"},
+    "focus": {
+        "normalMaxPercent": 3,
+        "normalMaxMs": 100,
+        "expertMaxPercent": 5,
+        "expertMaxMs": 250,
+    },
+    "verified": True,
+    "verifiedAt": "2026-07-19T00:00:00Z",
+    "source": "offline-production-default",
+}
 DEFAULT_DIR = Path.home() / "Documents"
 MACHINE = laser_grbl.GrblController()
 CLIENT_STALE_SECONDS = 90.0
@@ -764,6 +794,72 @@ def atomic_write_text(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+MACHINE_PROFILE_MOTION_FIELDS = (
+    "stepsX",
+    "stepsY",
+    "maxRateX",
+    "maxRateY",
+    "accelerationX",
+    "accelerationY",
+)
+
+
+def normalized_persistent_machine_profile(profile: dict) -> dict:
+    try:
+        normalized = core.validated_machine_profile({"machineProfile": profile})
+    except (TypeError, ValueError) as exc:
+        raise ApiRequestError(422, str(exc), "machine_profile_invalid") from exc
+    missing = [field for field in MACHINE_PROFILE_MOTION_FIELDS if normalized.get(field) is None]
+    if missing:
+        raise ApiRequestError(
+            422,
+            "Kalici profil icin GRBL $100/$101/$110/$111/$120/$121 degerlerinin tamami gerekli.",
+            "machine_profile_motion_incomplete",
+        )
+    air_assist = normalized.get("airAssist") if isinstance(normalized.get("airAssist"), dict) else {}
+    focus = normalized.get("focus") if isinstance(normalized.get("focus"), dict) else {}
+    return {
+        "id": str(normalized.get("id") or "grbl-machine"),
+        "name": str(normalized.get("name") or "GRBL Makinesi"),
+        "maxS": float(normalized["maxS"]),
+        "travelX": float(normalized["travelX"]),
+        "travelY": float(normalized["travelY"]),
+        **{field: float(normalized[field]) for field in MACHINE_PROFILE_MOTION_FIELDS},
+        "accelerationValidated": bool(normalized.get("accelerationValidated")),
+        "laserOnDelayMs": max(0.0, float(normalized.get("laserOnDelayMs") or 0.0)),
+        "laserOffDelayMs": max(0.0, float(normalized.get("laserOffDelayMs") or 0.0)),
+        "requiresLaserMode": normalized.get("requiresLaserMode") is not False,
+        "airAssist": {
+            "supported": bool(air_assist.get("supported")),
+            "onCommand": str(air_assist.get("onCommand") or "M8"),
+            "offCommand": "M9",
+        },
+        "focus": {
+            "normalMaxPercent": float(focus.get("normalMaxPercent") or 3.0),
+            "normalMaxMs": int(focus.get("normalMaxMs") or 100),
+            "expertMaxPercent": float(focus.get("expertMaxPercent") or 5.0),
+            "expertMaxMs": int(focus.get("expertMaxMs") or 250),
+        },
+        "verified": True,
+        "verifiedAt": str(normalized.get("verifiedAt") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+        "source": str(normalized.get("source") or "persistent-default"),
+    }
+
+
+def load_default_machine_profile() -> dict | None:
+    try:
+        payload = json.loads(MACHINE_PROFILE_FILE.read_text(encoding="utf-8"))
+        return normalized_persistent_machine_profile(payload if isinstance(payload, dict) else {})
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, ApiRequestError):
+        return normalized_persistent_machine_profile(OFFLINE_DEFAULT_MACHINE_PROFILE)
+
+
+def save_default_machine_profile(profile: dict) -> dict:
+    normalized = normalized_persistent_machine_profile(profile if isinstance(profile, dict) else {})
+    atomic_write_text(MACHINE_PROFILE_FILE, json.dumps(normalized, ensure_ascii=False, indent=2))
+    return normalized
+
+
 def recent_project_id(path_value: str | Path) -> str:
     normalized = os.path.normcase(str(Path(path_value).expanduser().resolve()))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
@@ -1325,6 +1421,9 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
         if self.path == "/api/recent-projects":
             self._json({"ok": True, "projects": public_recent_projects()})
             return
+        if self.path == "/api/machine-profile":
+            self._json({"ok": True, "machineProfile": load_default_machine_profile()})
+            return
         if self.path.startswith("/static/"):
             relative = unquote(self.path[len("/static/") :].split("?", 1)[0])
             self._serve_file(STATIC_DIR / relative)
@@ -1337,7 +1436,11 @@ class LaserEditorHandler(BaseHTTPRequestHandler):
         try:
             self._require_api_access()
             self._require_json_request()
-            if self.path == "/api/open-dxf":
+            if self.path == "/api/machine-profile":
+                payload = self._read_json()
+                profile = save_default_machine_profile(payload.get("machineProfile") or {})
+                self._json({"ok": True, "machineProfile": profile})
+            elif self.path == "/api/open-dxf":
                 self._open_dxf()
             elif self.path == "/api/load-dxf-paths":
                 self._load_dxf_paths()

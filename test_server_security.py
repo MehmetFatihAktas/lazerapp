@@ -169,12 +169,66 @@ def test_api_rejects_wrong_handle_scope():
         worker.join(timeout=5)
 
 
+def test_machine_profile_api_persists_verified_profile():
+    with TemporaryDirectory() as directory:
+        original_file = server.MACHINE_PROFILE_FILE
+        server.MACHINE_PROFILE_FILE = Path(directory) / "machine-profile.json"
+        api_server = server.LaserEditorHttpServer(("127.0.0.1", 0), server.LaserEditorHandler)
+        worker = threading.Thread(target=api_server.serve_forever, daemon=True)
+        worker.start()
+        profile = {
+            "id": "grbl-api-test",
+            "name": "API Test",
+            "maxS": 1000,
+            "travelX": 400,
+            "travelY": 400,
+            "stepsX": 80,
+            "stepsY": 80,
+            "maxRateX": 6000,
+            "maxRateY": 6000,
+            "accelerationX": 500,
+            "accelerationY": 500,
+            "verified": True,
+        }
+        try:
+            body = json.dumps({"machineProfile": profile}).encode("utf-8")
+            connection, response = request(
+                api_server,
+                "POST",
+                "/api/machine-profile",
+                token=api_server.api_token,
+                origin=api_server.expected_origin,
+                body=body,
+            )
+            saved = assert_status(response, 200)["machineProfile"]
+            assert saved["id"] == "grbl-api-test"
+            connection.close()
+
+            connection, response = request(
+                api_server,
+                "GET",
+                "/api/machine-profile",
+                token=api_server.api_token,
+                origin=api_server.expected_origin,
+                body=b"",
+            )
+            loaded = assert_status(response, 200)["machineProfile"]
+            assert loaded["accelerationX"] == 500
+            connection.close()
+        finally:
+            api_server.shutdown()
+            api_server.server_close()
+            worker.join(timeout=5)
+            server.MACHINE_PROFILE_FILE = original_file
+
+
 def main():
     tests = [
         test_api_security_boundary,
         test_api_rejects_oversized_declared_body,
         test_file_grants_are_scoped_and_single_use,
         test_api_rejects_wrong_handle_scope,
+        test_machine_profile_api_persists_verified_profile,
     ]
     for test in tests:
         test()

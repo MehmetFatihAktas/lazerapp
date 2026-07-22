@@ -107,6 +107,13 @@ test("machine profiles clamp focus safety limits", () => {
     maxS: 255,
     travelX: 500,
     travelY: 300,
+    stepsX: 80,
+    stepsY: 80,
+    maxRateX: 6000,
+    maxRateY: 5000,
+    accelerationX: 200,
+    accelerationY: 150,
+    accelerationValidated: true,
     focus: { normalMaxPercent: 99, normalMaxMs: 999, expertMaxPercent: 99, expertMaxMs: 999 },
   });
   assert.equal(profile.maxS, 255);
@@ -114,4 +121,37 @@ test("machine profiles clamp focus safety limits", () => {
   assert.equal(profile.focus.normalMaxMs, 100);
   assert.equal(profile.focus.expertMaxPercent, 5);
   assert.equal(profile.focus.expertMaxMs, 250);
+  assert.equal(profile.stepsX, 80);
+  assert.equal(profile.maxRateY, 5000);
+  assert.equal(profile.accelerationX, 200);
+  assert.equal(profile.accelerationValidated, true);
+});
+
+test("unknown motion dynamics stay explicit instead of receiving guessed defaults", () => {
+  const profile = ProjectState.normalizeMachineProfile({ maxS: 1000, travelX: 400, travelY: 400 });
+  assert.equal(profile.stepsX, null);
+  assert.equal(profile.stepsY, null);
+  assert.equal(profile.maxRateX, null);
+  assert.equal(profile.accelerationY, null);
+});
+
+test("saved verified machine profile replaces an incomplete legacy project profile", () => {
+  const saved = ProjectState.normalizeMachineProfile({
+    id: "grbl-saved",
+    name: "Saved GRBL",
+    maxS: 1000,
+    travelX: 400,
+    travelY: 400,
+    stepsX: 80,
+    stepsY: 80,
+    maxRateX: 6000,
+    maxRateY: 6000,
+    accelerationX: 500,
+    accelerationY: 500,
+    verified: true,
+  });
+  const selected = ProjectState.selectMachineProfile(ProjectState.LEGACY_MACHINE_PROFILE, saved);
+  assert.equal(selected.id, "grbl-saved");
+  assert.equal(ProjectState.machineProfileHasMotionData(selected), true);
+  assert.equal(ProjectState.selectMachineProfile(saved, ProjectState.LEGACY_MACHINE_PROFILE).id, "grbl-saved");
 });

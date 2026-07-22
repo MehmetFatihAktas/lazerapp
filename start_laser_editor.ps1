@@ -17,8 +17,10 @@ function Write-LauncherLog {
 
 function Test-LaserEditorServer {
     try {
-        $response = Invoke-WebRequest -Uri "${Url}api/health" -UseBasicParsing -TimeoutSec 3
-        return [int]$response.StatusCode -ge 200 -and [int]$response.StatusCode -lt 500
+        # /api/* is token-protected. The launcher verifies the token-bootstrap
+        # page instead of weakening the local API security boundary.
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3
+        return [int]$response.StatusCode -eq 200 -and $response.Content -match 'id="editorCanvas"'
     } catch {
         return $false
     }
@@ -62,7 +64,7 @@ if (-not (Test-LaserEditorServer)) {
 
     Remove-Item -LiteralPath $OutLog, $ErrLog -Force -ErrorAction SilentlyContinue
     Write-LauncherLog "Starting server with $python"
-    $serverProcess = Start-Process -FilePath $python -ArgumentList @("`"$ServerScript`"", "$Port", "--no-open") -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+    $serverProcess = Start-Process -FilePath $python -ArgumentList @("`"$ServerScript`"", "$Port", "--no-open") -WorkingDirectory $Root -WindowStyle Hidden -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog -PassThru
     Write-LauncherLog "Server process started: PID $($serverProcess.Id)"
 
     $deadline = (Get-Date).AddSeconds(45)

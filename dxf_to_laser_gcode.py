@@ -561,7 +561,9 @@ def write_gcode(output_path: Path,
                 travel_feed: float | None = None,
                 passes: int = 1,
                 pre_cut_lines: list[str] | None = None,
-                air_assist_command: str | None = None) -> None:
+                air_assist_command: str | None = None,
+                return_point: Point | None = None,
+                return_feed: float | None = None) -> None:
     power = validate_power(power)
     laser_cmd = str(laser_cmd or "").strip().upper()
     if laser_cmd not in {"M3", "M4"}:
@@ -616,7 +618,11 @@ def write_gcode(output_path: Path,
     if air_assist_command:
         lines.append("M9 (air assist off)")
     if return_to_origin:
-        lines.append("G0 X0 Y0")
+        safe_return = return_point or (0.0, 0.0)
+        if return_feed is not None and return_feed > 0:
+            lines.append(f"G1 {axis_words(safe_return)} F{fmt(return_feed)} S0")
+        else:
+            lines.append(f"G0 {axis_words(safe_return)}")
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
